@@ -1,0 +1,13 @@
+{
+  "name": "two_state_VBM_CBM",
+  "notes": "Hefei-NAMD SHPROP layout for a two-state basis (BMIN..BMAX spans 2 bands): column 0 is time in fs, column 1 is the running state energy written by the code, columns 2 and 3 are the two state populations. Verify the band character of each column against your own partial-charge analysis before using this map.",
+  "time_column": 0,
+  "time_unit": "fs",
+  "population_columns": [2, 3],
+  "groups": {
+    "VBM": [2],
+    "CBM": [3]
+  },
+  "complete_population": true,
+  "recombined_group": "VBM"
+}
