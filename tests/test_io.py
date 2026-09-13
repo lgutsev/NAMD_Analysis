@@ -143,6 +143,45 @@ class XdatcarTests(unittest.TestCase):
         self.assertFalse(traj.variable_cell)
         np.testing.assert_allclose(traj.lattices[0], np.eye(3) * 10.0)
 
+    def test_negative_scale_is_a_target_volume(self):
+        # VASP reads a negative value on line 2 as the target cell volume in
+        # cubic Angstrom, not as a multiplier. Multiplying by it instead flips
+        # the cell and rescales every velocity derived from it.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "XDATCAR"
+            lines = [
+                "target volume", "-64.0",
+                "  2.0 0.0 0.0", "  0.0 2.0 0.0", "  0.0 0.0 2.0",
+                "  C", "  2",
+            ]
+            for frame in range(3):
+                lines += [f"Direct configuration=  {frame + 1}",
+                          "  0.1 0.1 0.1", "  0.6 0.6 0.6"]
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            traj = read_xdatcar(path)
+        np.testing.assert_allclose(traj.lattices[0], np.eye(3) * 4.0, atol=1e-9)
+        self.assertAlmostEqual(abs(np.linalg.det(traj.lattices[0])), 64.0, places=6)
+
+    def test_positive_scale_multiplies_the_cell(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_xdatcar(Path(tmp) / "XDATCAR", nframes=10, cell_ang=10.0)
+            traj = read_xdatcar(path)
+        np.testing.assert_allclose(traj.lattices[0], np.eye(3) * 10.0)
+
+    def test_degenerate_cell_with_negative_scale_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "XDATCAR"
+            lines = [
+                "flat", "-64.0",
+                "  2.0 0.0 0.0", "  0.0 2.0 0.0", "  0.0 0.0 0.0",
+                "  C", "  1",
+            ]
+            for frame in range(3):
+                lines += [f"Direct configuration=  {frame + 1}", "  0.1 0.1 0.1"]
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            with self.assertRaises(XdatcarFormatError):
+                read_xdatcar(path)
+
     def test_short_file_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "XDATCAR"

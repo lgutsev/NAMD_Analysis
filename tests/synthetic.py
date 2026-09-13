@@ -7,7 +7,7 @@ from typing import Optional, Sequence
 
 import numpy as np
 
-from namd_analysis.units import CM1_PER_INV_FS
+from namd_analysis.units import CM1_PER_INV_FS, FS_PER_NS
 
 INP_TEMPLATE = """&NAMDPARA
   BMIN       = {bmin}
@@ -121,6 +121,67 @@ def write_shprop_set(
         np.savetxt(path, table)
         paths.append(path)
     return paths
+
+
+def write_kinetic_shprop_set(
+    root: Path,
+    rate_matrix,
+    p0,
+    n_files: int = 4,
+    nsteps: int = 400,
+    dt_fs: float = 1000.0,
+    noise: float = 0.0,
+    seed: int = 5,
+) -> list:
+    """SHPROP files whose populations follow a known master equation.
+
+    One population column per state, so a state map can address them directly:
+    column 0 is time in fs, column 1 stands in for the energy column, and the
+    rest are populations of the states in ``rate_matrix`` order.
+    """
+    from scipy.linalg import expm
+
+    root.mkdir(parents=True, exist_ok=True)
+    rate_matrix = np.asarray(rate_matrix, dtype=float)
+    p0 = np.asarray(p0, dtype=float)
+    nstates = rate_matrix.shape[0]
+    time_fs = np.arange(nsteps) * dt_fs
+    dt_ns = dt_fs / FS_PER_NS
+
+    step = expm(rate_matrix * dt_ns)
+    exact = np.empty((nsteps, nstates))
+    exact[0] = p0
+    for index in range(1, nsteps):
+        exact[index] = step @ exact[index - 1]
+
+    rng = np.random.default_rng(seed)
+    paths = []
+    for index in range(n_files):
+        populations = exact.copy()
+        if noise:
+            populations = populations + noise * rng.standard_normal(populations.shape)
+            populations = np.clip(populations, 0.0, None)
+            totals = populations.sum(axis=1, keepdims=True)
+            populations = populations / np.where(totals > 0, totals, 1.0)
+        table = np.column_stack([time_fs, np.full(nsteps, -1.5), populations])
+        path = root / f"SHPROP.{index + 1}"
+        np.savetxt(path, table)
+        paths.append(path)
+    return paths
+
+
+def kinetic_config(names, recombined=None) -> dict:
+    """A complete state map for ``write_kinetic_shprop_set`` output."""
+    columns = list(range(2, 2 + len(names)))
+    return {
+        "name": "synthetic_kinetics",
+        "time_column": 0,
+        "time_unit": "fs",
+        "population_columns": columns,
+        "groups": {name: [column] for name, column in zip(names, columns)},
+        "complete_population": True,
+        "recombined_group": recombined,
+    }
 
 
 def write_xdatcar(

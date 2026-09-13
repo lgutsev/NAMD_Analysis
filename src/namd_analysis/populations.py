@@ -127,6 +127,9 @@ class PopulationSet:
     n_files: int
     total_population: np.ndarray
     conservation: Dict[str, float] = field(default_factory=dict)
+    #: Per-file tables, shape ``(nfiles, nrows, ncols)``.  Kept so that a
+    #: resampling estimate can draw whole files; averaging discards this.
+    stack: Optional[np.ndarray] = None
 
 
 def load_population_set(paths: Sequence, state_map: StateMap) -> PopulationSet:
@@ -183,6 +186,22 @@ def load_population_set(paths: Sequence, state_map: StateMap) -> PopulationSet:
         n_files=len(paths),
         total_population=total,
         conservation=conservation,
+        stack=stack,
+    )
+
+
+def per_file_group_populations(
+    population: PopulationSet, state_map: StateMap
+) -> Optional[np.ndarray]:
+    """Group populations for each input file, shape ``(nfiles, ntime, ngroups)``.
+
+    Returns ``None`` when the per-file tables were not retained.
+    """
+    if population.stack is None:
+        return None
+    columns = [state_map.groups[name] for name in state_map.groups]
+    return np.stack(
+        [population.stack[:, :, group].sum(axis=2) for group in columns], axis=2
     )
 
 

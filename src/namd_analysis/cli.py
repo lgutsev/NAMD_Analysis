@@ -20,14 +20,31 @@ from .audit import PAIR_HEADER, audit_run
 from .fitting import FitError, fit_single_exponential
 from .inventory import INVENTORY_HEADER, rows as inventory_rows, scan, summarize
 from .io.xdatcar import read_xdatcar
+from .kinetics import (
+    RATE_HEADER,
+    SINK_HEADER,
+    bootstrap_rates,
+    fit_master_equation,
+    parse_edges,
+    rate_rows,
+    sink_rows,
+    sink_sweep,
+)
 from .populations import (
     StateMap,
     group_series,
     load_population_set,
+    per_file_group_populations,
     survival,
     trapezoid,
 )
-from .plotting import plot_populations, plot_spectra, plot_vacf
+from .plotting import (
+    plot_kinetics,
+    plot_populations,
+    plot_sink_sweep,
+    plot_spectra,
+    plot_vacf,
+)
 from .provenance import environment, fingerprint
 from .report import prepare_output, write_csv, write_json
 from .spectra import (
@@ -325,6 +342,185 @@ def cmd_populations(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------
+# kinetics
+
+
+def _parse_sweep(text: str) -> List[float]:
+    """LOW:HIGH:COUNT on a log grid, or a comma-separated list of rates."""
+    if "," in text or ":" not in text:
+        try:
+            return [float(part) for part in text.split(",") if part.strip()]
+        except ValueError as exc:
+            raise SystemExit(f"error: --sink-rates {text!r} is not a list of numbers") from exc
+    pieces = text.split(":")
+    if len(pieces) != 3:
+        raise SystemExit(
+            f"error: --sink-rates must be LOW:HIGH:COUNT or a comma-separated list, got {text!r}"
+        )
+    try:
+        low, high, count = float(pieces[0]), float(pieces[1]), int(pieces[2])
+    except ValueError as exc:
+        raise SystemExit(f"error: --sink-rates {text!r} is malformed") from exc
+    if low <= 0 or high <= low or count < 2:
+        raise SystemExit(
+            "error: --sink-rates needs 0 < LOW < HIGH and COUNT >= 2 (the grid is logarithmic)"
+        )
+    return [float(v) for v in np.geomspace(low, high, count)]
+
+
+def cmd_kinetics(args: argparse.Namespace) -> int:
+    state_map = StateMap.from_json(args.config)
+    if not state_map.complete_population:
+        raise SystemExit(
+            "error: kinetics needs complete_population: true in the configuration. "
+            "A master equation over a subset of states is not a closed system, and "
+            "rates fitted to one are not meaningful."
+        )
+    paths = _expand(args.files)
+    population = load_population_set(paths, state_map)
+    series = group_series(population, state_map)
+    names = [s.name for s in series]
+
+    observed_full = np.column_stack([s.values for s in series])
+    time_full = population.time_ns
+    lo = time_full[0] if args.fit_start_ns is None else args.fit_start_ns
+    hi = time_full[-1] if args.fit_end_ns is None else args.fit_end_ns
+    mask = (time_full >= lo) & (time_full <= hi)
+    if np.count_nonzero(mask) < 3:
+        raise SystemExit(f"error: the window [{lo}, {hi}] ns holds too few samples")
+    time_ns = time_full[mask]
+    observed = observed_full[mask]
+
+    edges = parse_edges(args.scheme, names)
+
+    weights = None
+    if args.weight_by_sem:
+        if population.sem is None:
+            raise SystemExit(
+                "error: --weight-by-sem needs more than one input file"
+            )
+        sem = np.column_stack(
+            [s.sem if s.sem is not None else np.ones_like(s.values) for s in series]
+        )[mask]
+        floor = np.max(sem) * 1e-3 if np.max(sem) > 0 else 1.0
+        weights = 1.0 / np.maximum(sem, floor)
+
+    fit = fit_master_equation(time_ns, observed, names, edges, weights=weights)
+
+    bootstrap = {}
+    bootstrap_note = "not requested"
+    if args.bootstrap:
+        per_file = per_file_group_populations(population, state_map)
+        if per_file is None or per_file.shape[0] < 2:
+            bootstrap_note = "skipped: bootstrapping whole files needs at least two files"
+        else:
+            bootstrap = bootstrap_rates(
+                time_ns, per_file[:, mask, :], names, edges,
+                n_resamples=args.bootstrap, seed=args.bootstrap_seed,
+            )
+            for estimate in fit.rates:
+                if estimate.name in bootstrap:
+                    estimate.bootstrap_ci_per_ns = bootstrap[estimate.name]
+            bootstrap_note = (
+                f"{args.bootstrap} resamples of the {per_file.shape[0]} input files, "
+                "2.5-97.5 percentile; this is the spread between the files supplied, "
+                "not an ensemble error bar"
+            )
+
+    sweep = []
+    if args.sink_group:
+        if args.sink_group not in names:
+            raise SystemExit(
+                f"error: --sink-group {args.sink_group!r} is not a declared group {names}"
+            )
+        sweep = sink_sweep(
+            fit,
+            args.sink_group,
+            _parse_sweep(args.sink_rates),
+            recombined_group=state_map.recombined_group,
+        )
+
+    out = prepare_output(args.out, overwrite=args.overwrite)
+
+    write_csv(out / "rates.csv", RATE_HEADER, rate_rows(fit))
+    write_csv(
+        out / "kinetics_curves.csv",
+        ["time_ns"]
+        + [f"{n}_observed" for n in names]
+        + [f"{n}_model" for n in names],
+        np.column_stack([time_ns, observed, fit.model]).tolist(),
+    )
+    figures = plot_kinetics(fit, out / "kinetics", title=state_map.name)
+    if sweep:
+        write_csv(out / "sink_sweep.csv", SINK_HEADER, sink_rows(sweep))
+        figures += plot_sink_sweep(sweep, out / "sink_sweep")
+
+    payload = {
+        "command": "kinetics",
+        "environment": environment(),
+        "inputs": fingerprint(paths),
+        "state_map": {
+            "name": state_map.name,
+            "groups": state_map.groups,
+            "recombined_group": state_map.recombined_group,
+        },
+        "scheme": args.scheme,
+        "weighting": "1/SEM per point" if weights is not None else "unweighted",
+        "conservation": population.conservation,
+        "fit": fit.as_dict(),
+        "bootstrap": {"intervals_per_ns": bootstrap, "note": bootstrap_note},
+        "sink_sweep": (
+            {
+                "sink_group": args.sink_group,
+                "points": [p.as_dict() for p in sweep],
+                "note": (
+                    "the escape channel is propagated as part of the augmented "
+                    "system, so escaped population leaves the dynamics and cannot "
+                    "return or recombine. k_escape is supplied by the user; the "
+                    "interface calculation does not determine it, and the transfer "
+                    "rates were fitted to data containing no extraction"
+                ),
+            }
+            if sweep
+            else None
+        ),
+        "figures": [str(path) for path in figures],
+        "interpretation_limits": [
+            "a Markovian rate matrix is assumed, not demonstrated; a good fit does "
+            "not establish that the dynamics are Markovian",
+            "rates marked identified: false were not determined by these population "
+            "curves and must not be quoted; use the eigenvalue timescales instead",
+            "the sink sweep is a counterfactual over an assumed escape rate, not a "
+            "measured extraction efficiency",
+        ],
+    }
+    write_json(out / "report.json", payload)
+
+    print(f"{population.n_files} file(s), {fit.n_points} points in "
+          f"[{fit.window[0]:.4g}, {fit.window[1]:.4g}] ns, scheme {args.scheme!r}")
+    print(f"  R^2 over all groups = {fit.r_squared_total:.5f}, "
+          f"Jacobian condition number = {fit.condition_number:.3g}")
+    for estimate in fit.rates:
+        flag = "" if estimate.identified else "   [UNIDENTIFIED]"
+        error = (
+            f" +- {estimate.stderr_per_ns:.4g}" if estimate.stderr_per_ns is not None else ""
+        )
+        print(
+            f"  {estimate.name:<22s} {estimate.rate_per_ns:10.4g}{error} /ns"
+            f"  (tau = {estimate.lifetime_ns:.4g} ns){flag}"
+        )
+    print("  eigenvalue timescales (ns): "
+          + ", ".join(f"{t:.4g}" for t in fit.eigen_timescales_ns))
+    for warning in fit.warnings:
+        print(f"  warning: {warning}")
+    if sweep:
+        print(f"  sink on {args.sink_group}: collected at the end of the window ranges "
+              f"{sweep[0].collected_final:.4f} -> {sweep[-1].collected_final:.4f}")
+    print(f"written to {out}")
+    return 0
+
+
+# --------------------------------------------------------------------------
 # vacf-spectra
 
 
@@ -549,6 +745,45 @@ def build_parser() -> argparse.ArgumentParser:
     populations.add_argument("--fit-end-ns", type=float, default=None)
     add_output(populations)
     populations.set_defaults(func=cmd_populations)
+
+    kinetics = sub.add_parser(
+        "kinetics", help="fit a multistate rate model to group populations"
+    )
+    kinetics.add_argument("--files", nargs="+", required=True, help="paths or glob patterns")
+    kinetics.add_argument("--config", required=True, help="state map JSON (must be complete)")
+    kinetics.add_argument(
+        "--scheme",
+        required=True,
+        help='"dense", "sequential", "reversible", or an explicit comma-separated '
+        'list such as "CBM->BCF,BCF->CBM,BCF->PCBM,PCBM->VBM"',
+    )
+    kinetics.add_argument("--fit-start-ns", type=float, default=None)
+    kinetics.add_argument("--fit-end-ns", type=float, default=None)
+    kinetics.add_argument(
+        "--weight-by-sem",
+        action="store_true",
+        help="weight residuals by 1/SEM; needs more than one input file",
+    )
+    kinetics.add_argument(
+        "--bootstrap",
+        type=int,
+        default=0,
+        metavar="N",
+        help="resample whole input files N times for a percentile interval",
+    )
+    kinetics.add_argument("--bootstrap-seed", type=int, default=0)
+    kinetics.add_argument(
+        "--sink-group",
+        default=None,
+        help="add an absorbing extraction channel draining this group",
+    )
+    kinetics.add_argument(
+        "--sink-rates",
+        default="0.01:1000:25",
+        help="LOW:HIGH:COUNT on a log grid, or a comma-separated list, in ns^-1",
+    )
+    add_output(kinetics)
+    kinetics.set_defaults(func=cmd_kinetics)
 
     spectra = sub.add_parser(
         "vacf-spectra", help="describe and compare existing spectral density files"

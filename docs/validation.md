@@ -95,6 +95,44 @@ that way is not an averaged multistate population history, and
 regresses to that behaviour. Re-average from the original `SHPROP.*` files
 rather than reusing an old `data.txt`.
 
+## Multistate kinetics
+
+No campaign `SHPROP.*` files were supplied, so `kinetics` was validated on
+synthetic sets propagated from a known rate matrix over four groups
+(CBM, BCF, PCBM, VBM) with the scheme
+`CBM->BCF, BCF->CBM, BCF->PCBM, PCBM->VBM` and true rates
+8.0, 2.0, 3.0, 0.5 ns⁻¹.
+
+*Noiseless data.* All four rates are recovered to six decimal places, R² = 1,
+population is conserved to 1e-10, and no warnings are raised.
+
+*Five noisy SHPROP files, end to end through the CLI.* Recovered
+7.956, 1.965, 2.991, 0.4946 ns⁻¹ — every rate within 1.1% of truth — with
+R² = 0.99985 and a Jacobian condition number of 75.
+
+*The identifiability test has teeth.* Given the same noisy data, a `dense`
+scheme (all 12 transitions, of which 4 are real) reaches the **same** R² as
+the correct sparse scheme. It buys nothing and hides everything: the Jacobian
+condition number rises to 6e19 and three of six rates in the three-group
+version come back `identified: false` with their degeneracy partners named.
+A `dense` fit that looks excellent by R² alone is exactly the failure this
+check exists to catch.
+
+*The sink is a real channel.* Across the sweep, collected + still-in-the-
+interface sums to 1.000000 at every escape rate, confirming that escaped
+population leaves the dynamics rather than being counted twice. At
+`k_esc = 0`, nothing is collected and the sink-free solution is unchanged.
+On the synthetic system the crossover where collection overtakes
+recombination falls between `k_esc` ≈ 0.46 and 1.2 ns⁻¹, i.e. an escape time
+of roughly 1-2 ns.
+
+*The bootstrap is narrower than the truth.* With five files differing only by
+independent noise, the 95% interval for `CBM->BCF` came back [7.92, 7.98],
+which excludes the true 8.0. That is the documented behaviour, not a bug: the
+interval measures the spread between the supplied files, and those files share
+everything except their noise. It is reported with that caveat attached and
+must not be quoted as an ensemble error bar.
+
 ## VACF and spectra
 
 The four supplied `spectral_density_*.txt` files share a frequency grid
@@ -148,13 +186,51 @@ that the cosine transform of a truncated, windowed VACF can ring negative;
 `describe` reports the negative sample count in the analysis range and
 declines to compute a centroid when it occurs.
 
+## Defects found by reviewing v0.1
+
+Three defects in the first release were found by re-deriving its numerics and
+fixed; each now has a regression test.
+
+**XDATCAR negative scale factor.** VASP reads a negative value on line 2 of a
+POSCAR-style header as the *target cell volume* in Å³, not as a multiplier.
+v0.1 multiplied by it. On a 2 Å cube with `-64.0`, that produced a cell of
+volume 2 097 152 Å³ instead of 64 Å³ — a factor of 32 768, flipped in sign.
+Frequencies would have survived this (they depend on the time axis) but every
+velocity, VACF magnitude and spectral intensity would have been wrong by a
+large constant. Now handled by the volume convention, with the degenerate case
+rejected.
+
+**Non-finite numpy scalars broke strict JSON.** `_plain` unwrapped numpy
+scalars and returned early, skipping the finiteness check that Python floats
+went through. A numpy NaN — which `describe` produces for the centroid of a
+spectrum that rings negative — reached `json.dumps` and was written as a bare
+`NaN` token, which the JSON specification does not allow and many parsers
+reject. Now unwrapped first and checked, with `allow_nan=False` as a backstop
+so anything that slips through fails loudly at write time rather than quietly
+in the reader.
+
+**Gaussian smoothing differed from scipy at the edges.** `gaussian_smooth`
+claimed to match `gaussian_filter1d` and did so in the interior to machine
+precision, but used numpy's `reflect` padding where scipy's default `reflect`
+is numpy's `symmetric`. The edge samples differed by up to 0.1 on a unit-scale
+signal. For a spectrum, the edge is the lowest-frequency bins — exactly where
+the dynamic-disorder metrics are read. Now matches to 1e-12 across the whole
+array, verified against scipy at four widths.
+
+One thing checked and found correct: the FFT autocorrelation is free of
+circular wraparound even at `max_lag == nsteps`, where the final lag has a
+single time origin. It agrees with the direct double loop to 1e-14.
+
 ## Running the checks
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-107 tests, covering table and XDATCAR parsing, namelist coercion, the audit
-checks including cap detection, population conservation and averaging, fit
-recovery and rejection, VACF estimators, spectrum conventions, and end-to-end
+157 tests, covering table and XDATCAR parsing (including the negative scale
+factor), namelist coercion, the audit checks including cap detection,
+population conservation and averaging, fit recovery and rejection, VACF
+estimators against the direct double loop, spectrum conventions, strict-JSON
+report serialization, recovery of a known rate matrix, detection of an
+unidentifiable over-parameterized scheme, sink conservation, and end-to-end
 CLI runs that assert on the written reports and figures.

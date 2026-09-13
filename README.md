@@ -18,6 +18,9 @@ Version 0.1 provides:
   survival when a complete normalized state map is explicitly declared.
 - Optional single-exponential decay fitting with explicit time windows,
   residual diagnostics, poor-fit flags, and extrapolation warnings.
+- Multistate kinetic fitting: a Markovian rate matrix over the declared
+  groups, uncertainty on every rate, an identifiability test that refuses to
+  quote rates the data did not determine, and an optional extraction sink.
 - VACF and phonon spectral density: descriptive comparison of existing
   `spectral_density_*.txt` files, and computation from an XDATCAR with
   Cartesian minimum-image velocities, optional mass weighting, segment
@@ -127,7 +130,11 @@ Two entry points. The first describes and compares spectral density files you
 already have, on whatever grid they were written:
 
 ```bash
-namd-analysis vacf-spectra   --files '/path/to/VACF/spectral_density_*.txt'   --range 0:800 --bands 0:50,50:100,100:200,200:400,400:800   --reference FAPI_001_DISORD --xlim 0:150   --out results/spectra
+namd-analysis vacf-spectra \
+  --files '/path/to/VACF/spectral_density_*.txt' \
+  --range 0:800 --bands 0:50,50:100,100:200,200:400,400:800 \
+  --reference FAPI_001_DISORD --xlim 0:150 \
+  --out results/spectra
 ```
 
 It writes band integrals, in-range band fractions, the spectral centroid, a
@@ -141,7 +148,11 @@ as unknown.
 The second computes the spectrum from a trajectory:
 
 ```bash
-namd-analysis vacf-trajectory   --xdatcar '/path/to/*/XDATCAR_FINAL'   --dt-fs 1 --max-lag 5000 --segment-length 10000   --mass-weight --convention cosine --xlim 0:800   --out results/vacf
+namd-analysis vacf-trajectory \
+  --xdatcar '/path/to/*/XDATCAR_FINAL' \
+  --dt-fs 1 --max-lag 5000 --segment-length 10000 \
+  --mass-weight --convention cosine --xlim 0:800 \
+  --out results/vacf
 ```
 
 Velocities are **Cartesian**: each fractional displacement from XDATCAR is
@@ -183,8 +194,79 @@ are not yet implemented. Rising or flat populations are rejected as decay fits.
 
 Population loss from BCF is not automatically recombination or extraction.
 Inspect its destinations. Net PCBM accumulation is not directional flux or
-collected charge. This release does **not** infer forward/backward rates,
-first-passage yields, or extraction efficiencies from averaged populations.
+collected charge. A single-exponential fit infers no forward/backward rates;
+for those, state a kinetic model explicitly with `kinetics` below, and read
+what that model can and cannot claim.
+
+## Fit a rate model
+
+`kinetics` fits a Markovian master equation over the declared groups,
+
+```
+dP/dt = K P      K_ij = rate j -> i  (i != j)      K_jj = -sum_{i != j} K_ij
+```
+
+so every column of K sums to zero and population is conserved. The initial
+condition is taken from the data, not fitted. You must name the transitions
+you are willing to allow:
+
+```bash
+namd-analysis kinetics \
+  --files '/path/to/interface/SHPROP.*' \
+  --config examples/interface_kinetics.json \
+  --scheme 'CBM->BCF,BCF->CBM,BCF->PCBM,PCBM->VBM' \
+  --bootstrap 200 \
+  --out results/kinetics
+```
+
+`--scheme` takes the presets `dense`, `sequential` and `reversible`, or an
+explicit list as above. The state map must set `complete_population: true`: a
+master equation over a subset of states is not a closed system, and the
+command refuses rather than fitting one.
+
+**Two rates in opposite directions are usually not separately determined.**
+Population curves constrain the *eigenvalues* of K much better than its
+entries, and many different forward/backward pairs reproduce the same P(t).
+Every rate therefore carries a standard error and a degeneracy check: a rate
+whose relative standard error exceeds 1, or which correlates above 0.95 with
+another, is reported with `identified: false` and must not be quoted. The
+eigenvalue timescales are reported separately, because those are what the
+data actually constrains.
+
+The check has teeth. On the package's own synthetic test, a `dense` scheme
+reaches the same R² = 0.9997 as the correct sparse one, but its Jacobian
+condition number is 6e19 and three of its six rates come back unidentified
+with their degeneracy partners named.
+
+`--bootstrap N` resamples whole input files with replacement and refits,
+giving a percentile interval. That measures the spread between the files you
+supplied — which share a trajectory and often correlated initial conditions —
+so it can be narrower than the true uncertainty, and it says nothing about
+whether the Markovian model is right at all.
+
+### The extraction sink
+
+`--sink-group PCBM --sink-rates 0.01:1000:25` adds an absorbing channel that
+drains a group at rate `k_esc` and sweeps it on a log grid:
+
+```
+dP_PCBM/dt|escape = -k_esc P_PCBM      dP_collected/dt = +k_esc P_PCBM
+```
+
+The sink is part of the propagated system, so escaped population leaves the
+dynamics and cannot return or recombine — it is not an integral taken over
+the sink-free solution afterwards.
+
+Be clear about what this is. The transfer rates were fitted to data with no
+extraction in it, and `k_esc` is physics you supply; nothing in the interface
+calculation determines it. The sweep answers a counterfactual — *given these
+transfer rates, how fast would onward transport have to be to outcompete
+return and recombination?* — and the crossover it reports is a requirement on
+the ETL, not a measured extraction efficiency.
+
+Outputs: `report.json`, `rates.csv`, `kinetics_curves.csv`, a data-versus-model
+figure with residuals, and `sink_sweep.csv` plus its figure when a sink is
+requested.
 
 ## Tests and development
 
@@ -192,11 +274,14 @@ first-passage yields, or extraction efficiencies from averaged populations.
 python -m unittest discover -s tests -v
 ```
 
-107 tests cover table and XDATCAR parsing, namelist coercion, audit checks
-including cap detection, conservation, all-column averaging/SEM, malformed and
-mismatched inputs, analytic exponential recovery, long extrapolations, legacy
-failed fits, VACF estimators against the direct double loop, recovery of known
-oscillator frequencies, and CLI report/figure generation. See [validation](docs/validation.md)
+157 tests cover table and XDATCAR parsing (including VASP's negative
+target-volume scale factor), namelist coercion, audit checks including cap
+detection, conservation, all-column averaging/SEM, malformed and mismatched
+inputs, analytic exponential recovery, long extrapolations, legacy failed
+fits, VACF estimators against the direct double loop, recovery of known
+oscillator frequencies, strict-JSON report serialization, recovery of a known
+rate matrix, detection of an unidentifiable over-parameterized scheme, and CLI
+report/figure generation. See [validation](docs/validation.md)
 for the supplied archive audit and [scope](docs/scope.md) for next steps.
 
 ## Scientific software credit

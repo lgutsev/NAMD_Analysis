@@ -18,11 +18,13 @@ ran.
   truncated or renormalized in place.
 - No inference of state character. Group membership is declared by the user
   and validated for consistency, never guessed from energies or couplings.
-- No forward/backward rates, first-passage yields, or extraction
-  efficiencies. Averaged populations do not contain that information; see
-  below.
-- No parameter confidence intervals on fits. Only R², residual statistics and
-  window diagnostics.
+- No first-passage yields or measured extraction efficiencies. Forward and
+  backward rates are available only through an explicitly declared kinetic
+  model (`kinetics`), which is an assumption about the dynamics rather than a
+  measurement of them; see below.
+- No confidence intervals on the single-exponential fit in `fitting.py`. Only
+  R², residual statistics and window diagnostics. The multistate fit in
+  `kinetics.py` does report standard errors and optional bootstrap intervals.
 
 ## Known limits in version 0.1
 
@@ -50,6 +52,30 @@ window, smoothing, trajectory length and atom count are all unknown to the
 reader, which is why raw integrals are not comparable across files unless you
 know those matched.
 
+**A Markovian rate matrix is assumed, not demonstrated.** `kinetics` fits
+constant rates on a fixed graph. Memory effects, inhomogeneity across initial
+conditions, and states whose character changes mid-trajectory all break that
+picture, and none of them announce themselves as a bad fit. A high R² means
+the model *can* reproduce the curves, not that the mechanism is right.
+
+**Individual rates are frequently unidentifiable.** Population curves
+constrain the eigenvalues of K far better than its entries. The module tests
+for this — relative standard error above 1, or correlation above 0.95 with
+another rate — and marks such rates `identified: false`. Those numbers exist
+in the output so the diagnostic can be audited; they are not results. The
+eigenvalue timescales are the quantity to quote.
+
+**The extraction sink is a counterfactual.** `k_esc` is supplied by the user,
+the transfer rates behind it were fitted to data containing no extraction, and
+the sweep answers "how fast would onward transport have to be" rather than
+"how much charge was collected". It is a requirement on the ETL, not a
+measurement of one.
+
+**The bootstrap resamples files, not trajectories.** It captures the spread
+between the SHPROP files supplied, which share a trajectory. On the package's
+own synthetic test the resulting interval is narrower than the true error, and
+it can exclude the true rate when the inputs carry a common bias.
+
 ## Next steps, in order
 
 1. **Reproduce the BCF paper's existing figures.** This is the first concrete
@@ -57,24 +83,23 @@ know those matched.
    figure, and fix the lifetime definitions that the legacy script left
    ambiguous. Until that baseline is in place, nothing further is worth
    building.
-2. **Pathway resolution.** Distinguish perovskite → PCBM, BCF → PCBM,
-   PCBM → BCF and recombination as separate channels rather than reading net
-   populations. This needs hopping histories, not averaged populations; the
-   engine must be made to write them, and whether it can is an open question
-   to settle before designing the analysis.
+2. **Pathway resolution from hopping histories.** The `kinetics` model infers
+   forward and backward rates under an assumed rate matrix. Counting actual
+   perovskite → PCBM, BCF → PCBM, PCBM → BCF and recombination events needs
+   the hop histories themselves, which averaged populations do not contain.
+   The engine must be made to write them; whether it can is the open question
+   to settle before designing that analysis.
 3. **Initial-state comparison.** A perovskite-initialized electron, a
    BCF-initialized one and a PCBM-initialized one answer different
    conditional questions. This package can define and compare the runs; the
    runs themselves go through the launcher.
-4. **Extraction sink as an explicit model extension.** Adding
-   `dP_PCBM/dt|escape = -k_esc P_PCBM` and sweeping `k_esc` asks how fast
-   onward transport must be to outcompete return and recombination. Two
-   conditions: the sink must actually remove population from the subsequent
-   dynamics rather than being integrated afterwards, and `k_esc` must be
-   labelled everywhere as physics supplied by the user, not determined by the
-   interface calculation.
-5. **Confidence intervals on fitted lifetimes**, and a multi-exponential or
-   sequential kinetic model for traces a single exponential cannot describe.
+4. **Automated scheme comparison.** `kinetics` fits whichever scheme you
+   declare and tells you when it is over-parameterized, but it does not yet
+   walk a ladder of candidate schemes and score them against an information
+   criterion. Doing that would turn "which mechanism does the data support"
+   from a manual comparison into a reported result.
+5. **Confidence intervals on the single-exponential fit**, so `populations
+   --fit-group` reports uncertainty the way `kinetics` already does.
 
 ## Relationship to NAMD_Launcher
 
@@ -85,6 +110,7 @@ know those matched.
 | Configure and launch Hefei-NAMD | Analyze populations and competing channels |
 | Audit jobs, preserve provenance | Fit kinetics with explicit windows and diagnostics |
 | Basic output summaries | Compare systems and generate publication figures |
+| — | Fit multistate kinetics and test whether the rates are identifiable |
 
 Inputs are accepted directly, whether or not a launcher produced them. When a
 launcher manifest is present its provenance should be imported alongside this

@@ -56,6 +56,27 @@ def _floats(line: str) -> Optional[List[float]]:
         return None
 
 
+def _apply_scale(cell: np.ndarray, scale: float, path, lineno: int) -> np.ndarray:
+    """Apply the VASP scaling factor on line 2 of a POSCAR-style header.
+
+    A positive value multiplies the lattice vectors.  A **negative** value is
+    VASP's other convention: its magnitude is the target cell volume in cubic
+    Angstrom, and the vectors are scaled uniformly to reach it.  Multiplying by
+    a negative scale instead -- which is what happens if the convention is
+    ignored -- flips the cell and changes its volume by an arbitrary factor,
+    silently rescaling every velocity and spectral intensity derived from it.
+    """
+    if scale > 0:
+        return scale * cell
+    volume = abs(float(np.linalg.det(cell)))
+    if scale == 0.0 or volume == 0.0:
+        raise XdatcarFormatError(
+            f"{path}: line {lineno} gives scale {scale} with cell volume {volume}; "
+            "the lattice is degenerate"
+        )
+    return cell * (abs(scale) / volume) ** (1.0 / 3.0)
+
+
 def _is_header_start(lines: List[str], index: int) -> bool:
     """True when a full 7-line POSCAR-style header begins at ``index``."""
     if index + 6 >= len(lines):
@@ -89,6 +110,7 @@ def read_xdatcar(path) -> Trajectory:
             [[float(v) for v in lines[index + offset].split()] for offset in (2, 3, 4)],
             dtype=float,
         )
+        cell = _apply_scale(cell, scale, path, index + 2)
         species_line = lines[index + 5].split()
         counts_line = [int(float(v)) for v in lines[index + 6].split()]
         if all(_floats(token) is not None for token in species_line):
@@ -96,7 +118,7 @@ def read_xdatcar(path) -> Trajectory:
                 f"{path}: line {index + 6} has no element symbols; VASP 4 style "
                 "XDATCAR without a species line is not supported"
             )
-        return scale * cell, species_line, counts_line
+        return cell, species_line, counts_line
 
     lattice, species, counts = parse_header(0)
     natoms = sum(counts)

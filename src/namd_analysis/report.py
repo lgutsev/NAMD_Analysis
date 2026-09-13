@@ -31,7 +31,9 @@ def prepare_output(path, overwrite: bool = False) -> Path:
 
 def _plain(value: Any) -> Any:
     if isinstance(value, np.generic):
-        return value.item()
+        # Unwrap first, then fall through: a numpy NaN reaching json.dumps
+        # writes a bare NaN token, which strict JSON parsers reject.
+        value = value.item()
     if isinstance(value, np.ndarray):
         return [_plain(item) for item in value.tolist()]
     if isinstance(value, Mapping):
@@ -47,7 +49,11 @@ def _plain(value: Any) -> Any:
 
 def write_json(path, payload: Dict[str, Any]) -> Path:
     path = Path(path)
-    path.write_text(json.dumps(_plain(payload), indent=2) + "\n", encoding="utf-8")
+    # allow_nan=False turns any surviving non-finite value into a loud error
+    # here rather than a NaN token that a strict reader rejects later.
+    path.write_text(
+        json.dumps(_plain(payload), indent=2, allow_nan=False) + "\n", encoding="utf-8"
+    )
     return path
 
 

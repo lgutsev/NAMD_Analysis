@@ -282,14 +282,21 @@ def _window(name: str, size: int) -> np.ndarray:
 
 
 def gaussian_smooth(values: np.ndarray, sigma: float) -> np.ndarray:
-    """Gaussian smoothing in bin units, matching ``gaussian_filter1d`` closely."""
+    """Gaussian smoothing in bin units, matching ``gaussian_filter1d``.
+
+    numpy's ``symmetric`` padding is what scipy calls ``reflect`` (its default);
+    numpy's own ``reflect`` is scipy's ``mirror`` and drops the edge sample.
+    The difference only shows at the ends of the array, which for a spectrum is
+    the lowest-frequency bins -- exactly where the dynamic-disorder metrics are
+    read off.
+    """
     if sigma <= 0:
         return values
     radius = int(4 * sigma + 0.5)
     offsets = np.arange(-radius, radius + 1)
     kernel = np.exp(-0.5 * (offsets / sigma) ** 2)
     kernel /= kernel.sum()
-    padded = np.pad(values, radius, mode="reflect")
+    padded = np.pad(values, radius, mode="symmetric")
     return np.convolve(padded, kernel, mode="valid")
 
 

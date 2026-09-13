@@ -22,6 +22,7 @@ from namd_analysis.vacf import (
     cartesian_velocities,
     compute_vacf,
     compute_vacf_segmented,
+    gaussian_smooth,
     masses_for,
     remove_center_of_mass_motion,
     spectral_density,
@@ -141,6 +142,53 @@ class VacfTests(unittest.TestCase):
         velocities = rng.standard_normal((100, 2, 3))
         with self.assertRaises(VacfError):
             compute_vacf_segmented(velocities, 50, 1.0, segment_length=50)
+
+    def test_full_lag_range_has_no_circular_wraparound(self):
+        # max_lag == nsteps is the worst case: the final lag has a single time
+        # origin, so any wrapped contribution would dominate it.
+        rng = np.random.default_rng(10)
+        for nsteps in (64, 100, 129):
+            velocities = rng.standard_normal((nsteps, 3, 3))
+            got = compute_vacf(velocities, nsteps, 1.0, atom_reduction="sum").values
+            want = np.array(
+                [
+                    np.mean(
+                        np.sum(
+                            velocities[: nsteps - lag] * velocities[lag:], axis=(1, 2)
+                        )
+                    )
+                    for lag in range(nsteps)
+                ]
+            )
+            np.testing.assert_allclose(got, want, rtol=1e-9, atol=1e-12)
+
+
+class SmoothingTests(unittest.TestCase):
+    def test_matches_scipy_including_the_edges(self):
+        # numpy's "symmetric" padding is what scipy calls "reflect" (its
+        # default). Using numpy's own "reflect" drops the edge sample and left
+        # the lowest-frequency bins wrong by several percent.
+        from scipy.ndimage import gaussian_filter1d
+
+        rng = np.random.default_rng(21)
+        values = rng.standard_normal(60)
+        for sigma in (0.5, 1.0, 2.0, 3.0):
+            np.testing.assert_allclose(
+                gaussian_smooth(values, sigma),
+                gaussian_filter1d(values, sigma),
+                atol=1e-12,
+                err_msg=f"sigma={sigma}",
+            )
+
+    def test_zero_sigma_is_a_no_op(self):
+        values = np.arange(10.0)
+        np.testing.assert_array_equal(gaussian_smooth(values, 0.0), values)
+
+    def test_smoothing_preserves_length_and_total(self):
+        values = np.exp(-((np.arange(200) - 100.0) ** 2) / 50.0)
+        smoothed = gaussian_smooth(values, 2.0)
+        self.assertEqual(smoothed.shape, values.shape)
+        self.assertAlmostEqual(smoothed.sum(), values.sum(), places=6)
 
 
 class SpectrumTests(unittest.TestCase):

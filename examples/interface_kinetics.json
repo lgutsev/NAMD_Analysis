@@ -1,0 +1,17 @@
+{
+  "name": "interface_kinetics_CBM_BCF_PCBM_VBM",
+  "notes": "The same six-column basis as interface_six_state.json, but with the groups listed in the order the physics is expected to flow: photoexcited CBM, the BCF state, the three PCBM states, and VBM standing for recombination. Group order matters here - it is what the 'sequential' and 'reversible' scheme presets walk along, and it sets the row/column order of the fitted rate matrix. VERIFY every column against your own band characters before fitting anything; a fixed map cannot follow a state whose spatial character changes during the trajectory, and a wrong assignment produces a confident rate for a transition that never happened.",
+  "time_column": 0,
+  "time_unit": "fs",
+  "population_columns": [2, 3, 4, 5, 6, 7],
+  "groups": {
+    "CBM": [7],
+    "BCF": [3],
+    "PCBM": [4, 5, 6],
+    "VBM": [2]
+  },
+  "complete_population": true,
+  "recombined_group": "VBM",
+  "suggested_scheme": "CBM->BCF,BCF->CBM,BCF->PCBM,PCBM->VBM",
+  "suggested_scheme_notes": "A starting point, not a result. It allows trapping into BCF and escape back out, onward transfer to PCBM, and recombination from PCBM to VBM. Compare it against a scheme that also allows PCBM->BCF back-transfer and against CBM->VBM direct recombination, and keep the simplest scheme that fits: extra edges will raise R^2 slightly while making the individual rates unidentifiable."
+}

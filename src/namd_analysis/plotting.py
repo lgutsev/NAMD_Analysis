@@ -97,6 +97,55 @@ def plot_spectra(
     return _save(figure, stem)
 
 
+def plot_kinetics(fit, stem: Path, title: str = "Kinetic fit") -> List[Path]:
+    """Observed group populations with the fitted master-equation curves, plus residuals."""
+    figure, (axes, lower) = plt.subplots(
+        2, 1, figsize=(7.5, 6.5), sharex=True,
+        gridspec_kw={"height_ratios": [3, 1]},
+    )
+    for index, name in enumerate(fit.groups):
+        line, = axes.plot(
+            fit.time_ns, fit.observed[:, index], linewidth=1.4, label=name
+        )
+        axes.plot(
+            fit.time_ns, fit.model[:, index], linestyle="--", linewidth=1.2,
+            color=line.get_color(),
+        )
+        lower.plot(
+            fit.time_ns, fit.model[:, index] - fit.observed[:, index],
+            linewidth=1.0, color=line.get_color(),
+        )
+    axes.set_ylabel("Population")
+    axes.set_title(f"{title} (solid: data, dashed: model)")
+    axes.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
+    axes.legend(frameon=True)
+    lower.axhline(0.0, color="black", linewidth=0.8)
+    lower.set_xlabel("Time (ns)")
+    lower.set_ylabel("Model - data")
+    lower.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
+    return _save(figure, stem)
+
+
+def plot_sink_sweep(points, stem: Path, title: str = "Extraction sink sweep") -> List[Path]:
+    """Final collected / recombined / remaining population against the escape rate."""
+    rates = [p.k_escape_per_ns for p in points]
+    figure, axes = plt.subplots(figsize=(7.5, 5.0))
+    axes.plot([r for r in rates], [p.collected_final for p in points],
+              marker="o", markersize=3, label="collected", linewidth=1.6)
+    axes.plot(rates, [p.recombined_final for p in points],
+              marker="s", markersize=3, label="recombined", linewidth=1.6)
+    axes.plot(rates, [p.remaining_final for p in points],
+              marker="^", markersize=3, label="still in the interface", linewidth=1.6)
+    if all(r > 0 for r in rates):
+        axes.set_xscale("log")
+    axes.set_xlabel(r"Escape rate $k_{\rm esc}$ (ns$^{-1}$)")
+    axes.set_ylabel("Population at the end of the window")
+    axes.set_title(f"{title} (assumed, not measured)")
+    axes.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+    axes.legend(frameon=True)
+    return _save(figure, stem)
+
+
 def plot_vacf(vacf: VacfResult, stem: Path, title: str = "Velocity autocorrelation") -> List[Path]:
     figure, axes = plt.subplots(figsize=(7.5, 5.0))
     axes.plot(vacf.lags_fs, vacf.normalized, linewidth=1.4, color="tab:blue")
