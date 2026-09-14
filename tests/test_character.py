@@ -37,11 +37,11 @@ def _procar(path, band10, band11, nkpoints=1):
     path.write_text(text)
 
 
-def _shprop(path, start, rows):
+def _shprop(path, start, rows, nsw=4):
     header = (
         "# BMIN = 10\n"
         "# BMAX = 11\n"
-        "# NSW = 4\n"
+        f"# NSW = {nsw}\n"
         f"# NAMDTINI = {start}\n"
         "# POTIM = 1.0\n"
     )
@@ -144,6 +144,33 @@ class CharacterPopulationTests(unittest.TestCase):
         np.testing.assert_allclose(result.mean.sum(axis=1), 1.0)
         self.assertEqual(result.file_alignment[0]["first_projection_frame"], 1)
         self.assertEqual(result.file_alignment[1]["first_projection_frame"], 2)
+
+    def test_manifest_cycle_length_overrides_inconsistent_header_period(self):
+        manifest = self.root / "explicit_cycle.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "frames": [
+                        {"frame": 1, "procar": "procars/p1"},
+                        {"frame": 2, "procar": "procars/p2"},
+                        {"frame": 3, "procar": "procars/p3"},
+                    ],
+                    "cycle_length": 3,
+                }
+            )
+        )
+        odd = self.root / "SHPROP.odd"
+        # Header-derived period would be NSW-1 = 4, but the actual electronic
+        # projection cycle is explicitly declared as 3.
+        _shprop(odd, 3, [[1, 0, 1, 0], [2, 0, 1, 0]], nsw=5)
+        groups = AtomGroupMap.from_json(self.atom_groups_path)
+        result = character_populations([odd], self.map, manifest, groups, "dish-cyclic")
+        np.testing.assert_allclose(result.per_file[0, :, 0], [1.0, 1.0])
+        alignment = result.file_alignment[0]
+        self.assertEqual(alignment["header_cycle_length"], 4)
+        self.assertEqual(alignment["cycle_length_used"], 3)
+        self.assertEqual(alignment["cycle_length_source"], "projection_manifest")
+        self.assertTrue(alignment["header_cycle_mismatch"])
 
     def test_character_swaps_are_reported(self):
         groups = AtomGroupMap.from_json(self.atom_groups_path)
