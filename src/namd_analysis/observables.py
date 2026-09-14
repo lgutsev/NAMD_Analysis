@@ -4,9 +4,11 @@ Three kinds of quantity appear in these reports and they must never be read
 as the same thing:
 
 ``observed_from_SHPROP``
-    Read directly off the reconstructed population history.  It depends on
-    the state map and on the trajectories that were run, and on nothing else.
-    A peak population or a time-integrated population is of this kind.
+    Read directly from reconstructed population histories, optionally combined
+    with explicitly supplied frame-dependent physical-state projections.  It
+    depends on the trajectories, the declared state/projection mapping and no
+    fitted kinetic model.  A peak population, a time-integrated population, or
+    a PROCAR-weighted physical population is of this kind.
 
 ``model_inferred``
     Produced by fitting a kinetic model to those populations.  It is
@@ -30,7 +32,7 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, Mapping
 
-#: Read directly from the population history.
+#: Read from the saved population history without a fitted kinetic model.
 OBSERVED = "observed_from_SHPROP"
 
 #: Obtained by fitting a kinetic model to observed populations.
@@ -86,8 +88,10 @@ def uniform(names: Iterable[str], kind: str) -> Dict[str, str]:
 #: The sentence a report carries alongside its classification table.
 LEGEND = {
     OBSERVED: (
-        "read directly from the reconstructed SHPROP populations; conditional "
-        "on the declared state map and on the trajectories that were run"
+        "read from reconstructed SHPROP populations, optionally combined with "
+        "explicitly supplied frame-dependent physical-state projections; "
+        "conditional on the declared mappings and on the trajectories that were "
+        "run, but not on a fitted kinetic model"
     ),
     MODEL_INFERRED: (
         "obtained by fitting a kinetic model to those populations; conditional "
