@@ -209,7 +209,7 @@ class FitTests(unittest.TestCase):
         noisy = self.observed + 0.002 * rng.standard_normal(self.observed.shape)
         fit = fit_master_equation(self.time, noisy, GROUPS, parse_edges("dense", GROUPS))
         by_name = {r.name: r for r in fit.rates}
-        self.assertTrue(fit.jacobian_rank_deficient)
+        self.assertGreater(fit.jacobian_nullity, 0)
         for estimate in fit.rates:
             for partner in estimate.degenerate_with:
                 self.assertIn(partner, by_name)
