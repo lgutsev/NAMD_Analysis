@@ -1,4 +1,21 @@
-"""EIGTXT / NATXT dimension checks and pair-resolved coupling statistics."""
+"""EIGTXT / NATXT dimension checks and pair-resolved coupling statistics.
+
+The coupling magnitudes are read against ``hbar/dt``, the energy scale set by
+the discrete electronic timestep.  For dt = 1 fs, ``hbar/dt`` is 0.658 eV.  A
+coupling approaching that scale says the finite-difference evaluation of the
+NAC has broken down over one step; it does not say the physical matrix element
+is that large.  The audit reports where a distribution sits relative to that
+scale and never filters, rescales or rejects a sample because of it.
+
+A magnitude that many samples share *exactly* is a separate observation.  It
+did not come out of the dynamics, so some upstream step put it there; this
+module reports it as an engineered ceiling and says so in those words.  What
+that ceiling did to the statistics depends entirely on the upstream rule --
+zeroing a pathological sample and truncating a valid one have opposite
+consequences -- and that rule is not recoverable from the file.  It is
+therefore declared, through :mod:`namd_analysis.nac_policy`, or left
+undeclared and not guessed at.
+"""
 
 from __future__ import annotations
 
@@ -15,11 +32,99 @@ from .io.hefei import (
     read_inicon,
     read_natxt,
 )
-from .units import NAC_UNITS, hbar_over_dt_mev, nac_to_mev
+from .nac_policy import UNDECLARED, NacPolicy
+from .units import NAC_UNITS, hbar_over_dt_ev, hbar_over_dt_mev, nac_to_mev
 
 
 class AuditError(ValueError):
     """Raised when the run directory cannot be audited as given."""
+
+
+#: Fractions of ``hbar/dt`` at which the coupling distribution is counted.
+TIMESTEP_LIMIT_FRACTIONS = (0.8, 0.9)
+
+#: Above this many off-diagonal samples sharing one exact magnitude, that
+#: magnitude is reported as an engineered ceiling.  Two samples is the
+#: antisymmetric pair of a single genuine extremum.
+REPEATED_CEILING_MIN_SAMPLES = 2
+
+#: Default fraction of samples inside the 0.8 * hbar/dt region that is treated
+#: as unremarkable.  Zero: any sample there is named.
+DEFAULT_WARNING_FRACTION = 0.0
+
+
+def _ceiling_policy_detail(
+    policy: Optional[NacPolicy], ceiling_mev: float, dt_fs: float
+) -> str:
+    """The sentence that follows an engineered-ceiling observation."""
+    if policy is None:
+        return (
+            ". No upstream NAC handling policy was declared for this dataset, so "
+            "the rule that produced the ceiling is not known here and is not "
+            "guessed at. This is a reported observation, not a defect"
+        )
+    ceiling_ev = ceiling_mev / 1000.0
+    pieces = []
+    warning = policy.warning_threshold_ev
+    if warning is not None and abs(ceiling_ev - warning) <= 1e-6 * max(warning, 1.0):
+        pieces.append(
+            f"this matches the declared upstream warning threshold of "
+            f"{warning:g} eV"
+        )
+    limit_ev = policy.limit_ev(dt_fs)
+    if limit_ev is not None:
+        pieces.append(
+            f"the declared numerical limit is hbar/dt = {limit_ev:.4g} eV at "
+            f"dt = {dt_fs:g} fs"
+        )
+    if policy.reject_above_ev is not None and policy.action_above_limit:
+        pieces.append(
+            f"the declared policy is to {policy.action_above_limit} couplings "
+            f"above {policy.reject_above_ev:g} eV"
+        )
+    if policy.truncates_valid_values:
+        pieces.append(
+            "that policy replaces a valid coupling with the limit, so every "
+            "mean, RMS and integral built on the affected samples is a lower "
+            "bound"
+        )
+    else:
+        pieces.append(
+            "that policy does not replace valid couplings with the ceiling "
+            "value, so the affected statistics are not described as lower bounds"
+        )
+    return ". " + "; ".join(pieces) if pieces else ""
+
+
+def _ceiling_interpretation(
+    policy: Optional[NacPolicy], ceiling_mev: Optional[float]
+) -> str:
+    if ceiling_mev is None:
+        return "no magnitude is shared by enough samples to indicate a ceiling"
+    base = (
+        f"repeated values at exactly {ceiling_mev / 1000.0:.4g} eV are consistent "
+        "with an intentionally imposed upstream NAC safety ceiling"
+    )
+    if policy is None:
+        return (
+            base
+            + "; no policy was declared for this dataset, so no particular "
+            "upstream rule is attributed and no claim is made about how the "
+            "affected statistics were changed"
+        )
+    if policy.truncates_valid_values:
+        return (
+            base
+            + "; the declared policy truncates valid couplings at the limit, so "
+            "means, RMS values and integrals over the affected samples are "
+            "lower bounds"
+        )
+    return (
+        base
+        + f"; the declared policy is to {policy.action_above_limit or 'leave'} "
+        "couplings beyond the numerical limit rather than to truncate valid "
+        "ones, so the affected statistics are not lower bounds on that account"
+    )
 
 
 @dataclass
@@ -36,6 +141,10 @@ class PairStat:
     max_abs_nac_mev: float
     samples_above_threshold: int
     samples_at_global_max: int
+    samples_at_engineered_ceiling: int
+    max_abs_nac_over_hbar_dt: float
+    fraction_above_0p8_hbar_dt: float
+    fraction_above_0p9_hbar_dt: float
     sample_sum_mev: float
     time_integral_mev_fs: float
 
@@ -53,6 +162,10 @@ class PairStat:
             self.max_abs_nac_mev,
             self.samples_above_threshold,
             self.samples_at_global_max,
+            self.samples_at_engineered_ceiling,
+            self.max_abs_nac_over_hbar_dt,
+            self.fraction_above_0p8_hbar_dt,
+            self.fraction_above_0p9_hbar_dt,
             self.sample_sum_mev,
             self.time_integral_mev_fs,
         ]
@@ -71,6 +184,10 @@ PAIR_HEADER = [
     "max_abs_nac_meV",
     "samples_above_threshold",
     "samples_at_global_max",
+    "samples_at_engineered_ceiling",
+    "max_abs_nac_over_hbar_dt",
+    "fraction_above_0p8_hbar_dt",
+    "fraction_above_0p9_hbar_dt",
     "sample_sum_meV",
     "time_integral_meV_fs",
 ]
@@ -85,6 +202,7 @@ class AuditResult:
     dt_source: str
     nac_unit: str
     threshold_mev: float
+    policy: Optional[NacPolicy] = None
     params: Dict[str, Any] = field(default_factory=dict)
     checks: List[Dict[str, Any]] = field(default_factory=list)
     energies: Dict[str, Any] = field(default_factory=dict)
@@ -102,6 +220,9 @@ class AuditResult:
             "dt_source": self.dt_source,
             "nac_unit": self.nac_unit,
             "threshold_meV": self.threshold_mev,
+            "nac_policy": (
+                self.policy.as_dict() if self.policy is not None else dict(UNDECLARED)
+            ),
             "inp": self.params,
             "checks": self.checks,
             "energies": self.energies,
@@ -121,12 +242,17 @@ def audit_run(
     dt_fs: Optional[float] = None,
     threshold_mev: float = 0.5,
     max_pairs: Optional[int] = None,
+    policy: Optional[NacPolicy] = None,
+    warn_fraction: float = DEFAULT_WARNING_FRACTION,
 ) -> AuditResult:
     """Audit one run directory.
 
     ``nac_unit`` must come from the code that produced NATXT.  It is never
     inferred from the magnitude of the values.  An explicit ``dt_fs``
-    overrides POTIM from ``inp``.
+    overrides POTIM from ``inp``.  ``policy`` is the *declared* upstream NAC
+    handling rule for this dataset; without one, nothing about upstream
+    handling is assumed.  ``warn_fraction`` is the fraction of samples inside
+    the ``0.8 * hbar/dt`` region treated as unremarkable.
     """
     directory = Path(directory)
     if nac_unit not in NAC_UNITS:
@@ -215,30 +341,83 @@ def audit_run(
     gaps = energies[:, :, None] - energies[:, None, :]
     abs_nac = np.abs(nac_mev)
 
-    # A coupling file whose largest magnitude is hit by many samples has been
-    # capped somewhere upstream.  Report it; do not undo it and do not treat
-    # the capped values as measurements of the coupling.
+    # The coupling distribution is read against the energy scale set by the
+    # electronic timestep, hbar/dt.  See the module docstring: approaching that
+    # scale is a breakdown of the finite-difference NAC evaluation, not a
+    # measurement of an enormous physical matrix element.
     offdiag_abs = abs_nac[:, offdiag]
     global_max = float(offdiag_abs.max())
     at_max = int(np.count_nonzero(offdiag_abs == global_max))
-    if at_max > 2:
+    limit_mev = hbar_over_dt_mev(step)
+    limit_ev = hbar_over_dt_ev(step)
+    n_samples = int(offdiag_abs.size)
+
+    above = {
+        fraction: int(np.count_nonzero(offdiag_abs > fraction * limit_mev))
+        for fraction in TIMESTEP_LIMIT_FRACTIONS
+    }
+    fractions = {key: value / n_samples for key, value in above.items()}
+
+    # A magnitude reached exactly by many samples at once did not arise from
+    # the dynamics; some upstream step put it there.  Report that observation
+    # without naming a cause the file cannot support.
+    ceiling_mev = global_max if at_max > REPEATED_CEILING_MIN_SAMPLES else None
+    ceiling_counts = (
+        np.count_nonzero(abs_nac == ceiling_mev, axis=0)
+        if ceiling_mev is not None
+        else np.zeros((nstates, nstates), dtype=int)
+    )
+
+    lead = (
+        f"for dt = {step:g} fs, hbar/dt = {limit_ev:.4g} eV "
+        f"({limit_mev:.6g} meV); the largest off-diagonal |NAC| is "
+        f"{global_max:.6g} meV = {global_max / limit_mev:.4g} x hbar/dt"
+    )
+    if fractions[0.8] > warn_fraction:
         checks.append(
             _check(
-                "nac_clipping",
-                "capped",
-                f"{at_max} of {offdiag_abs.size} off-diagonal samples sit exactly at "
-                f"|NAC| = {global_max:.6g} meV, so the file was capped before it was "
-                "written; the affected samples are a bound, not a value",
+                "nac_timestep_limit",
+                "near_timestep_limit",
+                lead
+                + f". {above[0.8]} of {n_samples} off-diagonal samples "
+                f"({fractions[0.8]:.3%}) exceed 0.8 x hbar/dt and {above[0.9]} "
+                f"({fractions[0.9]:.3%}) exceed 0.9 x hbar/dt. The coupling "
+                "distribution reaches the numerical-safety region associated with "
+                "the finite electronic timestep; couplings approaching this scale "
+                "should be treated as numerically pathological rather than "
+                "interpreted as arbitrarily large physical matrix elements",
             )
         )
     else:
         checks.append(
             _check(
-                "nac_clipping",
+                "nac_timestep_limit",
                 "ok",
-                f"the largest |NAC| ({global_max:.6g} meV) is reached by {at_max} sample(s)",
+                lead
+                + f", so no sample reaches the numerical-safety region "
+                f"(0.8 x hbar/dt = {0.8 * limit_mev:.6g} meV)",
             )
         )
+
+    if ceiling_mev is None:
+        checks.append(
+            _check(
+                "nac_repeated_ceiling",
+                "ok",
+                f"the largest |NAC| ({global_max:.6g} meV) is reached by "
+                f"{at_max} sample(s), which is not a repeated ceiling",
+            )
+        )
+    else:
+        detail = (
+            f"{at_max} of {n_samples} off-diagonal samples sit at exactly "
+            f"|NAC| = {ceiling_mev:.6g} meV ({ceiling_mev / 1000.0:.4g} eV). "
+            "Repeated values at one exact magnitude are consistent with an "
+            "intentionally imposed upstream NAC safety ceiling rather than with "
+            "the dynamics"
+        )
+        detail += _ceiling_policy_detail(policy, ceiling_mev, step)
+        checks.append(_check("nac_repeated_ceiling", "engineered_ceiling", detail))
 
     energy_summary = {
         "unit": "eV",
@@ -257,16 +436,48 @@ def audit_run(
         "mean_abs_offdiagonal": float(abs_nac[:, offdiag].mean()),
         "rms_offdiagonal": float(np.sqrt(np.mean(nac_mev[:, offdiag] ** 2))),
         "max_abs_offdiagonal": float(abs_nac[:, offdiag].max()),
-        "hbar_over_dt_meV": hbar_over_dt_mev(step),
-        "hbar_over_dt_note": (
-            "diagnostic scale only; it is not a bound on the coupling and no "
-            "sample is filtered by it"
-        ),
         "threshold_meV": threshold_mev,
         "samples_above_threshold": int(np.count_nonzero(offdiag_abs > threshold_mev)),
-        "offdiagonal_samples": int(offdiag_abs.size),
+        "offdiagonal_samples": n_samples,
+        "timestep_limit": {
+            "dt_fs": step,
+            "hbar_over_dt_eV": limit_ev,
+            "hbar_over_dt_meV": limit_mev,
+            "global_max_nac_meV": global_max,
+            "global_max_over_hbar_dt": global_max / limit_mev,
+            "samples_above_0p8_hbar_dt": above[0.8],
+            "fraction_above_0p8_hbar_dt": fractions[0.8],
+            "samples_above_0p9_hbar_dt": above[0.9],
+            "fraction_above_0p9_hbar_dt": fractions[0.9],
+            "warning_fraction": warn_fraction,
+            "meaning": (
+                "hbar/dt is the energy scale set by the discrete electronic "
+                "timestep. A coupling approaching it means the finite-difference "
+                "evaluation of the NAC has broken down over one step, not that "
+                "the physical matrix element is that large. It is a diagnostic "
+                "scale: no sample is filtered, rescaled or rejected here"
+            ),
+        },
+        "engineered_ceiling": {
+            "detected": ceiling_mev is not None,
+            "ceiling_meV": ceiling_mev,
+            "ceiling_eV": None if ceiling_mev is None else ceiling_mev / 1000.0,
+            "samples_at_ceiling": at_max if ceiling_mev is not None else 0,
+            "fraction_at_ceiling": (
+                at_max / n_samples if ceiling_mev is not None else 0.0
+            ),
+            "ceiling_over_hbar_dt": (
+                None if ceiling_mev is None else ceiling_mev / limit_mev
+            ),
+            "statistics_are_a_lower_bound": bool(
+                ceiling_mev is not None
+                and policy is not None
+                and policy.truncates_valid_values
+            ),
+            "interpretation": _ceiling_interpretation(policy, ceiling_mev),
+        },
         "samples_at_global_max": at_max,
-        "global_max_is_a_cap": at_max > 2,
+        "nac_policy": policy.as_dict() if policy is not None else dict(UNDECLARED),
     }
 
     pairs: List[PairStat] = []
@@ -275,6 +486,7 @@ def audit_run(
             series = nac_mev[:, i, j]
             gap = gaps[:, i, j]
             abs_series = np.abs(series)
+            n_pair = int(abs_series.size)
             pairs.append(
                 PairStat(
                     i=i,
@@ -289,6 +501,14 @@ def audit_run(
                     max_abs_nac_mev=float(np.max(abs_series)),
                     samples_above_threshold=int(np.count_nonzero(abs_series > threshold_mev)),
                     samples_at_global_max=int(np.count_nonzero(abs_series == global_max)),
+                    samples_at_engineered_ceiling=int(ceiling_counts[i, j]),
+                    max_abs_nac_over_hbar_dt=float(np.max(abs_series) / limit_mev),
+                    fraction_above_0p8_hbar_dt=float(
+                        np.count_nonzero(abs_series > 0.8 * limit_mev) / n_pair
+                    ),
+                    fraction_above_0p9_hbar_dt=float(
+                        np.count_nonzero(abs_series > 0.9 * limit_mev) / n_pair
+                    ),
                     sample_sum_mev=float(np.sum(abs_series)),
                     time_integral_mev_fs=float(np.sum(abs_series) * step),
                 )
@@ -352,6 +572,7 @@ def audit_run(
         dt_source=source,
         nac_unit=nac_unit,
         threshold_mev=threshold_mev,
+        policy=policy,
         params=run.params,
         checks=checks,
         energies=energy_summary,

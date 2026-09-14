@@ -22,21 +22,65 @@ NAC matrices are antisymmetric with a zero diagonal to machine precision, and
 `INICON` matches `NSAMPLE`. Three findings are worth carrying into any paper
 that uses these runs.
 
-**The coupling files are capped at 0.6 eV.** In all three `FAPI_001_BCF_PCBM`
-runs the largest off-diagonal `|NAC|` is exactly 600.000 meV, and that value
-is attained by many samples at once — 328, 282 and 234 of the 59 970
-off-diagonal samples in runs A, B and C. A maximum reached by hundreds of
-samples is a cap applied before the file was written, not a measurement.
+**The coupling files carry an engineered 0.6 eV ceiling.** In all three
+`FAPI_001_BCF_PCBM` runs the largest off-diagonal `|NAC|` is exactly
+600.000 meV, and that value is attained by many samples at once — 328, 282 and
+234 of the 59 970 off-diagonal samples in runs A, B and C. A maximum reached
+by hundreds of samples did not come out of the dynamics; some upstream step
+put it there.
 
-It is concentrated where it matters most. In run A the strongest pair, states
-2-3 (bands 978-979), sits at the cap in 154 of 1999 frames, so its 95th
-percentile is also exactly 600 meV: more than 5% of that pair's history is a
-bound rather than a value. Its mean `|NAC|` of 187 meV is therefore a lower
-bound, and any rate estimated from it inherits that. The older two-state runs
-show no capping (`FAPI_001_DISORD`: mean `|NAC|` 0.105 meV, max 1.556 meV),
-so this is specific to the interface campaign. The audit reports the cap; it
-does not undo it, and `pairs.csv` carries a `samples_at_global_max` column so
-the affected pairs can be identified.
+*Version 0.2 described this as accidental clipping and called every statistic
+built on those samples a lower bound. That reading was wrong, and 0.3 corrects
+it.* The ceiling was engineered on purpose, following guidance from
+Dr. Oleg Prezhdo, and the physics behind it is the discrete electronic
+timestep. For a step `dt`, a finite-difference NAC cannot meaningfully exceed
+
+```
+E_dt = ħ / dt       ħ = 0.6582119569 eV fs       dt = 1 fs  ->  ħ/dt = 0.658 eV
+```
+
+In the workflow that produced these couplings, ~0.6 eV was treated as a
+warning/safety region and values beyond roughly 0.66 eV were considered
+numerical errors of the finite-time-step evaluation and zeroed by the later
+filtering logic. Archived files may carry the 0.6 eV ceiling depending on the
+exact preprocessing version. The correct statement is therefore:
+
+> The coupling distribution reaches the numerical-safety region associated
+> with the finite electronic timestep. For dt = 1 fs, ħ/dt ≈ 0.658 eV.
+> Couplings approaching this scale should be treated as numerically
+> pathological rather than interpreted as arbitrarily large physical matrix
+> elements. Repeated values at exactly 0.600 eV are consistent with an
+> intentionally imposed upstream NAC safety ceiling.
+
+Note that 600 meV is 0.912 × ħ/dt: the ceiling sits inside the numerical
+warning region, which is exactly where it was placed.
+
+Whether that ceiling makes the affected statistics lower bounds depends on the
+upstream rule, and the rule is not recoverable from a NATXT file. A policy
+that **zeroes or rejects** a pathological sample does not truncate otherwise
+valid values, so it does not turn the surviving means into lower bounds; only
+a policy that **clips** valid couplings at the limit does. Version 0.3 refuses
+to make that claim unless a declared `nac_policy` says `action_above_limit`
+is `clip`. The declared campaign policy
+(`examples/nac_policy_bcf_campaign.json`) says `zero`, so the audit reports
+the ceiling and its extent and makes no lower-bound claim.
+
+The ceiling is concentrated where it matters most. In run A the strongest
+pair, states 2-3 (bands 978-979), sits at it in 154 of 1999 frames, so its
+95th percentile is also exactly 600 meV: more than 5% of that pair's history
+is at the numerical-safety value. That fraction belongs beside the pair's mean
+`|NAC|` of 187 meV whenever that mean is quoted — not because the mean is a
+bound, but because a coupling that spends 5% of its history in the numerical
+warning region is telling you the finite-difference evaluation was straining,
+and a rate estimated from it inherits that. The older two-state runs show no
+ceiling and nothing near ħ/dt (`FAPI_001_DISORD`: mean `|NAC|` 0.105 meV, max
+1.556 meV = 0.0024 × ħ/dt), so this is specific to the interface campaign.
+
+The audit reports all of it and undoes none of it. `pairs.csv` carries
+`samples_at_global_max`, `samples_at_engineered_ceiling`,
+`max_abs_nac_over_hbar_dt`, `fraction_above_0p8_hbar_dt` and
+`fraction_above_0p9_hbar_dt` so the affected pairs can be identified and
+placed on the ħ/dt scale.
 
 **`NSW` in `inp` disagrees with the coupling files.** Every run declares
 `NSW = 1998` while `EIGTXT` and `NATXT` hold 1999 frames. CA-NAC normally
@@ -299,25 +343,120 @@ One thing checked and found correct: the FFT autocorrelation is free of
 circular wraparound even at `max_lag == nsteps`, where the final lag has a
 single time origin. It agrees with the direct double loop to 1e-14.
 
+## Version 0.3: corrections and new checks
+
+### The NAC ceiling is no longer described as accidental clipping
+
+See the corrected reading above. `nac_clipping` is gone; in its place the
+audit emits `nac_timestep_limit`, which ties the coupling distribution to
+`ħ/dt` and reports `hbar_over_dt_eV`, `hbar_over_dt_meV`,
+`global_max_nac_meV`, `global_max_over_hbar_dt` and the counts and fractions
+above 0.8 and 0.9 × ħ/dt, and `nac_repeated_ceiling`, which reports a
+magnitude shared exactly by many samples as an engineered upstream ceiling.
+The lower-bound claim is now made only when a declared `nac_policy` says the
+upstream rule *clipped* otherwise valid couplings, and never on a magnitude
+alone. Tests assert the exact absence of the old wording.
+
+### Canonical master SHPROP
+
+`average-shprop` converts original `SHPROP.*` histories into a reproducible
+`SHPROP.master`. Validated against synthetic sets with known answers: every
+population column averaged (never one column with the rest copied), the time
+grid verified identical and copied bit-for-bit, mismatched grids and lengths
+rejected rather than interpolated or truncated, duplicate paths and
+byte-identical files rejected, a single non-conserving input blocking the
+master rather than being buried in the mean, an identical extra column copied
+and a differing one refused without an explicit policy, and the written file
+read back through the ordinary reader and re-checked before the command
+returns. Every source file is fingerprinted with path, size, SHA-256,
+modification time, row and column counts and its own conservation
+diagnostics.
+
+### Identifiability: two new checks and a dimensionality correction
+
+*Null space.* An SVD of the rate Jacobian now names the combinations of rates
+that leave the residuals unchanged, and each rate carries
+`null_space_participation` = ‖V_null[j, :]‖. This catches a case the earlier
+checks missed. Fitting `A->B, B->C, C->B` to data containing no C→B flow at
+all, v0.2 returned `C->B = 1.7e-8 ns⁻¹` with `identified: true` and a standard
+error of essentially zero: the column is small but not exactly zero, so the
+blind-column test did not fire, and `pinv` assigns **zero** variance to a
+direction it discards rather than infinite. The rank tolerance is taken at
+`√ε` rather than `ε` precisely because the covariance inverts `JᵀJ`, whose
+condition number is the square of J's; directions below that are the ones
+`pinv` will discard. That rate is now refused, with infinite variance and a
+stated reason, while the two rates the data does determine stay identified and
+exact.
+
+*Optimizer bounds.* `least_squares(...).active_mask` is read, and a rate
+stopping on a bound is reported (`at_optimizer_bound`, `optimizer_bound`) and
+refused — even when its linearized standard error looks perfectly ordinary,
+because a boundary solution is not an interior optimum. `bound_decades` makes
+the allowed range explicit so the case is testable deterministically rather
+than by accident.
+
+*Bootstrap.* Intervals are now taken over the resamples in which the rate was
+actually identified, and reported at all only when the rate was identified in
+at least 80% of the successful resamples. On the dense scheme — which
+converges on essentially every resample while determining almost nothing —
+v0.2 produced narrow percentile bands for rates the data never fixed; those
+are now suppressed with the counts and the reason recorded, and the raw
+optimizer percentiles kept separately as diagnostics.
+
+*Statistical dimensionality.* The residual variance behind the covariance is
+scaled by `(n_times − 1) × (G − 1)` when the populations are complete and
+conserved, instead of `n_times × G`. The conservation direction was never free
+to disagree with the model, and the conditioned `P(0)` row is not an
+observation about the rates. This is the same subspace `compare-schemes`
+already scored through Helmert contrasts; a regression test confirms the sum
+of squares is identical in the redundant and contrast representations to
+machine precision, so only the count changes. The standard errors get wider,
+which is the right direction — they remain a local linearization and a lower
+bound, and the bootstrap is still preferable when more than one file exists.
+
+### What is still not done
+
+The original `SHPROP.*` histories for the BCF/PCBM campaign are still not
+present in the supplied archives. The reanalysis those files would support —
+canonical master, reproduced population curves, the historical
+single-exponential fit kept for comparison only, a corrected single-decay fit,
+physically justified state groups, sparse candidate schemes ranked by the
+descriptive information criteria, identifiability throughout, and eigenvalue
+timescales reported separately from individual rates — is what `average-shprop`
+plus the existing commands are built to run. **No campaign population figure
+or lifetime has been reproduced by this release.** Everything above is
+validated against synthetic inputs with known answers.
+
 ## Running the checks
 
 ```bash
 python -m unittest discover -s tests -v
+ruff check src tests
 ```
 
-165 tests, covering table and XDATCAR parsing (including the negative scale
-factor on triclinic cells), namelist coercion, the audit checks including cap
-detection, population conservation and averaging, fit recovery and rejection,
+CI runs the suite on Python 3.9, 3.11 and 3.13, plus a Ruff pass over `src`
+and `tests`.
+
+247 tests, covering table and XDATCAR parsing (including the negative scale
+factor on triclinic cells), namelist coercion, the audit checks including the
+timestep-limit and engineered-ceiling diagnostics, canonical master SHPROP
+generation, population conservation and averaging, fit recovery and rejection,
 VACF estimators against the direct double loop, smoothing against scipy where
 the pad radius exceeds the array, spectrum conventions, strict-JSON report
 serialization, recovery of a known rate matrix, refusal to identify a rate the
 residuals are blind to, detection of an unidentifiable over-parameterized
 scheme, bootstrap weighting and convergence diagnostics, sink conservation,
-and end-to-end CLI runs that assert on the written reports and figures.
+and end-to-end CLI runs that assert on the written reports and figures. The
+0.3 additions are the timestep-limit and engineered-ceiling diagnostics,
+declared NAC policies, canonical master SHPROP generation and provenance, SVD
+null-space participation from hand-built Jacobians through to per-rate flags,
+optimizer-bound refusal, identifiability-aware bootstrap suppression, and
+conservation-subspace observation counts agreeing between `kinetics` and
+`compare-schemes`.
 
 ## Version 0.2 plan completion
 
-The full suite passes 178 tests (165 existing plus 13 new). New known-answer
+The full suite passed 178 tests at 0.2 (165 existing plus 13 new). New known-answer
 checks cover conditional graph ranking, conservation-subspace observation
 counts, run comparisons on exact common times, rejection of duplicate graphs
 and inconsistent populations, reproducible whole-file exponential bootstrap,

@@ -93,13 +93,17 @@ class ExtensionTests(unittest.TestCase):
     def test_comparison_rejects_no_common_grid(self):
         m = self.make_manifest()
         for p in (self.root/"slow").glob("SHPROP.*"):
-            data=np.loadtxt(p); data[:,0] += .1; np.savetxt(p,data)
+            data=np.loadtxt(p)
+            data[:,0] += .1
+            np.savetxt(p,data)
         with self.assertRaisesRegex(ValueError,"exact shared"):
             compare_runs(m)
 
     def test_group_sem_preserves_anticorrelation(self):
         paths=write_shprop_set(self.root/"sem", n_files=2, nsteps=20)
-        data=np.loadtxt(paths[1]); data[:,2:]=data[:,2:][:,::-1]; np.savetxt(paths[1],data)
+        data=np.loadtxt(paths[1])
+        data[:,2:]=data[:,2:][:,::-1]
+        np.savetxt(paths[1],data)
         mapping=StateMap.from_dict(dict(self.mapping,groups={"all":[2,3]},recombined_group=None))
         series=group_series(load_population_set(paths,mapping),mapping)
         np.testing.assert_allclose(series[0].sem,0,atol=1e-15)
@@ -112,15 +116,19 @@ class ExtensionTests(unittest.TestCase):
                 StateMap.from_dict(dict(self.mapping,time_column=bad))
         paths=write_shprop_set(self.root/"bad",n_files=2,nsteps=20)
         for sign,p in zip([1,-1],paths):
-            data=np.loadtxt(p); data[:,2:]=.5+sign*.01; np.savetxt(p,data)
+            data=np.loadtxt(p)
+            data[:,2:]=.5+sign*.01
+            np.savetxt(p,data)
         with self.assertRaisesRegex(InputMismatchError,"every file"):
             load_population_set(paths,StateMap.from_dict(self.mapping))
 
     def test_launcher_provenance_imports_but_does_not_trust_paths(self):
-        raw=self.root/"SHPROP.1";raw.write_text("0 0 1\n")
+        raw=self.root/"SHPROP.1"
+        raw.write_text("0 0 1\n")
         manifest=self.root/"hefei_manifest.json"
         manifest.write_text(json.dumps({"artifact":"/does/not/exist", "engine":"dish"}))
-        invalid=self.root/"nac_manifest.json"; invalid.write_text("not json")
+        invalid=self.root/"nac_manifest.json"
+        invalid.write_text("not json")
         records=launcher_manifests([raw])
         self.assertEqual(len(records),2)
         self.assertEqual(records[0]["status"],"imported")
@@ -138,7 +146,8 @@ class ExtensionTests(unittest.TestCase):
 
     def test_cli_scheme_comparison_records_config_and_rank(self):
         paths=write_shprop_set(self.root/"kinetics",n_files=2,nsteps=30)
-        schemes=self.root/"schemes.json";schemes.write_text(json.dumps({"decay":"CBM->VBM","backward":"VBM->CBM"}))
+        schemes=self.root/"schemes.json"
+        schemes.write_text(json.dumps({"decay":"CBM->VBM","backward":"VBM->CBM"}))
         self.assertEqual(main(["compare-schemes","--files",str(paths[0]),"--config",str(self.map_path),"--schemes",str(schemes),"--out",str(self.root/"ranking")]),0)
         report=json.loads((self.root/"ranking/report.json").read_text())
         self.assertEqual(report["lowest_score_candidate"],"decay")

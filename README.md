@@ -6,12 +6,15 @@ fit windows, and input provenance. This package is independent of
 and runs calculations; this package reads their output. Existing manually
 prepared campaigns work too.
 
-Version 0.2 provides:
+Version 0.3 provides:
 
 - Campaign inventory and identification of failed historical single-exponential fits.
 - EIGTXT/NATXT dimension and run-setting audits, energy-gap statistics, and
-  pair-resolved NAC statistics with explicit units, including detection of
-  coupling files that were capped before they were written.
+  pair-resolved NAC statistics with explicit units, read against `ħ/dt`, the
+  energy scale set by the electronic timestep, with an optional declared
+  upstream NAC handling policy.
+- Canonical master SHPROP generation from the original `SHPROP.*` histories,
+  with every source file fingerprinted and every population column averaged.
 - SHPROP population averaging across **all mapped groups**, matched time-grid
   checks, population conservation checks, and between-file standard errors.
 - Group populations, net changes, finite-window population integrals, and
@@ -20,8 +23,11 @@ Version 0.2 provides:
   residual diagnostics, poor-fit flags, extrapolation warnings, and optional
   whole-file bootstrap intervals.
 - Multistate kinetic fitting: a Markovian rate matrix over the declared
-  groups, uncertainty on every rate, an identifiability test that refuses to
-  quote rates the data did not determine, and an optional extraction sink.
+  groups, uncertainty on every rate, and four independent identifiability
+  tests — blind Jacobian columns, relative standard error, pairwise
+  correlation, and SVD null-space participation — plus refusal of any rate
+  that stopped on an optimizer bound, identifiability-aware bootstrap
+  intervals, and an optional extraction sink.
 - VACF and phonon spectral density: descriptive comparison of existing
   `spectral_density_*.txt` files, and computation from an XDATCAR with
   Cartesian minimum-image velocities, optional mass weighting, segment
@@ -76,15 +82,118 @@ explicit `--dt-fs` overrides POTIM.
 
 `pairs.csv` distinguishes mean gap, RMS gap, mean absolute NAC, RMS NAC,
 95th percentile, samples above threshold, samples sitting at the file's global
-maximum, the sample sum in meV, and the rectangular time integral in meV fs.
-Samples are not independent burst events.
+maximum, the fractions of samples above 0.8 and 0.9 × ħ/dt, the pair maximum
+as a multiple of ħ/dt, the sample sum in meV, and the rectangular time
+integral in meV fs. Samples are not independent burst events.
 
-The audit also reports whether the coupling file was **capped** before it was
-written. When many off-diagonal samples share the file's largest magnitude
-exactly, that magnitude is a bound rather than a measurement, and every mean,
-RMS and integral built on those samples is a lower bound. The cap is reported,
-never undone. The archived `FAPI_001_BCF_PCBM` runs are capped at 0.6 eV; see
-[validation](docs/validation.md).
+### Couplings and the electronic timestep
+
+The audit reads the coupling distribution against **ħ/dt**, the energy scale
+set by the discrete electronic timestep:
+
+```
+E_dt = ħ / dt       ħ = 0.6582119569 eV fs       dt = 1 fs  ->  ħ/dt = 0.658 eV
+```
+
+Couplings approaching this scale should be treated as **numerically
+pathological** — the finite-difference evaluation of the NAC has broken down
+over one step — rather than interpreted as arbitrarily large physical matrix
+elements. The `nac_timestep_limit` check reports ħ/dt in eV and meV, the
+global maximum as a multiple of it, and how many samples sit above 0.8 and
+0.9 × ħ/dt. Nothing is filtered, rescaled or rejected on account of it.
+
+A magnitude shared **exactly** by many samples is a separate observation,
+reported by `nac_repeated_ceiling`. It did not come out of the dynamics, so
+some upstream step put it there: repeated values at 0.600 eV are consistent
+with an intentionally imposed upstream NAC safety ceiling. This is not
+described as accidental clipping or as a defect.
+
+What that ceiling did to the statistics depends on the upstream rule, and the
+rule is not recoverable from a NATXT file. Declare it if you know it:
+
+```bash
+inamd-analysis audit /path/to/FAPI_001_BCF_PCBM_A \
+  --nac-unit eV --dt-fs 1 \
+  --nac-policy examples/nac_policy_bcf_campaign.json \
+  --out results/pcbm_A_audit
+```
+
+```json
+{
+  "nac_policy": {
+    "warning_threshold_eV": 0.6,
+    "numerical_limit": "hbar_over_dt",
+    "reject_above_eV": 0.66,
+    "action_above_limit": "zero"
+  }
+}
+```
+
+Only `action_above_limit: "clip"` — truncation of otherwise valid couplings —
+makes the affected means, RMS values and integrals lower bounds, and only then
+does the report say so. A policy that zeroes or rejects a pathological sample
+does not, and the audit will not claim otherwise. Without a declared policy
+nothing about upstream handling is assumed for the dataset. The policy is a
+statement about the workflow that produced the file; it is fingerprinted into
+the report but never verified against the numbers.
+
+## Build a canonical master SHPROP
+
+Before analyzing anything, turn the original `SHPROP.*` histories into one
+canonical mean file:
+
+```bash
+inamd-analysis average-shprop \
+  --files '/path/to/run/SHPROP.*' \
+  --config examples/two_state.json \
+  --out results/master_shprop
+```
+
+Outputs are `SHPROP.master` (a plain numeric table, readable by every other
+command here), `report.json`, `population_sem.csv` and `input_files.csv`.
+
+For every declared population column,
+
+```
+Pbar_i(t) = (1/N) sum_r P_i,r(t)
+```
+
+with **equal weight per file**. Every population column is averaged, not one
+of them. This matters: the historical `SHPROP_avg.sh` averaged a single
+selected column and copied the rest from whichever file came first, so the
+averaged column and the copied ones describe different things and nothing in
+the file says which is which. `test_every_population_column_is_averaged` fails
+if this package ever reproduces that.
+
+Nothing else is touched:
+
+- **Time column.** Verified identical in every input and copied through
+  exactly. Differing grids are an error — no interpolation, no truncation to a
+  common length, no time shifting.
+- **Other columns** (the running energy in column 1, for instance). Copied
+  only when every input agrees on them exactly. When they disagree, master
+  generation **refuses**, because the first file's copy is not the average of
+  anything and the mean of a per-trajectory quantity need not be meaningful.
+  Pass `--average-extra-columns` to state explicitly that averaging them is
+  what you want, or declare the column in the state map.
+- **Conservation.** With `complete_population: true`, the populations are
+  checked in every input file *independently* as well as in the result, so
+  averaging cannot bury a bad file inside a healthy-looking mean.
+- **Duplicates.** The same path twice, or two byte-identical files, is an
+  error: equal weighting makes a repeat a silent reweighting.
+
+`report.json` records, for every source file, its path, size, SHA-256,
+modification time, row and column counts and its own conservation
+diagnostics, plus the exact averaging rule, the state-map fingerprint, the
+software version, the CLI arguments and any launcher manifests found beside
+the inputs.
+
+Between-file SEM goes to `population_sem.csv`, not into `SHPROP.master`, which
+stays SHPROP-compatible. Grouped SEM sums states into the physical group
+*within each file first* and then takes the spread across files, preserving
+within-group covariance; it is never reconstructed from marginal state SEMs.
+As everywhere else here, that spread measures the supplied files, which
+commonly share one MD trajectory — it is not an independent ensemble error bar.
 
 ## Analyze populations
 
@@ -231,12 +340,53 @@ command refuses rather than fitting one.
 **Two rates in opposite directions are usually not separately determined.**
 Population curves constrain the *eigenvalues* of K much better than its
 entries, and many different forward/backward pairs reproduce the same P(t).
-Every rate therefore carries a standard error and a degeneracy check: a rate
-whose relative standard error exceeds 0.1, or which correlates above 0.95 with
-another, or which the residuals are simply blind to, is reported with
-`identified: false` and a stated reason, and must not be quoted. The
-eigenvalue timescales are reported separately, because those are what the
-data actually constrains.
+Every rate therefore carries a standard error and **five independent checks**,
+any one of which sets `identified: false` with a stated reason. A rate so
+marked must not be quoted; the eigenvalue timescales are reported separately,
+because those are what the data actually constrains.
+
+| Check | Fires when |
+| --- | --- |
+| Blind column | the residuals do not move at all when the rate moves |
+| Relative standard error | it exceeds 0.1, and that error is itself a lower bound |
+| Pairwise correlation | it exceeds 0.95 with another rate |
+| **Null-space participation** | the rate's parameter axis lies in the numerical null space of the Jacobian |
+| **Optimizer bound** | the optimum sits on the edge of the allowed range |
+
+The last two are new in 0.3 and neither replaces the others.
+
+*Null space.* A rate can be unidentifiable even when its own Jacobian column
+is far from zero and it correlates strongly with no single other rate: it is
+enough that some **combination** containing it leaves the residuals unchanged.
+An SVD of the rate Jacobian names those combinations. The report carries
+`jacobian_rank`, `jacobian_nullity`, `null_space_tolerance` and, per rate,
+`null_space_participation` = ‖V_null[j, :]‖ — zero when the axis is entirely
+inside the range space, one when the data is blind to that rate alone, about
+0.71 for each member of a two-way degeneracy. Above 0.1 the rate is refused.
+
+The rank tolerance is `σ_max · max(shape) · √ε`, not `· ε`. The covariance is
+obtained by inverting `JᵀJ`, whose condition number is the *square* of J's, so
+the effective precision of that solve is `√ε`. Directions below that are ones
+the pseudo-inverse discards — and a pseudo-inverse reports **zero** variance
+for a discarded direction rather than infinite, which would stamp exactly the
+least determined rates `identified: true`. Such rates now get infinite
+variance, so no rate is ever printed as `0 ± 0`.
+
+*Optimizer bound.* Rates are fitted as bounded log-rates. A result sitting on
+a bound is not an interior optimum, and the local quadratic picture behind the
+covariance does not describe it — however small the resulting standard error
+looks. `at_optimizer_bound` and `optimizer_bound` (`lower`/`upper`/`null`)
+report it, and the rate is refused.
+
+*Statistical dimensionality.* With a complete conserved population basis only
+`G-1` of the `G` residual coordinates per time are free — the same subspace
+`compare-schemes` scores through Helmert contrasts, which are orthonormal, so
+the sum of squares is unchanged and only the count differs. The conditioned
+`P(0)` row is excluded too, since the model is started there rather than
+fitting it. The residual variance is scaled by that count, so the redundant
+conservation direction is no longer counted as independent information. The
+result is wider, more honest standard errors — which remain a local
+approximation and a lower bound, not an exact interval.
 
 The check has teeth. On the package's own synthetic test, a `dense` scheme —
 every ordered pair of groups, so twelve transitions on these four groups —
@@ -257,6 +407,25 @@ interval. That measures the spread between the files you
 supplied — which share a trajectory and often correlated initial conditions —
 so it can be narrower than the true uncertainty, and it says nothing about
 whether the Markovian model is right at all.
+
+**The interval is identifiability-aware.** An optimizer that converges is not
+the same thing as data that determines a rate: keeping the value from every
+converged resample produces a tight-looking percentile band around a number
+the data never fixed. For each rate the bootstrap therefore records how many
+resamples converged, in how many of those the rate was `identified`, and the
+resulting fraction. An interval is reported only when the bootstrap as a whole
+produced enough successful fits **and** the rate was identified in at least
+80% of them, and it is then taken over the identified resamples alone.
+Otherwise `bootstrap_ci_per_ns` is `null` and the report says
+
+> Bootstrap interval suppressed because the transition was identifiable in
+> only X% of successful resamples.
+
+The dropped draws are counted, never silently discarded; the raw percentiles
+over every converged draw are kept in the diagnostics for inspection and are
+explicitly not an inferential interval. `rates.csv` carries
+`bootstrap_ci_status` and `bootstrap_identified_fraction` alongside the
+interval bounds.
 
 ### The extraction sink
 
@@ -282,21 +451,52 @@ Outputs: `report.json`, `rates.csv`, `kinetics_curves.csv`, a data-versus-model
 figure with residuals, and `sink_sweep.csv` plus its figure when a sink is
 requested.
 
+## Known limits carried forward
+
+**Averaged populations are not hopping histories.** Directional event counts —
+perovskite→BCF, BCF→perovskite, BCF→PCBM, PCBM→BCF — cannot be reconstructed
+from averaged SHPROP data, and this package does not attempt to. A flat
+acceptor population can hide forward and backward exchange in equal measure.
+Fitted kinetic rates are model parameters, not counted events. Event-resolved
+analysis needs per-trajectory logging from the engine; see
+[hopping histories](docs/hopping_histories.md) for exactly what would have to
+be recorded.
+
+**A fixed state map cannot follow a state whose character changes.** Grouping
+is by table column, so when adiabatic states exchange spatial character near a
+crossing the column keeps its label and the group population becomes a
+mixture. Nothing here detects that. State character is **not** inferred from
+column number, energy or coupling magnitude, and no nearest-energy band
+tracking is attempted as a substitute — those would produce a confident wrong
+answer rather than an honest limit. Supporting a frame-dependent physical
+state map would need real upstream input (orbital projections, spatial
+localization, fragment charge analysis or wavefunction overlap tracking); that
+input does not exist in these archives and the format for it is not designed
+yet.
+
 ## Tests and development
 
 ```bash
 python -m unittest discover -s tests -v
+ruff check src tests
 ```
 
-165 tests cover table and XDATCAR parsing (including VASP's negative
-target-volume scale factor), namelist coercion, audit checks including cap
-detection, conservation, all-column averaging/SEM, malformed and mismatched
+Tested on Python 3.9, 3.11 and 3.13 in CI; those are the versions the
+`requires-python = ">=3.9"` declaration is actually backed by.
+
+247 tests cover table and XDATCAR parsing (including VASP's negative
+target-volume scale factor), namelist coercion, audit checks including the
+timestep-limit and engineered-ceiling diagnostics and declared NAC policies,
+canonical master SHPROP generation with full source provenance, conservation,
+all-column averaging/SEM, malformed and mismatched
 inputs, analytic exponential recovery, long extrapolations, legacy failed
 fits, VACF estimators against the direct double loop, recovery of known
 oscillator frequencies, strict-JSON report serialization, recovery of a known
 rate matrix, refusal to identify a rate the residuals cannot see, detection of
-an unidentifiable over-parameterized scheme, bootstrap weighting, and CLI
-report/figure generation. See [validation](docs/validation.md)
+an unidentifiable over-parameterized scheme, SVD null-space
+participation, refusal of rates pinned to an optimizer bound,
+identifiability-aware bootstrap suppression, conservation-subspace
+observation counts, bootstrap weighting, and CLI report/figure generation. See [validation](docs/validation.md)
 for the supplied archive audit and [scope](docs/scope.md) for next steps.
 
 ## Scientific software credit

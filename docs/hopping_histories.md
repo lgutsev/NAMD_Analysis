@@ -29,3 +29,27 @@ first-arrival fractions be computed with a correct denominator. First arrival
 at PCBM remains distinct from collection at an electrode. Implementing that
 instrumentation in this separate analyzer would violate its analysis-only
 boundary; no changes to scientific engine code are included here.
+
+## What is deliberately absent
+
+No event-history reconstruction is fabricated from averaged populations, at
+any version. Concretely, none of
+
+- perovskite -> BCF
+- BCF -> perovskite
+- BCF -> PCBM
+- PCBM -> BCF
+
+can be counted from `SHPROP.master` or from any average this package produces,
+including the canonical one `average-shprop` writes: averaging populations
+destroys exactly the per-trajectory record such a count needs. A rate that
+`kinetics` fits is a parameter of a declared Markovian model conditional on
+the declared groups, the declared graph, constant-rate assumptions and the fit
+window. It is not a hop count, and the reports say so in those terms.
+
+The full record a real event analysis requires is listed above: trajectory ID,
+seed, starting MD frame, initial active state, transition time, source and
+destination state, accepted versus frustrated hop, termination/censoring
+state, and the trajectories that made no accepted hop at all. Without every
+one of those the denominator is wrong. That belongs in engine/launcher
+integration, not here.

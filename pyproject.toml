@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "namd-analysis"
-version = "0.2.0"
+version = "0.3.0"
 description = "Analysis of saved CA-NAC / Hefei-NAMD output and VACF phonon spectra"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -24,3 +24,28 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 namd_analysis = ["py.typed"]
+
+[tool.ruff]
+# Match the floor the package declares, so a 3.10+ idiom is caught here rather
+# than on a user's 3.9.
+target-version = "py39"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Deliberately light. This is not a typing or style refactor: the rules here
+# catch real mistakes (undefined names, unused imports, bare excepts, mutable
+# default arguments) and nothing that would churn the scientific code.
+select = ["E4", "E7", "E9", "F", "B"]
+ignore = [
+    # A long sentence in a report string is more readable unwrapped than split.
+    "E501",
+    # `zip(..., strict=)` is 3.10+; this package supports 3.9.
+    "B905",
+]
+# `UP` is deliberately absent. With `from __future__ import annotations` the
+# typing.List/Optional spellings are correct on every supported version, and
+# rewriting them would be a repo-wide typing refactor rather than a fix.
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]

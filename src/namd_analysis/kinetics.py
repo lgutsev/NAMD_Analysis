@@ -55,9 +55,124 @@ ASYMPTOTIC_UNDERSTATEMENT_FACTOR = 6.0
 #: combination, not each one.
 DEGENERATE_CORRELATION = 0.95
 
+#: Fraction of a parameter axis that may lie in the numerical null space of the
+#: Jacobian before the rate is refused.  ``||V_null[j, :]||`` is 0 when the axis
+#: is entirely inside the range space and 1 when the residuals are completely
+#: blind to it; a rate sharing a two-way degeneracy sits near 1/sqrt(2).  At
+#: 0.1, a hundredth of the axis lying in a blind direction is already enough to
+#: refuse the rate, which is the intended asymmetry: the cost of wrongly
+#: refusing a rate is a missing number, the cost of wrongly admitting one is a
+#: number that is not a measurement.
+NULL_PARTICIPATION_LIMIT = 0.1
+
+#: Fraction of *successful* bootstrap resamples in which a rate must be
+#: identified before a percentile interval for it is reported.  A rate the data
+#: determines in a fifth of the draws has no interval worth quoting: the
+#: percentiles would be taken over draws in which the optimizer's stopping
+#: point, not the data, set the value.
+BOOTSTRAP_MIN_IDENTIFIED_FRACTION = 0.8
+
+#: Decades either side of ``1/window`` within which a rate may be fitted.  Wide
+#: on purpose: the bound exists to keep the optimizer in a representable range,
+#: not to express a physical prior, and a rate that reaches it is reported as
+#: unidentified rather than quietly clamped.
+RATE_BOUND_DECADES = 9.0
+
 
 class KineticsError(ValueError):
     """Raised when a kinetic model cannot be built or fitted as requested."""
+
+
+def null_space_analysis(jacobian: np.ndarray) -> Dict[str, Any]:
+    """Rank, nullity and per-parameter null-space participation of a Jacobian.
+
+    A rate can be unidentifiable even when its own Jacobian column is far from
+    zero and it correlates with no single other rate: it is enough that some
+    *combination* containing it leaves the residuals unchanged.  The right null
+    space of J names exactly those combinations.
+
+    The numerical rank uses ``sigma_max * max(shape) * sqrt(eps)``, which scales
+    with the matrix rather than assuming an absolute scale for the residuals.
+    The square root is not a fudge.  The covariance this feeds is obtained by
+    inverting ``J^T J``, whose condition number is the *square* of J's, so the
+    effective precision of that solve is ``sqrt(eps)``, not ``eps``.  A
+    direction below this tolerance is one the pseudo-inverse will discard --
+    and a pseudo-inverse reports **zero** variance for a discarded direction,
+    not infinite, which would stamp exactly the least determined rates
+    ``identified: true``.  Taking the rank at the precision of the computation
+    that consumes it is what closes that gap.
+
+    Returns ``rank``, ``nullity``, ``tolerance``, ``singular_values`` and
+    ``participation``, where ``participation[j] = ||V_null[j, :]||`` lies in
+    [0, 1]: zero when the axis of rate ``j`` is entirely inside the range
+    space, one when the data is blind to that rate alone.
+    """
+    jacobian = np.asarray(jacobian, dtype=float)
+    if jacobian.ndim != 2:
+        raise KineticsError("the Jacobian must be two-dimensional")
+    n_parameters = jacobian.shape[1]
+    if n_parameters == 0:
+        return {
+            "rank": 0,
+            "nullity": 0,
+            "tolerance": 0.0,
+            "singular_values": [],
+            "participation": np.zeros(0),
+        }
+
+    _, singular, vt = np.linalg.svd(jacobian, full_matrices=True)
+    largest = float(singular.max()) if singular.size else 0.0
+    tolerance = largest * max(jacobian.shape) * np.sqrt(np.finfo(float).eps)
+    rank = int(np.count_nonzero(singular > tolerance))
+    # ``vt`` is (n_parameters, n_parameters) with full_matrices=True, so the
+    # rows past the rank span the right null space even when the Jacobian has
+    # fewer rows than columns.
+    null_basis = vt[rank:].T
+    participation = (
+        np.linalg.norm(null_basis, axis=1)
+        if null_basis.size
+        else np.zeros(n_parameters)
+    )
+    return {
+        "rank": rank,
+        "nullity": int(n_parameters - rank),
+        "tolerance": float(tolerance),
+        "singular_values": [float(value) for value in singular],
+        "participation": np.clip(participation, 0.0, 1.0),
+    }
+
+
+def independent_residual_count(
+    observed: np.ndarray, atol: float = 1.0e-5
+) -> Tuple[int, int, bool]:
+    """How many residual coordinates actually carry independent information.
+
+    Two redundancies have to be taken out before a residual variance is scaled
+    by a degrees-of-freedom count, or the covariance is divided by observations
+    that were never free to disagree with the model.
+
+    *Conservation.*  The rate matrix conserves total population by
+    construction, so when the observed populations also sum to a constant the
+    residual vector at every time is orthogonal to the all-ones direction.
+    Only ``G - 1`` of its ``G`` coordinates are free.  This is the same
+    ``G - 1`` subspace that ``compare_schemes`` scores through Helmert
+    contrasts; because those contrasts are orthonormal, the sum of squares is
+    identical in either representation and only the *count* changes.
+
+    *The conditioned initial row.*  ``P(0)`` is read from the first sample and
+    the model is started there, so the first row's residual is identically
+    zero.  It is not an observation about the rates.
+
+    Returns ``(n_independent, per_time, conserved)``.
+    """
+    observed = np.asarray(observed, dtype=float)
+    n_points, n_groups = observed.shape
+    totals = observed.sum(axis=1)
+    conserved = bool(
+        n_groups > 1 and np.allclose(totals, totals[0], atol=atol, rtol=0.0)
+    )
+    per_time = n_groups - 1 if conserved else n_groups
+    return max((n_points - 1) * per_time, 1), per_time, conserved
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +286,17 @@ class RateEstimate:
     degenerate_with: List[str] = field(default_factory=list)
     unidentified_reason: Optional[str] = None
     bootstrap_ci_per_ns: Optional[List[float]] = None
+    #: ``||V_null[j, :]||``: how much of this rate's parameter axis lies in the
+    #: numerical null space of the Jacobian.
+    null_space_participation: Optional[float] = None
+    null_space_identifiable: Optional[bool] = None
+    #: The optimizer stopped on the edge of the allowed log-rate range.
+    at_optimizer_bound: bool = False
+    optimizer_bound: Optional[str] = None
+    bootstrap_successes: Optional[int] = None
+    bootstrap_identified: Optional[int] = None
+    bootstrap_identified_fraction: Optional[float] = None
+    bootstrap_ci_status: Optional[str] = None
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -184,7 +310,15 @@ class RateEstimate:
             "identified": self.identified,
             "degenerate_with": self.degenerate_with,
             "unidentified_reason": self.unidentified_reason,
+            "null_space_participation": self.null_space_participation,
+            "null_space_identifiable": self.null_space_identifiable,
+            "at_optimizer_bound": self.at_optimizer_bound,
+            "optimizer_bound": self.optimizer_bound,
             "bootstrap_ci_per_ns": self.bootstrap_ci_per_ns,
+            "bootstrap_successes": self.bootstrap_successes,
+            "bootstrap_identified": self.bootstrap_identified,
+            "bootstrap_identified_fraction": self.bootstrap_identified_fraction,
+            "bootstrap_ci_status": self.bootstrap_ci_status,
         }
 
 
@@ -209,6 +343,12 @@ class KineticFit:
     correlation: Optional[np.ndarray]
     n_points: int
     n_parameters: int
+    jacobian_rank: int = 0
+    jacobian_nullity: int = 0
+    null_space_tolerance: float = 0.0
+    n_independent_residuals: int = 0
+    independent_coordinates_per_time: int = 0
+    population_conserved: bool = False
     warnings: List[str] = field(default_factory=list)
 
     @property
@@ -252,10 +392,50 @@ class KineticFit:
                     "bootstrap interval when more than one input file is available."
                 ),
             },
+            "residual_dimension": {
+                "n_time_points": self.n_points,
+                "n_groups": len(self.groups),
+                "population_conservation_detected": self.population_conserved,
+                "independent_coordinates_per_time": self.independent_coordinates_per_time,
+                "n_independent_residuals": self.n_independent_residuals,
+                "conditioned_initial_row_excluded": True,
+                "note": (
+                    "the rates are estimated in the natural population "
+                    "coordinates, but the residual variance is scaled by the "
+                    "coordinates that were free to disagree with the model. When "
+                    "the populations are complete and conserved, the residual is "
+                    "orthogonal to the all-ones direction, so only G-1 of the G "
+                    "coordinates per time are independent -- the same subspace "
+                    "compare-schemes scores through Helmert contrasts, which are "
+                    "orthonormal and therefore leave the sum of squares "
+                    "unchanged. The first row is excluded because P(0) is "
+                    "conditioned on, not fitted"
+                ),
+            },
             "identifiability": {
                 "jacobian_condition_number": self.condition_number,
                 "jacobian_is_singular": not np.isfinite(self.condition_number),
                 "jacobian_rank_deficient": self.rank_deficient,
+                "jacobian_rank": self.jacobian_rank,
+                "jacobian_nullity": self.jacobian_nullity,
+                "null_space_tolerance": self.null_space_tolerance,
+                "null_space_participation": {
+                    r.name: r.null_space_participation for r in self.rates
+                },
+                "null_space_identifiable": {
+                    r.name: r.null_space_identifiable for r in self.rates
+                },
+                "null_space_participation_limit": NULL_PARTICIPATION_LIMIT,
+                "null_space_note": (
+                    "||V_null[j, :]|| from an SVD of the rate Jacobian: a rate can "
+                    "join a blind combination even when its own column is far from "
+                    "zero and it correlates strongly with no single other rate. "
+                    "This supplements the blind-column, relative-standard-error "
+                    "and correlation checks; it does not replace them"
+                ),
+                "rates_at_an_optimizer_bound": [
+                    r.name for r in self.rates if r.at_optimizer_bound
+                ],
                 "initial_condition_uncertainty_propagated": True,
                 "unidentified_threshold_relative_stderr": UNIDENTIFIED_REL_SE,
                 "degenerate_threshold_correlation": DEGENERATE_CORRELATION,
@@ -330,11 +510,18 @@ def fit_master_equation(
     weights: Optional[np.ndarray] = None,
     n_starts: int = 5,
     max_nfev: int = 4000,
+    bound_decades: float = RATE_BOUND_DECADES,
 ) -> KineticFit:
     """Fit K by least squares in log-rate space, with multistart.
 
     Rates are fitted as ``log k`` so they stay positive and so the standard
     error in log space is directly the relative standard error on the rate.
+
+    ``bound_decades`` sets how far either side of ``1/window`` a rate may run.
+    A rate that stops *on* that edge is reported at the bound and refused: a
+    boundary solution is not an interior optimum, and the local quadratic
+    picture behind the covariance does not describe it.  Narrow the range only
+    to express a real physical prior, never to make a rate look determined.
     """
     time_ns = np.asarray(time_ns, dtype=float)
     observed = np.asarray(observed, dtype=float)
@@ -375,7 +562,10 @@ def fit_master_equation(
                 start,
                 args=(time_ns, observed, edges, weight_array),
                 method="trf",
-                bounds=(np.log(1e-9 * base), np.log(1e9 * base)),
+                bounds=(
+                    np.log(base) - bound_decades * np.log(10.0),
+                    np.log(base) + bound_decades * np.log(10.0),
+                ),
                 max_nfev=max_nfev,
             )
         except (ValueError, np.linalg.LinAlgError):
@@ -392,7 +582,7 @@ def fit_master_equation(
     residual = model - observed
     n_points = observed.shape[0]
     n_parameters = len(edges)
-    dof = max(n_points * len(groups) - n_parameters, 1)
+    n_independent, per_time, conserved = independent_residual_count(observed)
 
     ss_res = float(np.sum(residual**2))
     ss_tot = float(np.sum((observed - observed.mean(axis=0)) ** 2))
@@ -431,18 +621,41 @@ def fit_master_equation(
     rank_deficient = False
     n_rates = len(edges)
     blind = np.zeros(n_rates, dtype=bool)
+    participation = np.zeros(n_rates, dtype=float)
+    jacobian_rank = n_rates
+    jacobian_nullity = 0
+    null_tolerance = 0.0
+
+    # least_squares reports which parameters stopped on the edge of the allowed
+    # log-rate range.  A boundary solution is not an interior optimum, so the
+    # local quadratic picture behind the covariance does not apply to it.
+    active = np.asarray(getattr(best, "active_mask", np.zeros(n_rates)), dtype=int)
+    if active.shape != (n_rates,):
+        active = np.zeros(n_rates, dtype=int)
 
     try:
         column_norm = np.linalg.norm(jacobian, axis=0)
         scale = float(column_norm.max()) if column_norm.size else 0.0
         blind = column_norm <= max(scale, 1.0) * 1e-10
 
+        null_space = null_space_analysis(jacobian)
+        participation = np.asarray(null_space["participation"], dtype=float)
+        jacobian_rank = int(null_space["rank"])
+        jacobian_nullity = int(null_space["nullity"])
+        null_tolerance = float(null_space["tolerance"])
+
         nuisance = _initial_condition_jacobian(
             best.x, time_ns, observed, edges, weight_array
         )
         augmented = np.hstack([jacobian, nuisance]) if nuisance.size else jacobian
         n_nuisance = augmented.shape[1] - n_rates
-        dof_augmented = max(n_points * len(groups) - n_rates - n_nuisance, 1)
+        # Scale the residual variance by the coordinates that were free to
+        # disagree with the model, not by every number in the table.  With
+        # complete conserved populations the redundant conservation direction
+        # carries no information, and the conditioned P(0) row carries none
+        # either; counting them inflates the divisor and understates the
+        # standard errors, which are already a lower bound.
+        dof_augmented = max(n_independent - n_rates - n_nuisance, 1)
 
         gram = jacobian.T @ jacobian
         condition = float(np.linalg.cond(gram))
@@ -456,15 +669,26 @@ def fit_master_equation(
             2.0 * best.cost / dof_augmented
         )
         covariance = np.array(covariance_augmented[:n_rates, :n_rates], dtype=float)
-        variance = np.diag(covariance).astype(float).copy()
-        variance[blind] = np.inf
-        variance[variance < 0] = np.inf
-        stderr_log = np.sqrt(variance)
+        raw_variance = np.diag(covariance).astype(float).copy()
+        # The correlation is taken from the covariance as computed, before any
+        # variance is overridden below. Overriding first would send the whole
+        # row to NaN and silently disable the pairwise degeneracy check on
+        # exactly the rates that need every check applied to them.
         with np.errstate(divide="ignore", invalid="ignore"):
-            outer = np.outer(stderr_log, stderr_log)
+            raw_sigma = np.sqrt(np.where(raw_variance > 0, raw_variance, np.nan))
+            outer = np.outer(raw_sigma, raw_sigma)
             correlation = np.where(
                 np.isfinite(outer) & (outer > 0), covariance / outer, np.nan
             )
+
+        # A direction the pseudo-inverse discarded comes back with ZERO
+        # variance, not infinite. Blind columns and null-space participants are
+        # both such directions, so both get infinite variance here rather than a
+        # "0 +- 0" that reads like a precise measurement.
+        variance = raw_variance.copy()
+        variance[blind | (participation > NULL_PARTICIPATION_LIMIT)] = np.inf
+        variance[variance < 0] = np.inf
+        stderr_log = np.sqrt(variance)
     except (np.linalg.LinAlgError, ValueError):
         stderr_log = None
         correlation = None
@@ -475,6 +699,11 @@ def fit_master_equation(
     for index, (source, target) in enumerate(edges):
         rel_se = float(stderr_log[index]) if stderr_log is not None else None
         reason: Optional[str] = None
+        share = float(participation[index])
+        null_ok = share <= NULL_PARTICIPATION_LIMIT
+        bound = (
+            "lower" if active[index] < 0 else "upper" if active[index] > 0 else None
+        )
         if rel_se is None:
             identified = False
             reason = "the covariance of the fit could not be computed"
@@ -485,6 +714,21 @@ def fit_master_equation(
                 "carries no information about it; the reported value is where the "
                 "optimizer happened to stop"
             )
+        elif bound is not None:
+            identified = False
+            reason = (
+                f"the optimum lies on the allowed parameter boundary ({bound} "
+                "bound), so the data do not determine an interior estimate for "
+                "this rate and a local uncertainty around it does not apply"
+            )
+        elif not null_ok:
+            identified = False
+            reason = (
+                "this rate participates in a null-space direction of the "
+                f"Jacobian (participation {share:.3g} exceeds "
+                f"{NULL_PARTICIPATION_LIMIT}); changes in a combination "
+                "containing this rate leave the fitted populations unchanged"
+            )
         elif rel_se > UNIDENTIFIED_REL_SE:
             identified = False
             reason = (
@@ -493,6 +737,11 @@ def fit_master_equation(
             )
         else:
             identified = True
+
+        # The checks above are independent, and each can fire on its own. Keep
+        # every one of them applied even when an earlier one already answered.
+        if bound is not None or not null_ok:
+            identified = False
 
         partners: List[str] = []
         if correlation is not None:
@@ -528,6 +777,10 @@ def fit_master_equation(
                 identified=identified,
                 degenerate_with=partners,
                 unidentified_reason=reason,
+                null_space_participation=share,
+                null_space_identifiable=null_ok,
+                at_optimizer_bound=bound is not None,
+                optimizer_bound=bound,
             )
         )
 
@@ -551,6 +804,25 @@ def fit_master_equation(
             "the Jacobian is rank deficient: at least one direction in rate space "
             "leaves the populations unchanged, so that combination of rates is not "
             "determined by this data at any precision"
+        )
+    if jacobian_nullity:
+        involved = [
+            names[index]
+            for index in range(n_rates)
+            if participation[index] > NULL_PARTICIPATION_LIMIT
+        ]
+        warnings.append(
+            f"the rate Jacobian has rank {jacobian_rank} with nullity "
+            f"{jacobian_nullity}: {jacobian_nullity} combination(s) of rates leave "
+            "the fitted populations unchanged"
+            + (f", involving {', '.join(involved)}" if involved else "")
+        )
+    bounded = [e.name for e in estimates if e.at_optimizer_bound]
+    if bounded:
+        warnings.append(
+            "these rates stopped on the edge of the allowed range, which is not an "
+            "interior optimum and carries no ordinary local uncertainty: "
+            + ", ".join(bounded)
         )
     if np.isfinite(r2_total) and r2_total < 0.95:
         warnings.append(
@@ -596,6 +868,12 @@ def fit_master_equation(
         correlation=correlation,
         n_points=int(n_points),
         n_parameters=int(n_parameters),
+        jacobian_rank=int(jacobian_rank),
+        jacobian_nullity=int(jacobian_nullity),
+        null_space_tolerance=float(null_tolerance),
+        n_independent_residuals=int(n_independent),
+        independent_coordinates_per_time=int(per_time),
+        population_conserved=bool(conserved),
         warnings=warnings,
     )
 
@@ -610,6 +888,7 @@ def bootstrap_rates(
     percentiles: Tuple[float, float] = (2.5, 97.5),
     weights: Optional[np.ndarray] = None,
     min_successes: int = 20,
+    min_identified_fraction: float = BOOTSTRAP_MIN_IDENTIFIED_FRACTION,
 ) -> Tuple[Dict[str, List[float]], Dict[str, Any]]:
     """Resample whole input files with replacement and refit.
 
@@ -621,9 +900,19 @@ def bootstrap_rates(
     the interval is centred on a different estimator than the rate it is
     printed beside and can exclude it.
 
+    An interval is reported for a rate only when the bootstrap produced enough
+    successful fits *and* that rate was identified in at least
+    ``min_identified_fraction`` of them; it is then taken over the identified
+    resamples alone.  An optimizer that converges is not the same thing as data
+    that determines a rate: keeping the value from every converged draw
+    produces a tight-looking percentile band around a number the data never
+    fixed.  Suppressed intervals are reported as suppressed, with the counts,
+    rather than silently omitted.
+
     Returns ``(intervals, diagnostics)``; the diagnostics record how many
-    resamples actually converged, so an interval built from a subset is never
-    reported as if every draw had succeeded.
+    resamples converged and, per rate, how many of those identified it, so an
+    interval built from a subset is never reported as if every draw had
+    succeeded.
     """
     per_file_groups = np.asarray(per_file_groups, dtype=float)
     if per_file_groups.ndim != 3:
@@ -642,7 +931,11 @@ def bootstrap_rates(
 
     rng = np.random.default_rng(seed)
     names = edge_names(edges, groups)
+    # Every converged draw, and separately the draws in which each rate was
+    # actually identified. A percentile taken over draws where the optimizer's
+    # stopping point set the value is narrow for the wrong reason.
     draws: Dict[str, List[float]] = {name: [] for name in names}
+    identified_draws: Dict[str, List[float]] = {name: [] for name in names}
     successes = 0
     failures = 0
     for _ in range(n_resamples):
@@ -658,21 +951,76 @@ def bootstrap_rates(
         successes += 1
         for estimate in fit.rates:
             draws[estimate.name].append(estimate.rate_per_ns)
+            if estimate.identified:
+                identified_draws[estimate.name].append(estimate.rate_per_ns)
 
     intervals: Dict[str, List[float]] = {}
-    for name, values in draws.items():
-        if len(values) >= min_successes:
-            low, high = np.percentile(values, percentiles)
+    per_rate: Dict[str, Dict[str, Any]] = {}
+    enough_globally = successes >= min_successes
+    for name in names:
+        n_identified = len(identified_draws[name])
+        fraction = n_identified / successes if successes else 0.0
+        record: Dict[str, Any] = {
+            "bootstrap_successes": successes,
+            "bootstrap_identified": n_identified,
+            "bootstrap_identified_fraction": fraction,
+            "raw_distribution_n": len(draws[name]),
+        }
+        if draws[name]:
+            # Kept for diagnostics only; this is never the headline interval.
+            low, high = np.percentile(draws[name], percentiles)
+            record["raw_optimizer_percentiles_per_ns"] = [float(low), float(high)]
+        if not enough_globally:
+            record["bootstrap_ci_status"] = "insufficient_successful_resamples"
+            record["note"] = (
+                f"only {successes} resamples converged, fewer than the "
+                f"{min_successes} required, so no interval is reported"
+            )
+        elif n_identified == 0:
+            record["bootstrap_ci_status"] = "suppressed_never_identified"
+            record["note"] = (
+                f"this rate was identified in none of the {successes} successful "
+                "resamples, so there is no draw an interval could be taken over"
+            )
+        elif fraction < min_identified_fraction:
+            record["bootstrap_ci_status"] = "suppressed_low_identified_fraction"
+            record["note"] = (
+                f"bootstrap interval suppressed because the transition was "
+                f"identifiable in only {fraction:.0%} of the {successes} "
+                f"successful resamples, below the required "
+                f"{min_identified_fraction:.0%}. The {successes - n_identified} "
+                "unidentified draws are counted here rather than quietly dropped "
+                "into a narrow-looking percentile"
+            )
+        else:
+            low, high = np.percentile(identified_draws[name], percentiles)
             intervals[name] = [float(low), float(high)]
+            record["bootstrap_ci_status"] = "reported"
+            record["interval_per_ns"] = intervals[name]
+            record["note"] = (
+                f"percentiles over the {n_identified} resamples in which this rate "
+                "was identified"
+            )
+        per_rate[name] = record
 
     diagnostics: Dict[str, Any] = {
         "requested_resamples": int(n_resamples),
         "converged_resamples": int(successes),
         "failed_resamples": int(failures),
         "minimum_for_an_interval": int(min_successes),
+        "minimum_identified_fraction": float(min_identified_fraction),
         "percentiles": list(percentiles),
         "weighted": weights is not None,
         "intervals_reported": len(intervals),
+        "per_rate": per_rate,
+        "policy": (
+            "an interval is reported only when the bootstrap as a whole produced "
+            "enough successful fits AND the rate was identified in at least "
+            f"{min_identified_fraction:.0%} of them; the interval is then taken "
+            "over the identified resamples alone. The raw optimizer percentiles "
+            "over every converged draw are kept for diagnostics and are not an "
+            "inferential interval"
+        ),
     }
     if failures:
         diagnostics["note"] = (
@@ -680,11 +1028,19 @@ def bootstrap_rates(
             "dropped; the interval is computed from the ones that did, which may "
             "not be a representative subset"
         )
-    if not intervals:
+    if not enough_globally:
         diagnostics["note"] = (
             f"only {successes} resamples converged, fewer than the {min_successes} "
             "required, so no interval is reported"
         )
+    suppressed = [
+        name
+        for name, record in per_rate.items()
+        if record["bootstrap_ci_status"]
+        in ("suppressed_low_identified_fraction", "suppressed_never_identified")
+    ]
+    if suppressed:
+        diagnostics["suppressed_for_low_identified_fraction"] = suppressed
     return intervals, diagnostics
 
 
@@ -795,6 +1151,12 @@ RATE_HEADER = [
     "identified",
     "unidentified_reason",
     "degenerate_with",
+    "null_space_participation",
+    "null_space_identifiable",
+    "at_optimizer_bound",
+    "optimizer_bound",
+    "bootstrap_ci_status",
+    "bootstrap_identified_fraction",
     "bootstrap_low_per_ns",
     "bootstrap_high_per_ns",
 ]
@@ -814,6 +1176,12 @@ def rate_rows(fit: KineticFit) -> List[List[Any]]:
                 estimate.identified,
                 estimate.unidentified_reason or "",
                 ";".join(estimate.degenerate_with),
+                estimate.null_space_participation,
+                estimate.null_space_identifiable,
+                estimate.at_optimizer_bound,
+                estimate.optimizer_bound or "",
+                estimate.bootstrap_ci_status or "",
+                estimate.bootstrap_identified_fraction,
                 ci[0],
                 ci[1],
             ]

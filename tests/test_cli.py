@@ -87,8 +87,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 2)
 
     def test_populations_with_fit_writes_every_output(self):
-        paths = write_shprop_set(self.root / "run", n_files=3, nsteps=200,
-                                 dt_fs=1000.0, tau_fs=50000.0)
+        write_shprop_set(self.root / "run", n_files=3, nsteps=200,
+                         dt_fs=1000.0, tau_fs=50000.0)
         out = self.root / "out_pop"
         code = main(
             [

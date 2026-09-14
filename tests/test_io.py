@@ -124,8 +124,9 @@ class RunDirectoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "NATXT"
             np.savetxt(path, np.zeros((5, 9)))
-            with self.assertRaises(Exception):
+            with self.assertRaises(TableFormatError) as ctx:
                 read_natxt(path, nstates=4)
+        self.assertIn("EIGTXT has 4", str(ctx.exception))
 
 
 class XdatcarTests(unittest.TestCase):

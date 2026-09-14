@@ -443,7 +443,47 @@ class KineticsCliTests(unittest.TestCase):
         report = self._report(out)
         self.assertTrue(report["bootstrap"]["intervals_per_ns"])
         header = (out / "rates.csv").read_text(encoding="utf-8").splitlines()[0]
-        self.assertIn("bootstrap_low_per_ns", header)
+        for field in ("bootstrap_low_per_ns", "bootstrap_ci_status",
+                      "bootstrap_identified_fraction", "null_space_participation",
+                      "at_optimizer_bound"):
+            self.assertIn(field, header)
+        per_rate = report["bootstrap"]["diagnostics"]["per_rate"]
+        self.assertEqual(len(per_rate), 4)
+        for record in per_rate.values():
+            self.assertIn("bootstrap_ci_status", record)
+            self.assertIn("bootstrap_identified_fraction", record)
+        for rate in report["fit"]["rates"]:
+            self.assertIsNotNone(rate["bootstrap_ci_status"])
+            self.assertEqual(rate["bootstrap_successes"], 20)
+        identifiability = report["fit"]["identifiability"]
+        self.assertEqual(identifiability["jacobian_nullity"], 0)
+        self.assertEqual(identifiability["rates_at_an_optimizer_bound"], [])
+        self.assertTrue(
+            report["fit"]["residual_dimension"]["population_conservation_detected"]
+        )
+
+    def test_a_dense_scheme_suppresses_its_bootstrap_intervals(self):
+        out = self.root / "out_dense_boot"
+        code = main(
+            [
+                "kinetics",
+                "--files", str(self.root / "run" / "SHPROP.*"),
+                "--config", str(self.config),
+                "--scheme", "dense",
+                "--bootstrap", "20",
+                "--out", str(out),
+            ]
+        )
+        self.assertEqual(code, 0)
+        report = self._report(out)
+        diagnostics = report["bootstrap"]["diagnostics"]
+        suppressed = diagnostics.get("suppressed_for_low_identified_fraction", [])
+        self.assertTrue(suppressed, diagnostics["per_rate"])
+        for name in suppressed:
+            self.assertNotIn(name, report["bootstrap"]["intervals_per_ns"])
+            rate = next(r for r in report["fit"]["rates"] if r["transition"] == name)
+            self.assertIsNone(rate["bootstrap_ci_per_ns"])
+            self.assertIn("suppressed", rate["bootstrap_ci_status"])
 
     def test_partial_state_map_is_refused(self):
         partial = self.root / "partial.json"

@@ -65,6 +65,11 @@ def compare_schemes(time, observed, groups, schemes, *, criterion="aicc", n_star
         row["delta"] = row["score"] - valid[0]["score"]
     return {"criterion": criterion, "candidates": rows,
             "lowest_score_candidate": valid[0]["candidate"] if valid else None,
+            "observation_count": {"n": n, "formula": "(n_times - 1) * (n_groups - 1)",
+                                  "matches_kinetics_covariance_dimension": True,
+                                  "note": ("the same conservation subspace the kinetic covariance "
+                                           "is scaled by; Helmert contrasts are orthonormal, so the "
+                                           "sum of squares is unchanged and only the count differs")},
             "interpretation_limits": [
                 "Descriptive conditional-Gaussian scores; equal unweighted observations for every candidate.",
                 "G-1 orthonormal contrasts avoid double counting population conservation; P0 row excluded.",

@@ -54,7 +54,14 @@ The score assumes a shared unknown isotropic Gaussian residual variance in
 the G−1 dimensional population-conservation subspace. An orthonormal Helmert
 contrast removes the redundant population direction. With the initial
 population conditioned on, its exactly matched row is omitted: n=(T−1)(G−1)
-and k=number of fitted rates + one variance parameter. The common additive
+and k=number of fitted rates + one variance parameter.
+
+Since 0.3 the kinetic covariance scales its residual variance by the **same**
+count, so the two commands no longer disagree about how much independent
+information the data holds. Because Helmert contrasts are orthonormal the sum
+of squares is identical in the redundant and contrast representations; only
+the count differs, and `report.json` carries it as `observation_count` in
+`compare-schemes` and `residual_dimension` in `kinetics`. The common additive
 likelihood constant is omitted. AICc is unavailable when n<=k+1. The full
 rate count is retained for singular fits; an unidentifiable parameter does
 not make a model free of complexity. Numerically exact residuals use an
@@ -65,6 +72,22 @@ correlated time samples, noisy P0, active rate boundaries and singular fits
 violate regular information-criterion assumptions. Do not interpret delta
 scores as posterior model probabilities or automatically select a mechanism.
 There is no automatic claim that eigenvalue timescales are certain either.
+
+## Multistate rate intervals
+
+`kinetics --bootstrap N` resamples whole input files the same way, and since
+0.3 the interval it reports is identifiability-aware. For each rate the
+diagnostics record `bootstrap_successes`, `bootstrap_identified`,
+`bootstrap_identified_fraction` and `bootstrap_ci_status`. An interval appears
+only when the bootstrap produced enough successful fits **and** the rate was
+identified in at least 80% of them, and it is then taken over those resamples
+alone. Otherwise the interval is `null` and the report states the fraction.
+The unidentified draws are counted, not dropped quietly, and the raw
+percentiles over every converged draw are kept separately as diagnostics —
+they are not an inferential interval. A dense over-parameterized scheme
+converges on nearly every resample while determining almost nothing; before
+this, that produced a narrow-looking band around a number the data never
+fixed.
 
 ## Single-exponential intervals
 

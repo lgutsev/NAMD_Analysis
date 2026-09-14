@@ -8,7 +8,6 @@ comparisons across systems are only made on a shared frequency grid.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 

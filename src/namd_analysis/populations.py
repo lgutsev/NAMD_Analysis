@@ -24,6 +24,12 @@ from .units import FS_PER_NS
 TIME_DIVISORS = {"fs": FS_PER_NS, "ps": 1.0e3, "ns": 1.0}
 TIME_UNITS = TIME_DIVISORS
 
+#: Absolute tolerance on the population sum of a complete state map, and on
+#: the range of any single population column.  One value, used everywhere a
+#: population is validated, so averaging cannot be held to a looser standard
+#: than the files it averages.
+CONSERVATION_ATOL = 1.0e-5
+
 
 class ConfigError(ValueError):
     """Raised for an inconsistent or ambiguous state map."""
@@ -127,6 +133,30 @@ class StateMap:
         """Divisor taking the file's time unit to nanoseconds."""
         return TIME_DIVISORS[self.time_unit]
 
+    def as_dict(self) -> Dict[str, Any]:
+        """The declaration itself, in a canonical order."""
+        return {
+            "name": self.name,
+            "time_column": self.time_column,
+            "time_unit": self.time_unit,
+            "population_columns": list(self.population_columns),
+            "groups": {name: list(cols) for name, cols in self.groups.items()},
+            "complete_population": self.complete_population,
+            "recombined_group": self.recombined_group,
+            "notes": self.notes,
+        }
+
+    def fingerprint(self) -> str:
+        """SHA-256 of the canonical declaration.
+
+        Two runs that report the same fingerprint used the same column-to-group
+        assignment, whatever the file it was read from was called.
+        """
+        import hashlib
+
+        canonical = json.dumps(self.as_dict(), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
     def ungrouped_columns(self) -> List[int]:
         assigned = {c for cols in self.groups.values() for c in cols}
         return [c for c in self.population_columns if c not in assigned]
@@ -187,10 +217,12 @@ def load_population_set(paths: Sequence, state_map: StateMap) -> PopulationSet:
     if time_raw.shape[1] < 2 or np.any(np.diff(time_raw[0]) <= 0):
         raise InputMismatchError("population time must strictly increase with at least two samples")
     values = stack[:, :, state_map.population_columns]
-    if values.min() < -1e-5 or values.max() > 1 + 1e-5:
+    if values.min() < -CONSERVATION_ATOL or values.max() > 1 + CONSERVATION_ATOL:
         raise InputMismatchError("population columns outside [0,1]; verify state map")
     totals = values.sum(axis=2)
-    if state_map.complete_population and not np.allclose(totals, 1, atol=1e-5, rtol=0):
+    if state_map.complete_population and not np.allclose(
+        totals, 1, atol=CONSERVATION_ATOL, rtol=0
+    ):
         raise InputMismatchError("complete populations must sum to one in every file")
     mean = stack.mean(axis=0)
     sem = None

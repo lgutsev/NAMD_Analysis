@@ -1,0 +1,9 @@
+{
+  "nac_policy": {
+    "notes": "Upstream NAC handling used when the FAPI_001_BCF_PCBM couplings were prepared, following guidance from Dr. Oleg Prezhdo. For a discrete electronic timestep the coupling scale hbar/dt = 0.6582 eV fs / dt bounds what a finite-difference NAC can mean: at dt = 1 fs that is 0.658 eV. Couplings near 0.6 eV were treated as a warning/safety region, and values beyond roughly 0.66 eV were considered numerical errors of the finite-time-step evaluation and zeroed by the filtering step rather than kept as physical matrix elements. Depending on the exact preprocessing version, an archived NATXT may already carry an engineered 0.6 eV ceiling. This file declares that workflow for this campaign; it is not a property of the NATXT file and must not be applied to any dataset that did not use it.",
+    "warning_threshold_eV": 0.6,
+    "numerical_limit": "hbar_over_dt",
+    "reject_above_eV": 0.66,
+    "action_above_limit": "zero"
+  }
+}

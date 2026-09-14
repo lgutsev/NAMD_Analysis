@@ -3,10 +3,28 @@ on: [push, pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The package declares requires-python = ">=3.9". Test the declared
+        # floor, a widely deployed middle, and a current release, so the
+        # declaration is backed by something that actually ran.
+        python-version: ['3.9', '3.11', '3.13']
+    name: python ${{ matrix.python-version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e .
+      - run: python -m unittest discover -s tests -v
+
+  lint:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install -e .
-      - run: python -m unittest discover -s tests -v
+      - run: pip install ruff
+      - run: ruff check src tests

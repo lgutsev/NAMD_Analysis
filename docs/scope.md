@@ -33,6 +33,24 @@ column. If a state's spatial character changes during the trajectory — which
 is exactly what happens near a trivial crossing — the column keeps its label
 and the group population becomes a mixture. Nothing here detects that.
 
+This is a stated limit, not a gap to be filled heuristically. State character
+is never inferred from column number, energy or coupling magnitude, and no
+nearest-energy band tracking is attempted as a substitute: either would
+produce a confident wrong answer where the honest output is a declared
+limitation. The architecture a real fix would need is
+
+```
+frame -> electronic state -> physical character / projection
+      -> time-dependent physical state mapping
+      -> BCF / PCBM / perovskite populations
+```
+
+fed by genuine upstream input — orbital projections, spatial localization,
+fragment charge or projection analysis, or wavefunction overlap tracking. None
+of that exists in the supplied archives, so no file format or API for
+frame-dependent state maps is designed here. The current fixed-map behaviour
+is explicit and stays explicit.
+
 **Between-file SEM is not an ensemble error bar.** It measures the spread
 between the SHPROP files given, which share a trajectory and are often
 launched from correlated initial conditions. It can be far too small.
@@ -59,12 +77,30 @@ picture, and none of them announce themselves as a bad fit. A high R² means
 the model *can* reproduce the curves, not that the mechanism is right.
 
 **Individual rates are frequently unidentifiable.** Population curves
-constrain the eigenvalues of K far better than its entries. The module tests
-for this — relative standard error above 0.1, correlation above 0.95 with
-another rate, or a Jacobian column the residuals are blind to — and marks such
-rates `identified: false` with a stated reason. Those numbers exist
-in the output so the diagnostic can be audited; they are not results. The
-eigenvalue timescales are the quantity to quote.
+constrain the eigenvalues of K far better than its entries. The module applies
+five independent tests — a Jacobian column the residuals are blind to,
+relative standard error above 0.1, correlation above 0.95 with another rate,
+participation above 0.1 in the numerical null space of the Jacobian, and a
+result sitting on an optimizer bound — and marks such rates `identified: false`
+with a stated reason. None of the five replaces the others: a rate can join a
+blind *combination* while its own column is far from zero and it correlates
+strongly with no single partner, and a boundary solution can carry a small
+standard error while being no estimate at all. Those numbers exist in the
+output so the diagnostic can be audited; they are not results. The eigenvalue
+timescales are the quantity to quote.
+
+**Bootstrap intervals cannot make an unidentified rate look precise.** An
+interval is reported only when the rate was identified in at least 80% of the
+successful resamples, and it is taken over those resamples alone. Below that,
+`bootstrap_ci_per_ns` is null and the count is reported. A converged optimizer
+is not determined data.
+
+**The coupling ceiling in the archived interface runs was engineered, not
+accidental.** Repeated values at exactly 0.6 eV are consistent with an
+intentional upstream NAC safety ceiling placed inside the numerical-safety
+region of `ħ/dt` (0.658 eV at dt = 1 fs). Whether it turned any statistic into
+a lower bound depends on the upstream rule, which a NATXT file does not
+record; it has to be declared, and it is not assumed.
 
 **The extraction sink is a counterfactual.** `k_esc` is supplied by the user,
 the transfer rates behind it were fitted to data containing no extraction, and
@@ -83,9 +119,25 @@ between the SHPROP files supplied, which share a trajectory. On the package's
 own synthetic test the resulting interval is narrower than the true error, and
 it can exclude the true rate when the inputs carry a common bias.
 
-## Plan status after version 0.2
+## Plan status after version 0.3
 
-Implemented:
+New in 0.3:
+
+- `average-shprop`: canonical master SHPROP from the original histories, every
+  population column averaged, the time grid verified and copied exactly, a
+  conservative policy for other columns, per-input conservation checks and full
+  SHA-256 provenance.
+- `ħ/dt` interpretation of coupling magnitudes, engineered-ceiling reporting
+  separated from accidental clipping, and an optional declared `nac_policy`.
+- SVD null-space rate identifiability and refusal of rates pinned to an
+  optimizer bound.
+- Identifiability-aware bootstrap intervals with per-rate counts and explicit
+  suppression.
+- Covariance scaled by the conservation subspace, consistent with the Helmert
+  contrasts `compare-schemes` already uses.
+- CI on Python 3.9, 3.11 and 3.13 plus a lightweight Ruff pass.
+
+Implemented in 0.2:
 
 - `compare-runs`: separately average and compare systems or initial states on
   common saved times, with initial populations and nonshared groups reported.
@@ -100,7 +152,15 @@ Still dependent on unavailable data or another repository:
 
 1. **BCF figure reproduction:** original SHPROP histories and verified state maps
    are absent from the supplied archives. Saved fitted curves cannot replace
-   them. The analyzer is ready to consume those histories when recovered.
+   them. `average-shprop` plus the existing commands are what that reanalysis
+   would run, in order: canonical master, reproduced population curves, the
+   historical single-exponential fit kept for comparison only, a corrected
+   single-decay fit and an honest look at whether a single lifetime means
+   anything, physically justified state groups, sparse candidate schemes,
+   descriptive AIC/AICc/BIC ranking, identifiability throughout, and eigenvalue
+   timescales reported separately from individual rates. A lowest information
+   criterion will not establish a mechanism, and no fitted rate will be called
+   an observed hopping rate.
 2. **Directional event analysis:** the inspected public classic engine writes
    averaged SHPROP, not individual hop histories. See
    [engine inspection](hopping_histories.md) for the exact source revision,
@@ -124,6 +184,8 @@ independent MD ensemble.
 | Audit jobs, preserve provenance | Fit kinetics with explicit windows and diagnostics |
 | Basic output summaries | Compare systems and generate publication figures |
 | — | Fit multistate kinetics and test whether the rates are identifiable |
+| Collect raw SHPROP histories | Average them into a canonical, fingerprinted master |
+| Record the NAC handling policy used | Read couplings against ħ/dt and report a declared ceiling |
 
 Inputs are accepted directly, whether or not a launcher produced them. When a
 launcher manifest is present beside the inputs, its content and fingerprint

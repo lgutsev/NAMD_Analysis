@@ -12,15 +12,24 @@ import glob as globlib
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from . import __version__
-from .audit import PAIR_HEADER, audit_run
+from .audit import DEFAULT_WARNING_FRACTION, PAIR_HEADER, audit_run
 from .fitting import FitError, fit_single_exponential, bootstrap_single_exponential
 from .comparison import compare_schemes, compare_runs
 from .inventory import INVENTORY_HEADER, rows as inventory_rows, scan, summarize
+from .master import (
+    INPUT_HEADER,
+    build_master,
+    input_rows,
+    sem_table,
+    write_master,
+)
+from .nac_policy import NacPolicy
+from .io.hefei import read_shprop
 from .io.xdatcar import read_xdatcar
 from .kinetics import (
     ASYMPTOTIC_UNDERSTATEMENT_FACTOR,
@@ -159,12 +168,15 @@ def cmd_inventory(args: argparse.Namespace) -> int:
 
 
 def cmd_audit(args: argparse.Namespace) -> int:
+    policy = NacPolicy.from_json(args.nac_policy) if args.nac_policy else None
     result = audit_run(
         args.directory,
         nac_unit=args.nac_unit,
         dt_fs=args.dt_fs,
         threshold_mev=args.threshold_mev,
         max_pairs=args.max_pairs,
+        policy=policy,
+        warn_fraction=args.warn_fraction,
     )
     out = prepare_output(args.out, overwrite=args.overwrite)
     inputs = [
@@ -172,6 +184,8 @@ def cmd_audit(args: argparse.Namespace) -> int:
         for name in ("inp", "EIGTXT", "NATXT", "INICON", "DEPHTIME")
         if (Path(args.directory) / name).is_file()
     ]
+    if args.nac_policy:
+        inputs.append(Path(args.nac_policy))
     payload = {
         "command": "audit",
         "environment": environment(),
@@ -188,11 +202,23 @@ def cmd_audit(args: argparse.Namespace) -> int:
         if check["status"] != "ok":
             print(f"  [{check['status']}] {check['check']}: {check['detail']}")
     couplings = result.couplings
+    limit = couplings["timestep_limit"]
     print(
         f"  mean |NAC| off-diagonal = {couplings['mean_abs_offdiagonal']:.4g} meV, "
         f"max = {couplings['max_abs_offdiagonal']:.4g} meV "
         f"(input unit declared as {result.nac_unit})"
     )
+    print(
+        f"  hbar/dt = {limit['hbar_over_dt_eV']:.4g} eV at dt = {limit['dt_fs']:g} fs; "
+        f"the largest |NAC| is {limit['global_max_over_hbar_dt']:.4g} x that scale"
+    )
+    ceiling = couplings["engineered_ceiling"]
+    if ceiling["detected"]:
+        print(
+            f"  {ceiling['samples_at_ceiling']} samples "
+            f"({ceiling['fraction_at_ceiling']:.2%}) sit at exactly "
+            f"{ceiling['ceiling_eV']:.4g} eV: {ceiling['interpretation']}"
+        )
     print(f"written to {out}")
     return 0
 
@@ -370,6 +396,76 @@ def cmd_populations(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------
+# average-shprop
+
+
+def cmd_average_shprop(args: argparse.Namespace) -> int:
+    state_map = StateMap.from_json(args.config)
+    paths = _expand(args.files)
+    master = build_master(
+        paths, state_map, average_extra_columns=args.average_extra_columns
+    )
+
+    out = prepare_output(args.out, overwrite=args.overwrite)
+    written = write_master(master, out / "SHPROP.master")
+
+    # Read the written file back through the ordinary reader and re-check it,
+    # so the artifact that leaves here is the artifact that was validated.
+    readback = read_shprop(written)
+    if readback.shape != master.table.shape or not np.allclose(
+        readback, master.table, rtol=0, atol=0
+    ):
+        raise RuntimeError(
+            f"{written} does not read back as the table that was computed"
+        )
+
+    table = sem_table(master)
+    write_csv(out / "population_sem.csv", table["header"], table["rows"])
+    write_csv(out / "input_files.csv", INPUT_HEADER, input_rows(master))
+
+    payload = {
+        "command": "average-shprop",
+        "environment": environment(),
+        "inputs": master.rows,
+        "master": {
+            **master.as_dict(),
+            "output": str(written),
+            "number_format": "%.17g, which round-trips an IEEE double exactly",
+            "readback_verified": True,
+            "output_conservation_after_readback": float(
+                np.max(
+                    np.abs(readback[:, master.population_columns].sum(axis=1) - 1.0)
+                )
+            )
+            if state_map.complete_population
+            else None,
+        },
+    }
+    _write_report(out, payload, args)
+
+    print(
+        f"{master.n_files} source file(s), {master.table.shape[0]} rows, "
+        f"{master.table.shape[1]} columns -> {written}"
+    )
+    print(
+        "  averaged population columns: "
+        + ", ".join(str(c) for c in master.population_columns)
+    )
+    for column in master.extra_columns:
+        print(f"  column {column}: {master.extra_column_policy[column]}")
+    if state_map.complete_population:
+        print(
+            "  population conservation in the master deviates from one by at most "
+            f"{master.master_conservation['max_abs_deviation_from_one']:.3g} "
+            f"(checked independently in all {master.n_files} source files)"
+        )
+    if master.population_sem is None:
+        print("  no between-file SEM: one file gives no spread")
+    print(f"written to {out}")
+    return 0
+
+
+# --------------------------------------------------------------------------
 # kinetics
 
 
@@ -473,9 +569,17 @@ def cmd_kinetics(args: argparse.Namespace) -> int:
                 n_resamples=args.bootstrap, seed=args.bootstrap_seed,
                 weights=weights,
             )
+            per_rate = bootstrap_diagnostics.get("per_rate", {})
             for estimate in fit.rates:
                 if estimate.name in bootstrap:
                     estimate.bootstrap_ci_per_ns = bootstrap[estimate.name]
+                record = per_rate.get(estimate.name, {})
+                estimate.bootstrap_successes = record.get("bootstrap_successes")
+                estimate.bootstrap_identified = record.get("bootstrap_identified")
+                estimate.bootstrap_identified_fraction = record.get(
+                    "bootstrap_identified_fraction"
+                )
+                estimate.bootstrap_ci_status = record.get("bootstrap_ci_status")
             converged = bootstrap_diagnostics.get("converged_resamples", 0)
             bootstrap_note = (
                 f"{converged} of {args.bootstrap} resamples of the "
@@ -487,6 +591,16 @@ def cmd_kinetics(args: argparse.Namespace) -> int:
             )
             if bootstrap_diagnostics.get("note"):
                 bootstrap_note += ". " + bootstrap_diagnostics["note"]
+            for name in bootstrap_diagnostics.get(
+                "suppressed_for_low_identified_fraction", []
+            ):
+                record = bootstrap_diagnostics["per_rate"][name]
+                print(
+                    f"  {name}: bootstrap interval suppressed because the "
+                    "transition was identifiable in only "
+                    f"{record['bootstrap_identified_fraction']:.0%} of successful "
+                    "resamples"
+                )
 
     sweep = []
     if args.sink_group:
@@ -863,6 +977,20 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--dt-fs", type=float, default=None, help="overrides POTIM from inp")
     audit.add_argument("--threshold-mev", type=float, default=0.5)
     audit.add_argument("--max-pairs", type=int, default=None)
+    audit.add_argument(
+        "--nac-policy",
+        default=None,
+        help="JSON declaring the upstream NAC handling policy for this dataset "
+        "(warning_threshold_eV, numerical_limit, reject_above_eV, "
+        "action_above_limit); nothing is assumed without it",
+    )
+    audit.add_argument(
+        "--warn-fraction",
+        type=float,
+        default=DEFAULT_WARNING_FRACTION,
+        help="fraction of samples inside the 0.8 x hbar/dt region treated as "
+        "unremarkable (default 0: any sample there is reported)",
+    )
     add_output(audit)
     audit.set_defaults(func=cmd_audit)
 
@@ -876,6 +1004,22 @@ def build_parser() -> argparse.ArgumentParser:
     populations.add_argument("--bootstrap-seed", type=int, default=0)
     add_output(populations)
     populations.set_defaults(func=cmd_populations)
+
+    average = sub.add_parser(
+        "average-shprop",
+        help="build a canonical master SHPROP from the original SHPROP files",
+    )
+    average.add_argument("--files", nargs="+", required=True, help="paths or glob patterns")
+    average.add_argument("--config", required=True, help="state map JSON")
+    average.add_argument(
+        "--average-extra-columns",
+        action="store_true",
+        help="average columns that are neither time nor population when the "
+        "source files disagree on them; without this such a disagreement is an "
+        "error rather than a silent copy of the first file",
+    )
+    add_output(average)
+    average.set_defaults(func=cmd_average_shprop)
 
     kinetics = sub.add_parser(
         "kinetics", help="fit a multistate rate model to group populations"

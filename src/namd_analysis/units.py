@@ -38,15 +38,23 @@ def nac_to_mev(values, unit: str, dt_fs: float):
     raise ValueError(f"unsupported NAC unit {unit!r}; choose one of {NAC_UNITS}")
 
 
-def hbar_over_dt_mev(dt_fs: float) -> float:
-    """hbar/dt in meV.
+def hbar_over_dt_ev(dt_fs: float) -> float:
+    """hbar/dt in eV: the energy scale set by the electronic timestep.
 
-    A diagnostic scale only.  It is not a physical bound on the coupling and
-    is not used to filter samples.
+    For dt = 1 fs this is 0.658 eV.  A coupling approaching this scale is a
+    signal that the finite-difference evaluation of the NAC has broken down
+    over one step, not a measurement of an arbitrarily large physical matrix
+    element.  It is a diagnostic scale: nothing here filters, rescales or
+    rejects a sample because of it.
     """
     if dt_fs <= 0:
         raise ValueError("dt_fs must be positive")
-    return HBAR_EV_FS / dt_fs * 1000.0
+    return HBAR_EV_FS / dt_fs
+
+
+def hbar_over_dt_mev(dt_fs: float) -> float:
+    """hbar/dt in meV.  See :func:`hbar_over_dt_ev`."""
+    return hbar_over_dt_ev(dt_fs) * 1000.0
 
 
 def inv_fs_to_cm1(freq_inv_fs):
