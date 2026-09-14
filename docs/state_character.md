@@ -40,7 +40,8 @@ A projection manifest can list files explicitly:
   "frames": [
     {"frame": 1, "procar": "frames/0001/PROCAR"},
     {"frame": 2, "procar": "frames/0002/PROCAR"}
-  ]
+  ],
+  "cycle_length": 2
 }
 ```
 
@@ -51,11 +52,16 @@ or use a format pattern:
   "procar_pattern": "frames/{frame}/PROCAR",
   "first_frame": 1,
   "last_frame": 1999,
-  "frame_step": 1
+  "frame_step": 1,
+  "cycle_length": 1999
 }
 ```
 
-Relative paths are resolved from the manifest directory.
+Relative paths are resolved from the manifest directory.  For cyclic DISH,
+`cycle_length` is optional but important when the number of saved electronic
+frames is known to differ from `NSW - 1` in an archived input/header.  When it
+is supplied it is used as the electronic-frame period and the mismatch with the
+header-derived period is recorded in `shprop_alignment.csv` rather than hidden.
 
 The atom-group map uses one-based PROCAR ion indices. Ranges are accepted so a
 large perovskite slab does not require hundreds of explicit integers:
@@ -137,7 +143,8 @@ and between-file SEM. `projection_character.csv` contains the long-form
 frame/band/subsystem character and raw projection quality.
 `character_swaps.csv` records changes in the dominant subsystem character of a
 fixed adiabatic band. `shprop_alignment.csv` records the exact `NAMDTINI`,
-`NSW`, basis window, and projection frames used by every SHPROP file.
+`NSW`, header-derived cycle length, cycle length actually used, basis window,
+and projection frames used by every SHPROP file.
 
 When a fixed state-map group has the same name as a projection group,
 `fixed_vs_projected.csv` compares the two definitions directly.  A large
