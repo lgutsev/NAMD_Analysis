@@ -1,0 +1,9 @@
+{
+  "groups": {
+    "perovskite": ["1-135"],
+    "BCF": ["136-166"],
+    "PCBM": ["167-236"]
+  },
+  "complete_atoms": true,
+  "min_projection_weight": 0.5
+}
