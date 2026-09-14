@@ -1,0 +1,6 @@
+{
+  "procar_pattern": "frames/{frame}/PROCAR",
+  "first_frame": 1,
+  "last_frame": 1999,
+  "frame_step": 1
+}
