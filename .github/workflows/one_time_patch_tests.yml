@@ -25,54 +25,16 @@ jobs:
 
           p = Path('tests/test_identifiability.py')
           text = p.read_text()
-          old = '''        self.assertTrue(any("nullity" in w for w in fit.warnings), fit.warnings)
-        # The existing checks are supplements, not replacements.
-        self.assertTrue(any(r.degenerate_with for r in fit.rates))
-'''
-          new = '''        self.assertTrue(any("nullity" in w for w in fit.warnings), fit.warnings)
-        # Pairwise covariance correlation is supplementary to structural
-        # null-space detection, not a requirement for it.  A pseudo-inverse can
-        # assign arbitrary correlations to discarded null directions, so those
-        # directions must not be required to populate ``degenerate_with``.
-        for estimate in fit.rates:
-            if estimate.null_space_participation > NULL_PARTICIPATION_LIMIT:
-                self.assertFalse(estimate.identified)
-'''
+          old = "        self.assertTrue(any(\"nullity\" in w for w in fit.warnings), fit.warnings)\n        # The existing checks are supplements, not replacements.\n        self.assertTrue(any(r.degenerate_with for r in fit.rates))\n"
+          new = "        self.assertTrue(any(\"nullity\" in w for w in fit.warnings), fit.warnings)\n        # Pairwise covariance correlation is supplementary to structural\n        # null-space detection, not a requirement for it. A pseudo-inverse can\n        # assign arbitrary correlations to discarded null directions, so those\n        # directions must not be required to populate ``degenerate_with``.\n        for estimate in fit.rates:\n            if estimate.null_space_participation > NULL_PARTICIPATION_LIMIT:\n                self.assertFalse(estimate.identified)\n"
           if old not in text:
               raise SystemExit('identifiability target block not found')
           p.write_text(text.replace(old, new, 1))
 
           p = Path('tests/test_kinetics.py')
           text = p.read_text()
-          old = '''    def test_degenerate_partners_are_named(self):
-        rng = np.random.default_rng(6)
-        noisy = self.observed + 0.002 * rng.standard_normal(self.observed.shape)
-        fit = fit_master_equation(self.time, noisy, GROUPS, parse_edges("dense", GROUPS))
-        partnered = [r for r in fit.rates if r.degenerate_with]
-        self.assertTrue(partnered)
-        for estimate in partnered:
-            self.assertFalse(estimate.identified)
-            for partner in estimate.degenerate_with:
-                self.assertIn(partner, [r.name for r in fit.rates])
-'''
-          new = '''    def test_degenerate_partners_never_name_structurally_unidentified_axes(self):
-        rng = np.random.default_rng(6)
-        noisy = self.observed + 0.002 * rng.standard_normal(self.observed.shape)
-        fit = fit_master_equation(self.time, noisy, GROUPS, parse_edges("dense", GROUPS))
-        by_name = {r.name: r for r in fit.rates}
-        self.assertTrue(fit.jacobian_rank_deficient)
-        for estimate in fit.rates:
-            for partner in estimate.degenerate_with:
-                self.assertIn(partner, by_name)
-                other = by_name[partner]
-                self.assertLessEqual(
-                    estimate.null_space_participation, NULL_PARTICIPATION_LIMIT
-                )
-                self.assertLessEqual(
-                    other.null_space_participation, NULL_PARTICIPATION_LIMIT
-                )
-                self.assertFalse(estimate.identified)
-'''
+          old = "    def test_degenerate_partners_are_named(self):\n        rng = np.random.default_rng(6)\n        noisy = self.observed + 0.002 * rng.standard_normal(self.observed.shape)\n        fit = fit_master_equation(self.time, noisy, GROUPS, parse_edges(\"dense\", GROUPS))\n        partnered = [r for r in fit.rates if r.degenerate_with]\n        self.assertTrue(partnered)\n        for estimate in partnered:\n            self.assertFalse(estimate.identified)\n            for partner in estimate.degenerate_with:\n                self.assertIn(partner, [r.name for r in fit.rates])\n"
+          new = "    def test_degenerate_partners_never_name_structurally_unidentified_axes(self):\n        rng = np.random.default_rng(6)\n        noisy = self.observed + 0.002 * rng.standard_normal(self.observed.shape)\n        fit = fit_master_equation(self.time, noisy, GROUPS, parse_edges(\"dense\", GROUPS))\n        by_name = {r.name: r for r in fit.rates}\n        self.assertTrue(fit.jacobian_rank_deficient)\n        for estimate in fit.rates:\n            for partner in estimate.degenerate_with:\n                self.assertIn(partner, by_name)\n                other = by_name[partner]\n                self.assertLessEqual(estimate.null_space_participation, NULL_PARTICIPATION_LIMIT)\n                self.assertLessEqual(other.null_space_participation, NULL_PARTICIPATION_LIMIT)\n                self.assertFalse(estimate.identified)\n"
           if old not in text:
               raise SystemExit('kinetics target block not found')
           p.write_text(text.replace(old, new, 1))
