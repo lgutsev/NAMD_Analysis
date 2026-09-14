@@ -67,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help=(
             "how NAMD time points select electronic-structure frames; use dish-cyclic "
-            "only for engines following RTTIME=mod(tion+NAMDTINI-1,NSW-1)"
+            "only for engines following RTTIME=mod(tion+NAMDTINI-1,period)"
         ),
     )
     parser.add_argument(
@@ -193,33 +193,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ],
         list(projection_table_rows(result.projection)),
     )
+    alignment_keys = (
+        "path",
+        "NAMDTINI",
+        "NSW",
+        "header_cycle_length",
+        "cycle_length_used",
+        "cycle_length_source",
+        "header_cycle_mismatch",
+        "BMIN",
+        "BMAX",
+        "frame_mode",
+        "first_projection_frame",
+        "last_projection_frame",
+        "unique_projection_frames_used",
+    )
     write_csv(
         out / "shprop_alignment.csv",
-        [
-            "path",
-            "NAMDTINI",
-            "NSW",
-            "BMIN",
-            "BMAX",
-            "frame_mode",
-            "first_projection_frame",
-            "last_projection_frame",
-            "unique_projection_frames_used",
-        ],
-        [
-            [record.get(key) for key in (
-                "path",
-                "NAMDTINI",
-                "NSW",
-                "BMIN",
-                "BMAX",
-                "frame_mode",
-                "first_projection_frame",
-                "last_projection_frame",
-                "unique_projection_frames_used",
-            )]
-            for record in result.file_alignment
-        ],
+        list(alignment_keys),
+        [[record.get(key) for key in alignment_keys] for record in result.file_alignment],
     )
     figures = _plot(result, out)
 
@@ -230,6 +222,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "environment": environment(),
         "inputs": fingerprint(input_paths),
         "frame_mode": args.frame_mode,
+        "projection_cycle_length": result.projection.cycle_length,
         "state_map": state_map.as_dict(),
         "atom_groups": {
             "groups": atom_groups.groups,
@@ -254,6 +247,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "model or nearest-energy band tracking is used",
             "each original SHPROP is projected before ensemble averaging because "
             "different NAMDTINI values select different electronic-structure frames",
+            "for dish-cyclic alignment an explicit manifest cycle_length overrides "
+            "SHPROP NSW-1 and any mismatch is retained in the alignment report",
             "PROCAR weights are normalized across the declared physical subsystems; "
             "captured_projection is reported so weak PAW-sphere projection can be audited",
             "a change of dominant adiabatic-state character is not itself a surface hop",
@@ -275,5 +270,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         f"{quality['samples_below_threshold']} frame/band samples below "
         f"{quality['quality_threshold']:.3g}"
     )
+    if any(record.get("header_cycle_mismatch") for record in result.file_alignment):
+        print(
+            "note: projection-manifest cycle_length differs from SHPROP NSW-1; "
+            "the explicit manifest period was used and the mismatch was recorded"
+        )
     print(f"written to {out}")
     return 0
