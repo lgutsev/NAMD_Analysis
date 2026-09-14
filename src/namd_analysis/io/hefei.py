@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -21,6 +22,65 @@ KNOWN_FILES = (
     "energy.dat",
     "fitting_results_final.txt",
 )
+
+_HEADER = re.compile(r"^\s*[#!]\s*([^=]+?)\s*=\s*(.*?)\s*$")
+
+
+def _header_value(text: str) -> Any:
+    value = text.strip()
+    upper = value.upper()
+    if upper in {"T", ".TRUE.", "TRUE"}:
+        return True
+    if upper in {"F", ".FALSE.", "FALSE"}:
+        return False
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value.replace("D", "E").replace("d", "e"))
+    except ValueError:
+        return value
+
+
+def read_table_metadata(path) -> Dict[str, Any]:
+    """Read ``# KEY = VALUE`` / ``! KEY = VALUE`` metadata without touching data.
+
+    Hefei-NAMD writes the sampling origin (``NAMDTINI``), basis window and
+    timestep into SHPROP headers.  The ordinary numeric-table reader strips
+    those comments deliberately, so frame-aware analyses use this companion
+    reader rather than trying to recover the information from the populations.
+    Duplicate keys must agree exactly.
+    """
+    path = Path(path)
+    metadata: Dict[str, Any] = {}
+    with path.open("r", errors="replace") as handle:
+        for raw in handle:
+            stripped = raw.lstrip()
+            if not stripped.startswith(("#", "!")):
+                if stripped.strip():
+                    break
+                continue
+            match = _HEADER.match(raw)
+            if match is None:
+                continue
+            key = match.group(1).strip().upper()
+            value = _header_value(match.group(2))
+            if key in metadata and metadata[key] != value:
+                raise TableFormatError(
+                    f"{path}: metadata key {key!r} occurs with conflicting values"
+                )
+            metadata[key] = value
+    return metadata
+
+
+@dataclass
+class ShpropData:
+    """A SHPROP numeric table together with the metadata needed for alignment."""
+
+    path: Path
+    table: np.ndarray
+    metadata: Dict[str, Any]
 
 
 def read_eigtxt(path) -> np.ndarray:
@@ -70,6 +130,12 @@ def read_shprop(path) -> np.ndarray:
     that: column meaning is declared by the user's JSON configuration.
     """
     return read_numeric_table(path)
+
+
+def read_shprop_with_metadata(path) -> ShpropData:
+    """Read a SHPROP table while preserving its Hefei-NAMD header metadata."""
+    path = Path(path)
+    return ShpropData(path=path, table=read_shprop(path), metadata=read_table_metadata(path))
 
 
 def read_legacy_fit(path) -> Dict[str, Any]:
