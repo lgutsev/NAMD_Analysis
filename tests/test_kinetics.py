@@ -203,16 +203,19 @@ class FitTests(unittest.TestCase):
             self.assertIsNotNone(estimate.stderr_per_ns)
             self.assertGreater(estimate.stderr_per_ns, 0.0)
 
-    def test_degenerate_partners_are_named(self):
+    def test_degenerate_partners_never_name_structurally_unidentified_axes(self):
         rng = np.random.default_rng(6)
         noisy = self.observed + 0.002 * rng.standard_normal(self.observed.shape)
         fit = fit_master_equation(self.time, noisy, GROUPS, parse_edges("dense", GROUPS))
-        partnered = [r for r in fit.rates if r.degenerate_with]
-        self.assertTrue(partnered)
-        for estimate in partnered:
-            self.assertFalse(estimate.identified)
+        by_name = {r.name: r for r in fit.rates}
+        self.assertTrue(fit.jacobian_rank_deficient)
+        for estimate in fit.rates:
             for partner in estimate.degenerate_with:
-                self.assertIn(partner, [r.name for r in fit.rates])
+                self.assertIn(partner, by_name)
+                other = by_name[partner]
+                self.assertLessEqual(estimate.null_space_participation, NULL_PARTICIPATION_LIMIT)
+                self.assertLessEqual(other.null_space_participation, NULL_PARTICIPATION_LIMIT)
+                self.assertFalse(estimate.identified)
 
     def test_wrong_scheme_gives_a_poor_fit_and_says_so(self):
         # Force a scheme with no route to VBM: the model cannot reproduce the
