@@ -64,6 +64,12 @@ def fit_single_exponential(
     if time.shape != values.shape:
         raise FitError("time and value arrays have different shapes")
 
+    if time.ndim != 1 or time.size < 2 or not np.isfinite(time).all() or not np.isfinite(values).all():
+        raise FitError("finite one-dimensional arrays with >=2 samples required")
+    if np.any(np.diff(time) <= 0):
+        raise FitError("time must strictly increase")
+    if any(v is not None and not np.isfinite(v) for v in [t_start, t_end]):
+        raise FitError("window bounds must be finite")
     lo = time[0] if t_start is None else float(t_start)
     hi = time[-1] if t_end is None else float(t_end)
     if hi <= lo:
@@ -148,3 +154,51 @@ def fit_single_exponential(
         windows_per_tau=float(windows_per_tau),
         warnings=warnings,
     )
+
+
+def bootstrap_single_exponential(time, per_file_values, *, n_resamples=200,
+                                 seed=0, confidence=0.95, **fit_options):
+    """Resample whole files, including their noisy first samples; never time rows.
+
+    Interval is conditional on the supplied files and single-decay model. Shared
+    trajectory bias and temporal correlations are not independent replications.
+    """
+    files = np.asarray(per_file_values, dtype=float)
+    if files.ndim != 2 or files.shape[1] != np.asarray(time).size or not np.isfinite(files).all():
+        raise FitError("bootstrap needs finite (n_files, n_times) populations")
+    if isinstance(n_resamples, bool) or not isinstance(n_resamples, (int, np.integer)) or n_resamples < 20:
+        raise FitError("bootstrap needs at least 20 resamples")
+    if not 0 < confidence < 1:
+        raise FitError("confidence must be between zero and one")
+    result = {"method": "whole-file percentile bootstrap", "confidence": confidence,
+              "seed": seed, "requested": n_resamples, "successful": 0,
+              "failed": 0, "poor_fit_resamples": 0, "tau_interval": None,
+              "tau_unit": fit_options.get("time_unit", "ns"),
+              "note": "Between-file spread only; correlated starts and shared bias can cause undercoverage. Not mechanism confidence."}
+    if len(files) < 2:
+        result["status"] = "unavailable_single_file"
+        return result
+    if np.array_equal(files, np.broadcast_to(files[0], files.shape)):
+        result["status"] = "unavailable_identical_files"
+        return result
+    rng = np.random.default_rng(seed)
+    values = []
+    for _ in range(n_resamples):
+        sample = files[rng.integers(0, len(files), len(files))].mean(axis=0)
+        try:
+            fit = fit_single_exponential(time, sample, **fit_options)
+            if not np.isfinite(fit.tau):
+                raise FitError("nonfinite bootstrap lifetime")
+            values.append(fit.tau)
+            if not np.isfinite(fit.r_squared) or fit.r_squared < .9:
+                result["poor_fit_resamples"] += 1
+        except (ValueError, RuntimeError):
+            result["failed"] += 1
+    result["successful"] = len(values)
+    if len(values) < max(20, .8 * n_resamples):
+        result["status"] = "insufficient_successful_resamples"
+    else:
+        alpha = (1 - confidence) / 2
+        result["tau_interval"] = np.quantile(values, [alpha, 1-alpha]).tolist()
+        result["status"] = "estimated" if not result["poor_fit_resamples"] else "model_mismatch_warning"
+    return result

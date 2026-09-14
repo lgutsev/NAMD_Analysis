@@ -314,3 +314,17 @@ serialization, recovery of a known rate matrix, refusal to identify a rate the
 residuals are blind to, detection of an unidentifiable over-parameterized
 scheme, bootstrap weighting and convergence diagnostics, sink conservation,
 and end-to-end CLI runs that assert on the written reports and figures.
+
+## Version 0.2 plan completion
+
+The full suite passes 178 tests (165 existing plus 13 new). New known-answer
+checks cover conditional graph ranking, conservation-subspace observation
+counts, run comparisons on exact common times, rejection of duplicate graphs
+and inconsistent populations, reproducible whole-file exponential bootstrap,
+missing spread and failed resamples, covariance-preserving group SEM, launcher
+manifest import, and end-to-end command reports and plots. Synthetic curves
+exercise both correct and deliberately wrong kinetic schemes. These checks
+validate implementation behavior, not model validity for the BCF system.
+
+The supplied archives still lack original SHPROP histories. No paper population
+figures or lifetimes have been independently reproduced by this update.

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import glob as globlib
+import json
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -17,7 +18,8 @@ import numpy as np
 
 from . import __version__
 from .audit import PAIR_HEADER, audit_run
-from .fitting import FitError, fit_single_exponential
+from .fitting import FitError, fit_single_exponential, bootstrap_single_exponential
+from .comparison import compare_schemes, compare_runs
 from .inventory import INVENTORY_HEADER, rows as inventory_rows, scan, summarize
 from .io.xdatcar import read_xdatcar
 from .kinetics import (
@@ -46,7 +48,7 @@ from .plotting import (
     plot_spectra,
     plot_vacf,
 )
-from .provenance import environment, fingerprint
+from .provenance import environment, fingerprint, launcher_manifests
 from .report import prepare_output, write_csv, write_json
 from .spectra import (
     DEFAULT_BANDS,
@@ -60,6 +62,18 @@ from .spectra import (
 )
 from .units import NAC_UNITS
 from .vacf import CONVENTIONS, WINDOWS, trajectory_spectrum
+
+
+def _write_report(out, payload, args):
+    paths = [item["path"] for item in payload.get("inputs", [])]
+    if getattr(args, "config", None):
+        paths.append(args.config)
+        payload["config_input"] = fingerprint([args.config])[0]
+    imported = launcher_manifests(paths, getattr(args, "launcher_manifest", []))
+    previous = payload.get("launcher_manifests", [])
+    payload["launcher_manifests"] = list({record["input"]["path"]: record for record in previous + imported}.values())
+    payload["options"] = {key: value for key, value in vars(args).items() if key != "func"}
+    write_json(out / "report.json", payload)
 
 
 def _expand(patterns: Sequence[str]) -> List[Path]:
@@ -126,7 +140,7 @@ def cmd_inventory(args: argparse.Namespace) -> int:
         "summary": summarize(entries),
         "runs": [entry.as_dict() for entry in entries],
     }
-    write_json(out / "report.json", payload)
+    _write_report(out, payload, args)
     write_csv(out / "inventory.csv", INVENTORY_HEADER, inventory_rows(entries))
     summary = payload["summary"]
     print(f"{summary['n_run_directories']} run directories under {args.root}")
@@ -164,7 +178,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
         "inputs": fingerprint(inputs),
         "audit": result.as_dict(),
     }
-    write_json(out / "report.json", payload)
+    _write_report(out, payload, args)
     write_csv(out / "pairs.csv", PAIR_HEADER, [pair.as_row() for pair in result.pairs])
     print(
         f"{result.directory.name}: {result.nframes} frames, {result.nstates} states, "
@@ -196,6 +210,11 @@ def cmd_populations(args: argparse.Namespace) -> int:
 
     fit = None
     fit_error = None
+    fit_uncertainty = None
+    if args.bootstrap and not args.fit_group:
+        raise ValueError("--bootstrap requires --fit-group")
+    if args.bootstrap and args.bootstrap < 20:
+        raise ValueError("--bootstrap needs at least 20 resamples")
     if args.fit_group:
         target = next((s for s in series if s.name == args.fit_group), None)
         if target is None:
@@ -213,6 +232,13 @@ def cmd_populations(args: argparse.Namespace) -> int:
             )
         except FitError as exc:
             fit_error = str(exc)
+        if fit is not None and args.bootstrap:
+            per_file = per_file_group_populations(population, state_map)
+            index = list(state_map.groups).index(target.name)
+            fit_uncertainty = bootstrap_single_exponential(
+                population.time_ns, per_file[:, :, index], n_resamples=args.bootstrap,
+                seed=args.bootstrap_seed, t_start=args.fit_start_ns, t_end=args.fit_end_ns,
+                group=target.name, time_unit="ns")
 
     out = prepare_output(args.out, overwrite=args.overwrite)
 
@@ -310,6 +336,7 @@ def cmd_populations(args: argparse.Namespace) -> int:
         ),
         "fit": fit.as_dict() if fit is not None else None,
         "fit_error": fit_error,
+        "fit_uncertainty": fit_uncertainty,
         "figures": [str(path) for path in figures],
         "interpretation_limits": [
             "population leaving a group is not by itself recombination or "
@@ -319,7 +346,7 @@ def cmd_populations(args: argparse.Namespace) -> int:
             "efficiencies are not inferred from averaged populations",
         ],
     }
-    write_json(out / "report.json", payload)
+    _write_report(out, payload, args)
 
     print(f"{population.n_files} file(s), {population.time_ns.size} time points")
     print(
@@ -533,7 +560,7 @@ def cmd_kinetics(args: argparse.Namespace) -> int:
             "measured extraction efficiency",
         ],
     }
-    write_json(out / "report.json", payload)
+    _write_report(out, payload, args)
 
     print(f"{population.n_files} file(s), {fit.n_points} points in "
           f"[{fit.window[0]:.4g}, {fit.window[1]:.4g}] ns, scheme {args.scheme!r}")
@@ -617,7 +644,7 @@ def cmd_vacf_spectra(args: argparse.Namespace) -> int:
             "transform convention, window or smoothing",
         ],
     }
-    write_json(out / "report.json", payload)
+    _write_report(out, payload, args)
 
     print(f"{len(spectra)} spectra, shared grid: {payload_compare['shared_grid']}")
     for system in payload_compare["systems"]:
@@ -726,7 +753,7 @@ def cmd_vacf_trajectory(args: argparse.Namespace) -> int:
         "systems": systems,
         "figures": [str(path) for path in figures],
     }
-    write_json(out / "report.json", payload)
+    _write_report(out, payload, args)
 
     for system in systems:
         diagnostics = system["vacf"]
@@ -743,6 +770,61 @@ def cmd_vacf_trajectory(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------
 
 
+def cmd_compare_schemes(args):
+    mapping = StateMap.from_json(args.config)
+    if not mapping.complete_population or mapping.ungrouped_columns():
+        raise ValueError("Scheme comparison needs a complete exhaustive group map")
+    paths = _expand(args.files)
+    population = load_population_set(paths, mapping)
+    groups = group_series(population, mapping)
+    time = population.time_ns
+    mask = np.ones(len(time), dtype=bool)
+    if args.fit_start_ns is not None:
+        mask &= time >= args.fit_start_ns
+    if args.fit_end_ns is not None:
+        mask &= time <= args.fit_end_ns
+    observed = np.column_stack([g.values for g in groups])[mask]
+    schemes = json.loads(Path(args.schemes).read_text())
+    payload, fits = compare_schemes(time[mask], observed, [g.name for g in groups], schemes, criterion=args.criterion)
+    out = prepare_output(args.out, overwrite=args.overwrite)
+    payload.update(command="compare-schemes", environment=environment(),
+                   inputs=fingerprint(paths + [Path(args.schemes)]),
+                   fits={name: fit.as_dict() for name, fit in fits.items()})
+    header = ["candidate", "scheme", "status", "rank", "score", "delta", "aic", "aicc", "bic", "unidentified_rates", "rank_deficient", "numerically_exact", "error"]
+    write_csv(out / "schemes.csv", header, [[row.get(key) for key in header] for row in payload["candidates"]])
+    _write_report(out, payload, args)
+    print(f"Lowest descriptive score: {payload['lowest_score_candidate']}; see model assumptions in report.json")
+    return 0
+
+
+def cmd_compare_runs(args):
+    payload, time, curves = compare_runs(args.manifest, start_ns=args.start_ns, end_ns=args.end_ns)
+    out = prepare_output(args.out, overwrite=args.overwrite)
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    names = payload["shared_groups"]
+    fig, axes = plt.subplots(len(names), 1, figsize=(8, 3 * len(names)), squeeze=False, constrained_layout=True)
+    rows = []
+    for i, name in enumerate(names):
+        ax = axes[i, 0]
+        for label, groups in curves.items():
+            ax.plot(time, groups[name], label=label)
+            rows.extend([label, name, float(t), float(p)] for t, p in zip(time, groups[name]))
+        ax.set(xlabel="Time (ns)", ylabel=f"P({name})", ylim=(-.03, 1.03))
+        ax.legend()
+    for suffix in ["png", "pdf"]:
+        fig.savefig(out / f"comparison.{suffix}", dpi=200)
+    plt.close(fig)
+    write_csv(out / "curves.csv", ["run", "group", "time_ns", "population"], rows)
+    header = ["run", "reference", "group", "initial_difference", "final_difference", "max_abs_difference", "difference_integral_ns"]
+    write_csv(out / "differences.csv", header, [[row[key] for key in header] for row in payload["differences"]])
+    payload.update(command="compare-runs", environment=environment())
+    _write_report(out, payload, args)
+    print(f"Compared {len(curves)} runs on {len(time)} exact shared times; written to {out}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="namd-analysis",
@@ -756,6 +838,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     def add_output(target, default_required=True):
         target.add_argument("--out", required=default_required, help="new output directory")
+        target.add_argument("--launcher-manifest", action="append", default=[],
+                            help="additional upstream manifest JSON; repeat as needed")
         target.add_argument(
             "--overwrite",
             action="store_true",
@@ -788,6 +872,8 @@ def build_parser() -> argparse.ArgumentParser:
     populations.add_argument("--fit-group", default=None)
     populations.add_argument("--fit-start-ns", type=float, default=None)
     populations.add_argument("--fit-end-ns", type=float, default=None)
+    populations.add_argument("--bootstrap", type=int, default=0, help="whole-file decay bootstrap (>=20)")
+    populations.add_argument("--bootstrap-seed", type=int, default=0)
     add_output(populations)
     populations.set_defaults(func=cmd_populations)
 
@@ -829,6 +915,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_output(kinetics)
     kinetics.set_defaults(func=cmd_kinetics)
+
+    scheme_compare = sub.add_parser("compare-schemes", help="score declared kinetic graphs on common observations")
+    scheme_compare.add_argument("--files", nargs="+", required=True)
+    scheme_compare.add_argument("--config", required=True)
+    scheme_compare.add_argument("--schemes", required=True, help="JSON object mapping candidate names to schemes")
+    scheme_compare.add_argument("--criterion", choices=["aic", "aicc", "bic"], default="aicc")
+    scheme_compare.add_argument("--fit-start-ns", type=float)
+    scheme_compare.add_argument("--fit-end-ns", type=float)
+    add_output(scheme_compare)
+    scheme_compare.set_defaults(func=cmd_compare_schemes)
+
+    run_compare = sub.add_parser("compare-runs", help="compare separately averaged systems or initial states")
+    run_compare.add_argument("--manifest", required=True, help="JSON runs with labels, configs, and files")
+    run_compare.add_argument("--start-ns", type=float)
+    run_compare.add_argument("--end-ns", type=float)
+    add_output(run_compare)
+    run_compare.set_defaults(func=cmd_compare_runs)
 
     spectra = sub.add_parser(
         "vacf-spectra", help="describe and compare existing spectral density files"

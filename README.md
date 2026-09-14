@@ -6,7 +6,7 @@ fit windows, and input provenance. This package is independent of
 and runs calculations; this package reads their output. Existing manually
 prepared campaigns work too.
 
-Version 0.1 provides:
+Version 0.2 provides:
 
 - Campaign inventory and identification of failed historical single-exponential fits.
 - EIGTXT/NATXT dimension and run-setting audits, energy-gap statistics, and
@@ -17,7 +17,8 @@ Version 0.1 provides:
 - Group populations, net changes, finite-window population integrals, and
   survival when a complete normalized state map is explicitly declared.
 - Optional single-exponential decay fitting with explicit time windows,
-  residual diagnostics, poor-fit flags, and extrapolation warnings.
+  residual diagnostics, poor-fit flags, extrapolation warnings, and optional
+  whole-file bootstrap intervals.
 - Multistate kinetic fitting: a Markovian rate matrix over the declared
   groups, uncertainty on every rate, an identifiability test that refuses to
   quote rates the data did not determine, and an optional extraction sink.
@@ -25,7 +26,10 @@ Version 0.1 provides:
   `spectral_density_*.txt` files, and computation from an XDATCAR with
   Cartesian minimum-image velocities, optional mass weighting, segment
   averaging, and an explicit transform convention.
-- JSON reports, CSV tables, PNG/PDF plots, and SHA-256 fingerprints.
+- Run/initial-state comparison on common saved times and candidate kinetic
+  graph ranking by descriptive AIC/AICc/BIC.
+- JSON reports, CSV tables, PNG/PDF plots, SHA-256 fingerprints and imported
+  launcher manifests.
 
 No raw data are modified, clipped, reordered, or silently renormalized. Output
 folders must be new, or `--overwrite` must be passed explicitly. No DFT, NAC
@@ -189,8 +193,8 @@ population fixed to the first sample in the selected window. It has no offset
 and does not normalize to the maximum. It is suitable only for a resolved
 single decay. Plateau, sequential trapping, and competing-channel dynamics
 need a different kinetic model. A high R² does not establish a unique physical
-mechanism or a precise extrapolated lifetime. Parameter confidence intervals
-are not yet implemented. Rising or flat populations are rejected as decay fits.
+mechanism or a precise extrapolated lifetime. Whole-file bootstrap intervals are available with `--bootstrap 200`; they
+measure between-file spread and do not account for shared-trajectory bias. Rising or flat populations are rejected as decay fits.
 
 Population loss from BCF is not automatically recombination or extraction.
 Inspect its destinations. Net PCBM accumulation is not directional flux or
@@ -303,3 +307,8 @@ The underlying dynamics and couplings are produced by
 software used in the original campaign. Cite those methods in publications.
 This repository implements analysis and does not redistribute those engines,
 VASP potential files, or the uploaded research archives.
+
+## Run comparisons and remaining plans
+
+See [comparison commands and intervals](docs/comparisons.md),
+[plan status](docs/scope.md), and [hopping-history requirements](docs/hopping_histories.md).

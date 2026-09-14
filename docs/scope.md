@@ -22,11 +22,11 @@ ran.
   backward rates are available only through an explicitly declared kinetic
   model (`kinetics`), which is an assumption about the dynamics rather than a
   measurement of them; see below.
-- No confidence intervals on the single-exponential fit in `fitting.py`. Only
-  R², residual statistics and window diagnostics. The multistate fit in
-  `kinetics.py` does report standard errors and optional bootstrap intervals.
+- No universal confidence claims from a single trajectory. Both single-decay
+  and multistate fits can bootstrap whole files; shared-trajectory bias and
+  correlated initial conditions remain outside those intervals.
 
-## Known limits in version 0.1
+## Known limits
 
 **A fixed state map cannot follow a moving state.** Grouping is by table
 column. If a state's spatial character changes during the trajectory — which
@@ -83,30 +83,36 @@ between the SHPROP files supplied, which share a trajectory. On the package's
 own synthetic test the resulting interval is narrower than the true error, and
 it can exclude the true rate when the inputs carry a common bias.
 
-## Next steps, in order
+## Plan status after version 0.2
 
-1. **Reproduce the BCF paper's existing figures.** This is the first concrete
-   target: re-average the original `SHPROP.*` files, rebuild each population
-   figure, and fix the lifetime definitions that the legacy script left
-   ambiguous. Until that baseline is in place, nothing further is worth
-   building.
-2. **Pathway resolution from hopping histories.** The `kinetics` model infers
-   forward and backward rates under an assumed rate matrix. Counting actual
-   perovskite → PCBM, BCF → PCBM, PCBM → BCF and recombination events needs
-   the hop histories themselves, which averaged populations do not contain.
-   The engine must be made to write them; whether it can is the open question
-   to settle before designing that analysis.
-3. **Initial-state comparison.** A perovskite-initialized electron, a
-   BCF-initialized one and a PCBM-initialized one answer different
-   conditional questions. This package can define and compare the runs; the
-   runs themselves go through the launcher.
-4. **Automated scheme comparison.** `kinetics` fits whichever scheme you
-   declare and tells you when it is over-parameterized, but it does not yet
-   walk a ladder of candidate schemes and score them against an information
-   criterion. Doing that would turn "which mechanism does the data support"
-   from a manual comparison into a reported result.
-5. **Confidence intervals on the single-exponential fit**, so `populations
-   --fit-group` reports uncertainty the way `kinetics` already does.
+Implemented:
+
+- `compare-runs`: separately average and compare systems or initial states on
+  common saved times, with initial populations and nonshared groups reported.
+- `compare-schemes`: explicitly declared candidate graphs ranked by descriptive
+  AIC/AICc/BIC with full fits and identifiability flags retained.
+- `populations --bootstrap`: whole-file percentile intervals for a single decay,
+  including failed-fit counts and missing-spread cases.
+- Automatic adjacent launcher-manifest import plus explicit campaign manifests.
+- Covariance-preserving group SEM and per-file conservation validation.
+
+Still dependent on unavailable data or another repository:
+
+1. **BCF figure reproduction:** original SHPROP histories and verified state maps
+   are absent from the supplied archives. Saved fitted curves cannot replace
+   them. The analyzer is ready to consume those histories when recovered.
+2. **Directional event analysis:** the inspected public classic engine writes
+   averaged SHPROP, not individual hop histories. See
+   [engine inspection](hopping_histories.md) for the exact source revision,
+   limitations, and required logging. The installed DISH/DEV engine still needs
+   verification before instrumenting it through the launcher.
+3. **New initial-state propagations:** the analyzer compares results but does not
+   generate them; prepare these with the installed engine via NAMD_Launcher.
+
+Usage and statistical assumptions are documented in
+[comparisons](comparisons.md). A lowest information-criterion score is not
+proof of a mechanism, and bootstrapping correlated files does not produce an
+independent MD ensemble.
 
 ## Relationship to NAMD_Launcher
 
@@ -120,5 +126,6 @@ it can exclude the true rate when the inputs carry a common bias.
 | — | Fit multistate kinetics and test whether the rates are identifiable |
 
 Inputs are accepted directly, whether or not a launcher produced them. When a
-launcher manifest is present its provenance should be imported alongside this
-package's own fingerprints; that import is not yet implemented.
+launcher manifest is present beside the inputs, its content and fingerprint
+are imported. Parent campaign manifests can be passed explicitly. Upstream
+claims are preserved without executing or trusting embedded artifact paths.

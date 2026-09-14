@@ -1,0 +1,23 @@
+{
+  "reference": "perovskite_initial",
+  "runs": [
+    {
+      "label": "perovskite_initial",
+      "initial_state": "electron initialized on the perovskite CBM",
+      "config": "interface_kinetics.json",
+      "files": ["../data/perovskite_initial/SHPROP.*"]
+    },
+    {
+      "label": "BCF_initial",
+      "initial_state": "electron initialized on the BCF state",
+      "config": "interface_kinetics.json",
+      "files": ["../data/BCF_initial/SHPROP.*"]
+    },
+    {
+      "label": "PCBM_initial",
+      "initial_state": "electron initialized in the PCBM manifold; record exact state separately",
+      "config": "interface_kinetics.json",
+      "files": ["../data/PCBM_initial/SHPROP.*"]
+    }
+  ]
+}

@@ -48,6 +48,13 @@ class StateMap:
 
     @classmethod
     def from_dict(cls, payload: Dict[str, Any]) -> "StateMap":
+        if not isinstance(payload.get("complete_population", False), bool):
+            raise ConfigError("complete_population must be a JSON boolean")
+        raw_columns = [payload.get("time_column", 0)] + payload.get("population_columns", [])
+        for columns in payload.get("groups", {}).values():
+            raw_columns += columns
+        if any(type(col) is not int or col < 0 for col in raw_columns):
+            raise ConfigError("column indices must be nonnegative integers")
         try:
             groups = {
                 str(key): [int(col) for col in cols]
@@ -100,6 +107,10 @@ class StateMap:
                         f"{name!r}; groups must be disjoint"
                     )
                 seen[column] = name
+        if not declared or self.time_column < 0 or any(c < 0 for c in declared):
+            raise ConfigError("population columns must be nonempty and nonnegative")
+        if self.complete_population and set(seen) != set(declared):
+            raise ConfigError("complete_population requires exhaustive groups")
         if self.recombined_group is not None:
             if self.recombined_group not in self.groups:
                 raise ConfigError(
@@ -148,6 +159,9 @@ def load_population_set(paths: Sequence, state_map: StateMap) -> PopulationSet:
     if not paths:
         raise InputMismatchError("no SHPROP files were given")
 
+    state_map.validate()
+    if len({p.resolve() for p in paths}) != len(paths):
+        raise InputMismatchError("duplicate population files")
     tables = [read_shprop(path) for path in paths]
 
     shapes = {t.shape for t in tables}
@@ -170,6 +184,14 @@ def load_population_set(paths: Sequence, state_map: StateMap) -> PopulationSet:
             "or truncation is performed"
         )
 
+    if time_raw.shape[1] < 2 or np.any(np.diff(time_raw[0]) <= 0):
+        raise InputMismatchError("population time must strictly increase with at least two samples")
+    values = stack[:, :, state_map.population_columns]
+    if values.min() < -1e-5 or values.max() > 1 + 1e-5:
+        raise InputMismatchError("population columns outside [0,1]; verify state map")
+    totals = values.sum(axis=2)
+    if state_map.complete_population and not np.allclose(totals, 1, atol=1e-5, rtol=0):
+        raise InputMismatchError("complete populations must sum to one in every file")
     mean = stack.mean(axis=0)
     sem = None
     if len(paths) > 1:
@@ -237,15 +259,18 @@ class GroupSeries:
 
 
 def group_series(population: PopulationSet, state_map: StateMap) -> List[GroupSeries]:
-    """Sum the mapped columns of each group; combine SEM in quadrature."""
+    """Sum per file before computing SEM, preserving within-group covariance."""
     series = []
     for name, columns in state_map.groups.items():
         values = population.mean[:, columns].sum(axis=1)
         sem = None
         if population.sem is not None:
-            # Between-file errors of columns within one group are not
-            # independent; this is a first-order estimate, reported as such.
-            sem = np.sqrt(np.sum(population.sem[:, columns] ** 2, axis=1))
+            if population.stack is not None:
+                grouped_files = population.stack[:, :, columns].sum(axis=2)
+                sem = grouped_files.std(axis=0, ddof=1) / np.sqrt(population.n_files)
+            else:
+                # Covariance cannot be reconstructed from marginal SEM alone.
+                sem = None
         series.append(
             GroupSeries(name=name, columns=list(columns), values=values, sem=sem)
         )

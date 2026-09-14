@@ -1,0 +1,5 @@
+{
+  "sequential": "CBM->BCF,BCF->PCBM,PCBM->VBM",
+  "competing_recombination": "CBM->BCF,BCF->PCBM,BCF->VBM,PCBM->VBM",
+  "reversible_transfer": "CBM->BCF,BCF->PCBM,PCBM->BCF,BCF->VBM,PCBM->VBM"
+}

@@ -48,3 +48,35 @@ def environment(argv: Iterable[str] | None = None) -> Dict[str, Any]:
         "platform": platform.platform(),
         "argv": list(argv) if argv is not None else list(sys.argv),
     }
+
+
+def launcher_manifests(paths=(), explicit=()):
+    """Import adjacent launcher manifests verbatim; never trust/execute file paths in them.
+
+    Only same-directory *_manifest.json and .namdforge/state.json are discovered.
+    Campaign-level manifests can be passed explicitly to avoid unbounded ancestor scans.
+    """
+    import json
+    found = {Path(p).resolve() for p in explicit}
+    for item in paths:
+        parent = Path(item).resolve().parent
+        found.update(p.resolve() for p in parent.glob("*_manifest.json"))
+        state = parent / ".namdforge" / "state.json"
+        if state.is_file():
+            found.add(state.resolve())
+    records = []
+    for path in sorted(found):
+        record = {"input": fingerprint([path])[0],
+                  "verification": "manifest fingerprint only; upstream artifacts and claims not independently verified"}
+        if path.stat().st_size > 10 * 1024 * 1024:
+            record.update(status="not_imported", error="manifest exceeds 10 MiB")
+        else:
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(value, dict):
+                    raise ValueError("manifest root must be an object")
+                record.update(status="imported", content=value)
+            except (ValueError, UnicodeError) as exc:
+                record.update(status="invalid", error=str(exc))
+        records.append(record)
+    return records
