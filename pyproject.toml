@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "namd-analysis"
-version = "0.4.0"
+version = "0.5.0"
 description = "Analysis of saved CA-NAC / Hefei-NAMD output and VACF phonon spectra"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -16,8 +16,8 @@ dependencies = [
 ]
 
 [project.scripts]
-inamd-analysis = "namd_analysis.cli:main"
-namd-analysis = "namd_analysis.cli:main"
+inamd-analysis = "namd_analysis.dispatch:main"
+namd-analysis = "namd_analysis.dispatch:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

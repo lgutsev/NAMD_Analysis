@@ -5,6 +5,6 @@ no NAC calculation, no job submission and no electronic propagation, and it
 never modifies, clips, reorders or renormalizes the raw inputs.
 """
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = ["__version__"]

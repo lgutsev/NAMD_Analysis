@@ -1,5 +1,13 @@
 name: tests
 on: [push, pull_request]
+
+# A feature branch can receive several corrective commits in quick succession.
+# Only the newest run for a given push/PR ref is scientifically useful; cancel
+# superseded runs so stale matrices do not block validation of the current head.
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest

@@ -744,9 +744,19 @@ def fit_master_equation(
             identified = False
 
         partners: List[str] = []
-        if correlation is not None:
+        if correlation is not None and not bool(blind[index]) and null_ok:
             for other in range(len(edges)):
                 if other == index:
+                    continue
+                # Correlations with a structurally unidentified direction are
+                # artifacts of the pseudo-inverse, not evidence that the
+                # identifiable rate is degenerate with that parameter. In
+                # particular, a discarded blind/null-space direction can carry
+                # an arbitrary covariance orientation that changes across
+                # LAPACK/NumPy versions. Such a parameter is already refused
+                # by the stronger blind/null-space checks above and must not
+                # contaminate otherwise identifiable rates.
+                if bool(blind[other]) or participation[other] > NULL_PARTICIPATION_LIMIT:
                     continue
                 value = correlation[index, other]
                 if np.isfinite(value) and abs(value) >= DEGENERATE_CORRELATION:
