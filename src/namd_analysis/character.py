@@ -1,13 +1,12 @@
 """Frame-dependent physical-state character from PROCAR projections.
 
-This module fixes a specific limitation of fixed SHPROP state maps.  An
-adiabatic band index can exchange BCF/PCBM/perovskite character during an MD
-trajectory.  Projection-weighted populations therefore combine every original
-SHPROP history with the PROCAR frame that actually generated that NAMD step,
-and only then average across SHPROP files.
+An adiabatic band index can exchange BCF/PCBM/perovskite character during an
+MD trajectory.  Projection-weighted populations therefore combine every
+*original* SHPROP history with the PROCAR frame that actually generated that
+NAMD step, and only then average across SHPROP files.
 
-It is deliberately strict: no nearest-energy band tracking, no inferred frame
-alignment, and no implicit k-point/spin averaging.
+The implementation is deliberately strict: no nearest-energy band tracking,
+no inferred frame alignment, and no implicit k-point/spin averaging.
 """
 
 from __future__ import annotations
@@ -42,10 +41,13 @@ class AtomGroupMap:
         raw = payload.get("groups")
         if not isinstance(raw, dict) or not raw:
             raise CharacterError("atom-group JSON needs a nonempty 'groups' object")
+        complete = payload.get("complete_atoms", True)
+        if type(complete) is not bool:
+            raise CharacterError("complete_atoms must be a JSON boolean")
         groups = {str(name): _expand_atom_spec(spec) for name, spec in raw.items()}
         obj = cls(
             groups=groups,
-            complete_atoms=bool(payload.get("complete_atoms", True)),
+            complete_atoms=complete,
             min_projection_weight=float(payload.get("min_projection_weight", 0.5)),
         )
         obj.validate()
@@ -73,6 +75,14 @@ class AtomGroupMap:
 
 
 @dataclass
+class ProjectionManifest:
+    """Resolved mapping between engine frame numbers and PROCAR files."""
+
+    frames: List[Tuple[int, Path]]
+    cycle_length: Optional[int] = None
+
+
+@dataclass
 class ProjectionSeries:
     """Normalized subsystem character for selected bands over MD frames."""
 
@@ -84,6 +94,7 @@ class ProjectionSeries:
     total_projection: np.ndarray  # raw sum over every PROCAR ion
     source_paths: List[Path]
     quality_threshold: float
+    cycle_length: Optional[int] = None
 
     def frame_index(self) -> Dict[int, int]:
         return {int(frame): i for i, frame in enumerate(self.frames)}
@@ -149,11 +160,19 @@ def _expand_atom_spec(spec: Any) -> List[int]:
     return atoms
 
 
-def _manifest_entries(path) -> List[Tuple[int, Path]]:
+def _load_projection_manifest(path) -> ProjectionManifest:
     manifest_path = Path(path)
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     base = manifest_path.parent
     entries: List[Tuple[int, Path]] = []
+
+    raw_cycle = payload.get("cycle_length")
+    cycle_length = None
+    if raw_cycle is not None:
+        if type(raw_cycle) is not int or raw_cycle <= 0:
+            raise CharacterError("projection manifest cycle_length must be a positive integer")
+        cycle_length = raw_cycle
+
     if "frames" in payload:
         if not isinstance(payload["frames"], list) or not payload["frames"]:
             raise CharacterError("projection manifest 'frames' must be a nonempty list")
@@ -198,7 +217,18 @@ def _manifest_entries(path) -> List[Tuple[int, Path]]:
         preview = ", ".join(missing[:3])
         more = "" if len(missing) <= 3 else f" (+{len(missing) - 3} more)"
         raise CharacterError(f"projection manifest references missing PROCAR files: {preview}{more}")
-    return entries
+
+    if cycle_length is not None:
+        available = set(frames)
+        required_cycle = set(range(1, cycle_length + 1))
+        missing_cycle = sorted(required_cycle - available)
+        if missing_cycle:
+            preview = missing_cycle[:10]
+            raise CharacterError(
+                f"cycle_length={cycle_length} but the manifest lacks cycle frames "
+                f"{preview}{'...' if len(missing_cycle) > 10 else ''}"
+            )
+    return ProjectionManifest(frames=entries, cycle_length=cycle_length)
 
 
 def load_projection_series(
@@ -210,14 +240,15 @@ def load_projection_series(
     required = [int(band) for band in required_bands]
     if not required or len(set(required)) != len(required):
         raise CharacterError("required band list must be nonempty and unique")
-    entries = _manifest_entries(manifest_path)
+    manifest = _load_projection_manifest(manifest_path)
+    entries = manifest.frames
     group_names = atom_groups.names
     frame_weights: List[np.ndarray] = []
     captured_rows: List[np.ndarray] = []
     total_rows: List[np.ndarray] = []
     nions_expected: Optional[int] = None
 
-    for frame, path in entries:
+    for _frame, path in entries:
         try:
             projection = read_procar_ion_totals(path)
         except ProcarFormatError as exc:
@@ -271,6 +302,7 @@ def load_projection_series(
         total_projection=np.stack(total_rows, axis=0),
         source_paths=[path for _, path in entries],
         quality_threshold=atom_groups.min_projection_weight,
+        cycle_length=manifest.cycle_length,
     )
 
 
@@ -287,18 +319,31 @@ def _int_metadata(metadata: Mapping[str, Any], key: str, path: Path) -> int:
 
 
 def aligned_frames(
-    metadata: Mapping[str, Any], ntime: int, mode: str, path: Path
+    metadata: Mapping[str, Any],
+    ntime: int,
+    mode: str,
+    path: Path,
+    cycle_length: Optional[int] = None,
 ) -> np.ndarray:
-    """Return the MD/electronic-structure frame used at each NAMD time point."""
+    """Return the electronic-structure frame used at each NAMD time point.
+
+    For ``dish-cyclic`` an explicit projection-manifest ``cycle_length`` wins
+    over ``NSW - 1`` from the SHPROP header.  This is necessary for archived
+    campaigns whose engine/input bookkeeping does not exactly match the number
+    of saved electronic frames.  The chosen period is recorded in provenance.
+    """
     start = _int_metadata(metadata, "NAMDTINI", path)
     tion = np.arange(1, ntime + 1, dtype=int)
     if mode == "linear":
         return start + tion - 1
     if mode == "dish-cyclic":
-        nsw = _int_metadata(metadata, "NSW", path)
-        period = nsw - 1
+        if cycle_length is None:
+            nsw = _int_metadata(metadata, "NSW", path)
+            period = nsw - 1
+        else:
+            period = cycle_length
         if period <= 0:
-            raise CharacterError(f"{path}: NSW={nsw} gives no cyclic electronic trajectory")
+            raise CharacterError(f"{path}: cyclic frame period must be positive")
         frames = np.mod(tion + start - 1, period)
         frames[frames == 0] = period
         return frames
@@ -349,7 +394,13 @@ def character_populations(
     physical_files: List[np.ndarray] = []
     alignments: List[Dict[str, Any]] = []
     for record in records:
-        frames = aligned_frames(record.metadata, record.table.shape[0], frame_mode, record.path)
+        frames = aligned_frames(
+            record.metadata,
+            record.table.shape[0],
+            frame_mode,
+            record.path,
+            cycle_length=projection.cycle_length,
+        )
         missing = sorted({int(frame) for frame in frames if int(frame) not in frame_lookup})
         if missing:
             preview = missing[:10]
@@ -362,11 +413,32 @@ def character_populations(
         pops = record.table[:, state_map.population_columns]
         physical = np.einsum("ts,tsg->tg", pops, weights)
         physical_files.append(physical)
+
+        header_nsw = record.metadata.get("NSW")
+        header_period = None
+        if isinstance(header_nsw, (int, float)):
+            header_period = int(header_nsw) - 1
+        cycle_used = projection.cycle_length if projection.cycle_length is not None else header_period
         alignments.append(
             {
                 "path": str(record.path.resolve()),
                 "NAMDTINI": _int_metadata(record.metadata, "NAMDTINI", record.path),
-                "NSW": record.metadata.get("NSW"),
+                "NSW": header_nsw,
+                "header_cycle_length": header_period,
+                "cycle_length_used": cycle_used if frame_mode == "dish-cyclic" else None,
+                "cycle_length_source": (
+                    "projection_manifest"
+                    if frame_mode == "dish-cyclic" and projection.cycle_length is not None
+                    else "SHPROP_NSW_minus_1"
+                    if frame_mode == "dish-cyclic"
+                    else "not_applicable"
+                ),
+                "header_cycle_mismatch": bool(
+                    frame_mode == "dish-cyclic"
+                    and projection.cycle_length is not None
+                    and header_period is not None
+                    and projection.cycle_length != header_period
+                ),
                 "BMIN": bmin,
                 "BMAX": bmax,
                 "frame_mode": frame_mode,
