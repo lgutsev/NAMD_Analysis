@@ -10,6 +10,7 @@ import numpy as np
 from namd_analysis.cli import main
 from namd_analysis.kinetics import (
     KineticsError,
+    NULL_PARTICIPATION_LIMIT,
     bootstrap_rates,
     build_rate_matrix,
     edge_names,
