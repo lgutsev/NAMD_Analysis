@@ -228,18 +228,28 @@ command refuses rather than fitting one.
 Population curves constrain the *eigenvalues* of K much better than its
 entries, and many different forward/backward pairs reproduce the same P(t).
 Every rate therefore carries a standard error and a degeneracy check: a rate
-whose relative standard error exceeds 1, or which correlates above 0.95 with
-another, is reported with `identified: false` and must not be quoted. The
+whose relative standard error exceeds 0.1, or which correlates above 0.95 with
+another, or which the residuals are simply blind to, is reported with
+`identified: false` and a stated reason, and must not be quoted. The
 eigenvalue timescales are reported separately, because those are what the
 data actually constrains.
 
-The check has teeth. On the package's own synthetic test, a `dense` scheme
-reaches the same R² = 0.9997 as the correct sparse one, but its Jacobian
-condition number is 6e19 and three of its six rates come back unidentified
-with their degeneracy partners named.
+The check has teeth. On the package's own synthetic test, a `dense` scheme —
+every ordered pair of groups, so twelve transitions on these four groups —
+reaches the same R² as the correct sparse one while its Jacobian condition
+number rises to 6e19 and the rates it cannot determine come back
+`identified: false` with their degeneracy partners named. On a three-group
+version of the same test, three of the six dense rates are rejected.
+
+The `±` values are a **linearized lower bound**. Because P(0) is read from a
+noisy sample rather than fitted, this package's own Monte Carlo measures the
+true spread at up to six times the quoted standard error (the nuisance
+direction is marginalized out, which narrows the gap but does not close it).
+Prefer the bootstrap whenever you have more than one file.
 
 `--bootstrap N` resamples whole input files with replacement and refits,
-giving a percentile interval. That measures the spread between the files you
+using the same weighting as the point estimate, and giving a percentile
+interval. That measures the spread between the files you
 supplied — which share a trajectory and often correlated initial conditions —
 so it can be narrower than the true uncertainty, and it says nothing about
 whether the Markovian model is right at all.
@@ -274,13 +284,14 @@ requested.
 python -m unittest discover -s tests -v
 ```
 
-157 tests cover table and XDATCAR parsing (including VASP's negative
+165 tests cover table and XDATCAR parsing (including VASP's negative
 target-volume scale factor), namelist coercion, audit checks including cap
 detection, conservation, all-column averaging/SEM, malformed and mismatched
 inputs, analytic exponential recovery, long extrapolations, legacy failed
 fits, VACF estimators against the direct double loop, recovery of known
 oscillator frequencies, strict-JSON report serialization, recovery of a known
-rate matrix, detection of an unidentifiable over-parameterized scheme, and CLI
+rate matrix, refusal to identify a rate the residuals cannot see, detection of
+an unidentifiable over-parameterized scheme, bootstrap weighting, and CLI
 report/figure generation. See [validation](docs/validation.md)
 for the supplied archive audit and [scope](docs/scope.md) for next steps.
 

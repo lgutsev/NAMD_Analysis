@@ -1,6 +1,6 @@
 {
   "name": "interface_six_state_VBM_BCF_PCBM_CBM",
-  "notes": "Illustrative map for a six-state interface basis (for example BMIN=976, BMAX=981): time in column 0, the code's energy column at 1, then six population columns. The assignment of columns 3 to 5 to PCBM and column 4 of the basis to BCF is NOT automatic - check it against the band characters you computed for this system, and remember that a fixed map cannot follow a state whose spatial character changes during the trajectory.",
+  "notes": "Illustrative map for a six-state interface basis (for example BMIN=976, BMAX=981): time in column 0, the code's energy column at 1, then six population columns, 2 through 7. This file assigns column 2 to VBM, column 3 to BCF, columns 4, 5 and 6 to PCBM, and column 7 to CBM. None of that is automatic - check every column against the band characters you computed for this system, and remember that a fixed map cannot follow a state whose spatial character changes during the trajectory. For kinetic fitting see examples/interface_kinetics.json, which declares the same columns in the order the physics flows.",
   "time_column": 0,
   "time_unit": "fs",
   "population_columns": [2, 3, 4, 5, 6, 7],

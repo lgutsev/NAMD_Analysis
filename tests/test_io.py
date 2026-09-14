@@ -162,6 +162,25 @@ class XdatcarTests(unittest.TestCase):
         np.testing.assert_allclose(traj.lattices[0], np.eye(3) * 4.0, atol=1e-9)
         self.assertAlmostEqual(abs(np.linalg.det(traj.lattices[0])), 64.0, places=6)
 
+    def test_negative_scale_on_a_triclinic_cell(self):
+        # A diagonal cell leaves det() and the cube root under-constrained;
+        # a sheared cell exercises them.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "XDATCAR"
+            cell = np.array([[3.0, 0.0, 0.0], [1.0, 4.0, 0.0], [0.5, 0.5, 5.0]])
+            target = 120.0
+            lines = ["triclinic", f"{-target}"]
+            lines += ["  " + "  ".join(f"{v:.8f}" for v in row) for row in cell]
+            lines += ["  C", "  1"]
+            for frame in range(3):
+                lines += [f"Direct configuration=  {frame + 1}", "  0.1 0.2 0.3"]
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            traj = read_xdatcar(path)
+        self.assertAlmostEqual(abs(np.linalg.det(traj.lattices[0])), target, places=6)
+        # The shape is preserved: only a uniform scale is applied.
+        ratio = traj.lattices[0] / cell
+        np.testing.assert_allclose(ratio[cell != 0], ratio[cell != 0][0], rtol=1e-12)
+
     def test_positive_scale_multiplies_the_cell(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = write_xdatcar(Path(tmp) / "XDATCAR", nframes=10, cell_ang=10.0)

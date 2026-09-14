@@ -36,8 +36,20 @@ from scipy.optimize import least_squares
 #: Named connectivity presets, resolved against the declared group order.
 SCHEMES = ("dense", "sequential", "reversible")
 
-#: A rate whose standard error in log space exceeds this is not determined.
-UNIDENTIFIED_REL_SE = 1.0
+#: A rate whose linearized relative standard error exceeds this is not treated
+#: as determined.  The threshold is deliberately tight.  The asymptotic error is
+#: a local linearization, and because P(0) is read from a noisy sample rather
+#: than fitted, this package's own Monte Carlo (docs/validation.md) shows it
+#: understating the true sampling spread by up to a factor of six.  At 0.1 even
+#: a sixfold understatement leaves a rate known to better than a factor of two;
+#: at the old value of 1.0 it did not.  Calibration showed no cost: across 200
+#: well-posed fits, every correctly recovered rate has a relative error far
+#: below this, so tightening the threshold rejected none of them.
+UNIDENTIFIED_REL_SE = 0.1
+
+#: Largest factor by which the linearized error was seen to understate the
+#: empirical spread when P(0) comes from data.  Reported, not applied.
+ASYMPTOTIC_UNDERSTATEMENT_FACTOR = 6.0
 
 #: Two rates correlated above this are degenerate: the data sees their
 #: combination, not each one.
@@ -157,6 +169,7 @@ class RateEstimate:
     lifetime_ns: float
     identified: bool
     degenerate_with: List[str] = field(default_factory=list)
+    unidentified_reason: Optional[str] = None
     bootstrap_ci_per_ns: Optional[List[float]] = None
 
     def as_dict(self) -> Dict[str, Any]:
@@ -170,6 +183,7 @@ class RateEstimate:
             "lifetime_ns": self.lifetime_ns,
             "identified": self.identified,
             "degenerate_with": self.degenerate_with,
+            "unidentified_reason": self.unidentified_reason,
             "bootstrap_ci_per_ns": self.bootstrap_ci_per_ns,
         }
 
@@ -191,6 +205,7 @@ class KineticFit:
     rms_residual_per_group: Dict[str, float]
     eigen_timescales_ns: List[float]
     condition_number: float
+    rank_deficient: bool
     correlation: Optional[np.ndarray]
     n_points: int
     n_parameters: int
@@ -224,14 +239,35 @@ class KineticFit:
                 "r_squared_per_group": self.r_squared_per_group,
                 "rms_residual_per_group": self.rms_residual_per_group,
             },
+            "standard_errors": {
+                "method": (
+                    "asymptotic, from the Jacobian at the optimum, with the "
+                    "uncertainty of P(0) marginalized out as a nuisance direction"
+                ),
+                "caveat": (
+                    "a local linearization and a LOWER BOUND. Because P(0) is read "
+                    "from a noisy sample rather than fitted, the empirical spread "
+                    "was measured at up to "
+                    f"{ASYMPTOTIC_UNDERSTATEMENT_FACTOR:g}x these values. Prefer the "
+                    "bootstrap interval when more than one input file is available."
+                ),
+            },
             "identifiability": {
                 "jacobian_condition_number": self.condition_number,
+                "jacobian_is_singular": not np.isfinite(self.condition_number),
+                "jacobian_rank_deficient": self.rank_deficient,
+                "initial_condition_uncertainty_propagated": True,
                 "unidentified_threshold_relative_stderr": UNIDENTIFIED_REL_SE,
                 "degenerate_threshold_correlation": DEGENERATE_CORRELATION,
                 "correlation_matrix": (
                     self.correlation.tolist() if self.correlation is not None else None
                 ),
                 "n_unidentified": sum(1 for r in self.rates if not r.identified),
+                "unidentified_reasons": {
+                    r.name: r.unidentified_reason
+                    for r in self.rates
+                    if r.unidentified_reason
+                },
             },
             "model_assumptions": [
                 "a Markovian master equation with time-independent rates",
@@ -240,6 +276,38 @@ class KineticFit:
             ],
             "warnings": self.warnings,
         }
+
+
+def _initial_condition_jacobian(
+    log_rates: np.ndarray,
+    time: np.ndarray,
+    observed: np.ndarray,
+    edges: Sequence[Tuple[int, int]],
+    weights: np.ndarray,
+) -> np.ndarray:
+    """d(residual)/d(P(0)) along directions that conserve total population.
+
+    P(0) is read from the first sample, which is as noisy as any other point.
+    These columns let that noise be marginalized out of the rate covariance.
+    The directions are ``e_j - e_0``, which keep the populations summing to the
+    same total, so they explore only the perturbations the model allows.
+    """
+    n_groups = observed.shape[1]
+    if n_groups < 2:
+        return np.zeros((observed.size, 0))
+
+    K = build_rate_matrix(np.exp(log_rates), edges, n_groups)
+    base = propagate(K, observed[0], time)
+    scale = max(float(np.max(np.abs(observed[0]))), 1.0) * 1e-6
+
+    columns = []
+    for j in range(1, n_groups):
+        direction = np.zeros(n_groups)
+        direction[j] = 1.0
+        direction[0] = -1.0
+        forward = propagate(K, observed[0] + scale * direction, time)
+        columns.append((((forward - base) / scale) * weights).ravel())
+    return np.column_stack(columns)
 
 
 def _residuals(
@@ -341,30 +409,91 @@ def fit_master_equation(
         )
         rms_group[name] = float(np.sqrt(numerator / n_points))
 
-    # Asymptotic covariance in log space from the Jacobian at the optimum.
+    # Asymptotic covariance in log space.  Two things have to be right here or
+    # the identifiability flag becomes worse than useless.
+    #
+    # First, the Jacobian is augmented with the directions in which P(0) can
+    # move.  P(0) is read off the first sample rather than fitted, but that
+    # sample carries the same noise as every other point, and its error
+    # propagates into every rate.  Treating it as exact understates the
+    # standard errors by a large factor.  The nuisance directions are taken
+    # inside the simplex (they conserve total population) and are marginalized
+    # out, so the point estimate is unchanged and only the uncertainty grows.
+    #
+    # Second, a pseudo-inverse reports *zero* variance for a direction the data
+    # does not constrain at all, which would mark exactly the worst rates as
+    # identified.  Blind directions are detected from the Jacobian and given
+    # infinite variance instead.
     jacobian = best.jac
     stderr_log: Optional[np.ndarray] = None
     correlation: Optional[np.ndarray] = None
     condition = float("inf")
+    rank_deficient = False
+    n_rates = len(edges)
+    blind = np.zeros(n_rates, dtype=bool)
+
     try:
+        column_norm = np.linalg.norm(jacobian, axis=0)
+        scale = float(column_norm.max()) if column_norm.size else 0.0
+        blind = column_norm <= max(scale, 1.0) * 1e-10
+
+        nuisance = _initial_condition_jacobian(
+            best.x, time_ns, observed, edges, weight_array
+        )
+        augmented = np.hstack([jacobian, nuisance]) if nuisance.size else jacobian
+        n_nuisance = augmented.shape[1] - n_rates
+        dof_augmented = max(n_points * len(groups) - n_rates - n_nuisance, 1)
+
         gram = jacobian.T @ jacobian
         condition = float(np.linalg.cond(gram))
-        covariance = np.linalg.pinv(gram) * (2.0 * best.cost / dof)
-        variance = np.diag(covariance)
-        if np.all(variance >= 0):
-            stderr_log = np.sqrt(variance)
+        singular = np.linalg.svd(gram, compute_uv=False)
+        if singular.size:
+            tol = float(singular.max()) * max(gram.shape) * np.finfo(float).eps
+            rank_deficient = bool(singular.min() <= tol)
+
+        gram_augmented = augmented.T @ augmented
+        covariance_augmented = np.linalg.pinv(gram_augmented) * (
+            2.0 * best.cost / dof_augmented
+        )
+        covariance = np.array(covariance_augmented[:n_rates, :n_rates], dtype=float)
+        variance = np.diag(covariance).astype(float).copy()
+        variance[blind] = np.inf
+        variance[variance < 0] = np.inf
+        stderr_log = np.sqrt(variance)
+        with np.errstate(divide="ignore", invalid="ignore"):
             outer = np.outer(stderr_log, stderr_log)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                correlation = np.where(outer > 0, covariance / outer, np.nan)
-    except np.linalg.LinAlgError:
-        pass
+            correlation = np.where(
+                np.isfinite(outer) & (outer > 0), covariance / outer, np.nan
+            )
+    except (np.linalg.LinAlgError, ValueError):
+        stderr_log = None
+        correlation = None
 
     warnings: List[str] = []
     estimates: List[RateEstimate] = []
     names = edge_names(edges, groups)
     for index, (source, target) in enumerate(edges):
         rel_se = float(stderr_log[index]) if stderr_log is not None else None
-        identified = rel_se is not None and rel_se <= UNIDENTIFIED_REL_SE
+        reason: Optional[str] = None
+        if rel_se is None:
+            identified = False
+            reason = "the covariance of the fit could not be computed"
+        elif bool(blind[index]):
+            identified = False
+            reason = (
+                "the residuals do not change when this rate changes, so the data "
+                "carries no information about it; the reported value is where the "
+                "optimizer happened to stop"
+            )
+        elif rel_se > UNIDENTIFIED_REL_SE:
+            identified = False
+            reason = (
+                f"relative standard error {rel_se:.3g} exceeds {UNIDENTIFIED_REL_SE}, "
+                "and that error is itself a lower bound"
+            )
+        else:
+            identified = True
+
         partners: List[str] = []
         if correlation is not None:
             for other in range(len(edges)):
@@ -375,6 +504,12 @@ def fit_master_equation(
                     partners.append(names[other])
         if partners:
             identified = False
+            if reason is None:
+                reason = (
+                    "correlated above "
+                    f"{DEGENERATE_CORRELATION} with {', '.join(partners)}; the data "
+                    "sees the combination, not this rate on its own"
+                )
         estimates.append(
             RateEstimate(
                 name=names[index],
@@ -382,12 +517,17 @@ def fit_master_equation(
                 target=groups[target],
                 rate_per_ns=float(rates[index]),
                 stderr_per_ns=(
-                    float(rates[index] * rel_se) if rel_se is not None else None
+                    float(rates[index] * rel_se)
+                    if rel_se is not None and np.isfinite(rel_se)
+                    else None
                 ),
-                relative_stderr=rel_se,
+                relative_stderr=(
+                    rel_se if rel_se is not None and np.isfinite(rel_se) else None
+                ),
                 lifetime_ns=float(1.0 / rates[index]) if rates[index] > 0 else float("inf"),
                 identified=identified,
                 degenerate_with=partners,
+                unidentified_reason=reason,
             )
         )
 
@@ -398,10 +538,19 @@ def fit_master_equation(
             + ", ".join(unidentified)
             + "; quote the eigenvalue timescales instead"
         )
-    if np.isfinite(condition) and condition > 1e8:
+    if not np.isfinite(condition) or condition > 1e8:
+        detail = (
+            "singular" if not np.isfinite(condition) else f"condition number {condition:.3g}"
+        )
         warnings.append(
-            f"the Jacobian is ill-conditioned (condition number {condition:.3g}); "
-            "the rate matrix is close to a degenerate family that fits equally well"
+            f"the Jacobian is ill-conditioned ({detail}); the rate matrix is close "
+            "to a degenerate family that fits equally well"
+        )
+    if rank_deficient:
+        warnings.append(
+            "the Jacobian is rank deficient: at least one direction in rate space "
+            "leaves the populations unchanged, so that combination of rates is not "
+            "determined by this data at any precision"
         )
     if np.isfinite(r2_total) and r2_total < 0.95:
         warnings.append(
@@ -443,6 +592,7 @@ def fit_master_equation(
         rms_residual_per_group=rms_group,
         eigen_timescales_ns=[float(t) for t in timescales],
         condition_number=condition,
+        rank_deficient=rank_deficient,
         correlation=correlation,
         n_points=int(n_points),
         n_parameters=int(n_parameters),
@@ -458,12 +608,22 @@ def bootstrap_rates(
     n_resamples: int = 200,
     seed: int = 0,
     percentiles: Tuple[float, float] = (2.5, 97.5),
-) -> Dict[str, List[float]]:
+    weights: Optional[np.ndarray] = None,
+    min_successes: int = 20,
+) -> Tuple[Dict[str, List[float]], Dict[str, Any]]:
     """Resample whole input files with replacement and refit.
 
     This propagates the spread *between the files supplied*, which share a
     trajectory and often correlated initial conditions. It is not an ensemble
     error bar, and it says nothing about whether the Markovian model is right.
+
+    ``weights`` must be the same weights used for the point estimate, otherwise
+    the interval is centred on a different estimator than the rate it is
+    printed beside and can exclude it.
+
+    Returns ``(intervals, diagnostics)``; the diagnostics record how many
+    resamples actually converged, so an interval built from a subset is never
+    reported as if every draw had succeeded.
     """
     per_file_groups = np.asarray(per_file_groups, dtype=float)
     if per_file_groups.ndim != 3:
@@ -472,25 +632,60 @@ def bootstrap_rates(
     if n_files < 2:
         raise KineticsError("bootstrapping needs at least two input files")
 
+    if weights is not None:
+        weights = np.asarray(weights, dtype=float)
+        if weights.shape != per_file_groups.shape[1:]:
+            raise KineticsError(
+                f"weights have shape {weights.shape}, expected "
+                f"{per_file_groups.shape[1:]} to match the resampled data"
+            )
+
     rng = np.random.default_rng(seed)
     names = edge_names(edges, groups)
     draws: Dict[str, List[float]] = {name: [] for name in names}
+    successes = 0
+    failures = 0
     for _ in range(n_resamples):
         picks = rng.integers(0, n_files, size=n_files)
         sample = per_file_groups[picks].mean(axis=0)
         try:
-            fit = fit_master_equation(time_ns, sample, groups, edges, n_starts=2)
+            fit = fit_master_equation(
+                time_ns, sample, groups, edges, weights=weights, n_starts=2
+            )
         except (KineticsError, ValueError, np.linalg.LinAlgError):
+            failures += 1
             continue
+        successes += 1
         for estimate in fit.rates:
             draws[estimate.name].append(estimate.rate_per_ns)
 
     intervals: Dict[str, List[float]] = {}
     for name, values in draws.items():
-        if len(values) >= 20:
+        if len(values) >= min_successes:
             low, high = np.percentile(values, percentiles)
             intervals[name] = [float(low), float(high)]
-    return intervals
+
+    diagnostics: Dict[str, Any] = {
+        "requested_resamples": int(n_resamples),
+        "converged_resamples": int(successes),
+        "failed_resamples": int(failures),
+        "minimum_for_an_interval": int(min_successes),
+        "percentiles": list(percentiles),
+        "weighted": weights is not None,
+        "intervals_reported": len(intervals),
+    }
+    if failures:
+        diagnostics["note"] = (
+            f"{failures} of {n_resamples} resamples did not converge and were "
+            "dropped; the interval is computed from the ones that did, which may "
+            "not be a representative subset"
+        )
+    if not intervals:
+        diagnostics["note"] = (
+            f"only {successes} resamples converged, fewer than the {min_successes} "
+            "required, so no interval is reported"
+        )
+    return intervals, diagnostics
 
 
 # ---------------------------------------------------------------------------
@@ -598,6 +793,7 @@ RATE_HEADER = [
     "relative_stderr",
     "lifetime_ns",
     "identified",
+    "unidentified_reason",
     "degenerate_with",
     "bootstrap_low_per_ns",
     "bootstrap_high_per_ns",
@@ -616,6 +812,7 @@ def rate_rows(fit: KineticFit) -> List[List[Any]]:
                 estimate.relative_stderr,
                 estimate.lifetime_ns,
                 estimate.identified,
+                estimate.unidentified_reason or "",
                 ";".join(estimate.degenerate_with),
                 ci[0],
                 ci[1],

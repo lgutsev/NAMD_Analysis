@@ -60,8 +60,9 @@ the model *can* reproduce the curves, not that the mechanism is right.
 
 **Individual rates are frequently unidentifiable.** Population curves
 constrain the eigenvalues of K far better than its entries. The module tests
-for this — relative standard error above 1, or correlation above 0.95 with
-another rate — and marks such rates `identified: false`. Those numbers exist
+for this — relative standard error above 0.1, correlation above 0.95 with
+another rate, or a Jacobian column the residuals are blind to — and marks such
+rates `identified: false` with a stated reason. Those numbers exist
 in the output so the diagnostic can be audited; they are not results. The
 eigenvalue timescales are the quantity to quote.
 
@@ -70,6 +71,12 @@ the transfer rates behind it were fitted to data containing no extraction, and
 the sweep answers "how fast would onward transport have to be" rather than
 "how much charge was collected". It is a requirement on the ETL, not a
 measurement of one.
+
+**The quoted standard errors are a lower bound.** They are a local
+linearization, and because P(0) is read from a noisy sample rather than fitted,
+the measured spread runs up to six times larger (docs/validation.md). The P(0)
+nuisance direction is marginalized out, which narrows the gap without closing
+it. Prefer the bootstrap when more than one file is available.
 
 **The bootstrap resamples files, not trajectories.** It captures the spread
 between the SHPROP files supplied, which share a trajectory. On the package's

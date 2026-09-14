@@ -107,14 +107,16 @@ synthetic sets propagated from a known rate matrix over four groups
 population is conserved to 1e-10, and no warnings are raised.
 
 *Five noisy SHPROP files, end to end through the CLI.* Recovered
-7.956, 1.965, 2.991, 0.4946 ns⁻¹ — every rate within 1.1% of truth — with
-R² = 0.99985 and a Jacobian condition number of 75.
+7.956, 1.965, 2.991, 0.4946 ns⁻¹ against true values of 8.0, 2.0, 3.0, 0.5 —
+every rate within 1.8% — with R² = 0.99985 and a Jacobian condition number
+of 75.
 
 *The identifiability test has teeth.* Given the same noisy data, a `dense`
 scheme (all 12 transitions, of which 4 are real) reaches the **same** R² as
 the correct sparse scheme. It buys nothing and hides everything: the Jacobian
-condition number rises to 6e19 and three of six rates in the three-group
-version come back `identified: false` with their degeneracy partners named.
+condition number rises to 6e19 and the undetermined rates come back
+`identified: false` with their degeneracy partners named. (`dense` is every
+ordered pair: twelve transitions on four groups, six on three.)
 A `dense` fit that looks excellent by R² alone is exactly the failure this
 check exists to catch.
 
@@ -132,6 +134,82 @@ which excludes the true 8.0. That is the documented behaviour, not a bug: the
 interval measures the spread between the supplied files, and those files share
 everything except their noise. It is reported with that caveat attached and
 must not be quoted as an ensemble error bar.
+
+*The quoted standard errors are a lower bound.* Over 200 noise realisations,
+the empirical spread of each fitted rate was compared against the standard
+error the module reports. With P(0) held exact, the reported error is correct
+to slightly conservative (0.65-0.91x the empirical spread). With P(0) read
+from the noisy data — what the code actually does — it understates by 1.6x to
+5.9x even after the P(0) nuisance direction is marginalized out. The ratio is
+reported in the module and in the CLI summary rather than papered over, and
+the bootstrap is recommended instead whenever more than one file exists.
+
+## Defects found by reviewing the kinetics module
+
+The module was reviewed independently after release. Four defects were
+confirmed and fixed; each has a regression test.
+
+**A pseudo-inverse marked unconstrained rates as identified.** This was the
+worst possible failure for this module, since refusing to quote undetermined
+rates is its entire purpose. The covariance used `pinv(J^T J)`, and a
+pseudo-inverse assigns *zero* variance to a direction the data does not
+constrain, rather than infinite. A rate the residuals are completely blind to
+therefore came back with relative standard error 0.0 and `identified: true`.
+The correlation guard could not catch it either: with a standard error of
+zero the correlation is NaN, which the degeneracy loop skips.
+
+It was not an exotic corner. It fired whenever a declared group was never
+populated, or a rate was driven to the optimizer bound — routine for an
+over-declared scheme or a late fit window. Measured over 100 noise
+realisations on a window starting at 2.5 ns, **77 rates were reported
+identified with a standard error of exactly zero, 71 of them off the true
+value by more than 50%**. One such rate was fitted at 6.7e-10 ns⁻¹ against a
+true 3.0 and stamped `identified: true`.
+
+Blind directions are now detected from the Jacobian columns and given
+infinite variance, and each rejected rate carries a stated reason. After the
+fix, together with the threshold change below, **zero of 400 rates in the
+same experiment are wrongly reported as identified**, while all 160 rates in
+a well-posed control remain identified and within 15% of truth.
+
+**The identifiability threshold was far too loose.** It admitted any rate with
+relative standard error below 1.0 — a 100% error. Given that the standard
+error is itself a lower bound by up to 6x, that admitted rates known to
+nothing better than an order of magnitude. It is now 0.1. Calibration across
+a threshold sweep showed this costs nothing: every correctly recovered rate
+in the well-posed control sits orders of magnitude below it.
+
+**The ill-conditioning warning was silent in the worst case.** The guard read
+`if np.isfinite(condition) and condition > 1e8`. A singular Gram matrix gives
+`cond = inf`, and `np.isfinite(inf)` is False, so a condition number of 1e9
+warned while a perfectly singular one did not. Of 43 singular fits in the
+100-realisation experiment, none produced a diagnostic. The report also wrote
+`jacobian_condition_number: null` for infinity, indistinguishable from "not
+computed". Now the warning fires on non-finite values, a separate
+rank-deficiency warning was added, and the report carries explicit
+`jacobian_is_singular` and `jacobian_rank_deficient` flags.
+
+**The bootstrap ignored `--weight-by-sem`.** The point estimate was a weighted
+least-squares fit while the interval printed beside it came from unweighted
+refits, so the two were different estimators. On a test with heteroscedastic
+noise the reported rate for `BCF->CBM` was 1.9589 while its own interval was
+[1.9730, 2.0224] — the rate fell outside its own confidence interval, with
+nothing flagging it. `bootstrap_rates` now takes the weights and returns
+convergence diagnostics, so an interval built from a subset of resamples says
+so instead of being reported as if every draw succeeded.
+
+Four smaller issues were fixed alongside: a group with zero between-file SEM
+received the largest weight in the problem (the floor is now the median
+positive spread, not the maximum); `_plain` crashed on a 0-dimensional numpy
+array; the femtosecond-to-nanosecond conversion multiplied by `1/1e6` instead
+of dividing by `1e6`, which dropped the frame sitting exactly on a requested
+window boundary; and `--sink-rates` accepted an empty or non-finite list,
+producing a silent no-op sweep.
+
+Three documentation errors were corrected: the recovered rates are within
+1.8% of truth, not 1.1%; `dense` on four groups is twelve transitions, not
+six; and `examples/interface_six_state.json` described different columns in
+its notes than it declared in its groups block.
 
 ## VACF and spectra
 
@@ -227,10 +305,12 @@ single time origin. It agrees with the direct double loop to 1e-14.
 python -m unittest discover -s tests -v
 ```
 
-157 tests, covering table and XDATCAR parsing (including the negative scale
-factor), namelist coercion, the audit checks including cap detection,
-population conservation and averaging, fit recovery and rejection, VACF
-estimators against the direct double loop, spectrum conventions, strict-JSON
-report serialization, recovery of a known rate matrix, detection of an
-unidentifiable over-parameterized scheme, sink conservation, and end-to-end
-CLI runs that assert on the written reports and figures.
+165 tests, covering table and XDATCAR parsing (including the negative scale
+factor on triclinic cells), namelist coercion, the audit checks including cap
+detection, population conservation and averaging, fit recovery and rejection,
+VACF estimators against the direct double loop, smoothing against scipy where
+the pad radius exceeds the array, spectrum conventions, strict-JSON report
+serialization, recovery of a known rate matrix, refusal to identify a rate the
+residuals are blind to, detection of an unidentifiable over-parameterized
+scheme, bootstrap weighting and convergence diagnostics, sink conservation,
+and end-to-end CLI runs that assert on the written reports and figures.

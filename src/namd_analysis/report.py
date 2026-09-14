@@ -35,6 +35,9 @@ def _plain(value: Any) -> Any:
         # writes a bare NaN token, which strict JSON parsers reject.
         value = value.item()
     if isinstance(value, np.ndarray):
+        # A 0-d array's tolist() returns a scalar, not a list.
+        if value.ndim == 0:
+            return _plain(value.item())
         return [_plain(item) for item in value.tolist()]
     if isinstance(value, Mapping):
         return {str(key): _plain(item) for key, item in value.items()}

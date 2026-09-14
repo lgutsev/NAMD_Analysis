@@ -106,6 +106,7 @@ class FitTests(unittest.TestCase):
             self.assertTrue(estimate.identified)
         self.assertGreater(fit.r_squared_total, 0.999999)
         self.assertEqual(fit.warnings, [])
+        self.assertFalse(fit.rank_deficient)
 
     def test_initial_condition_comes_from_the_data(self):
         fit = fit_master_equation(self.time, self.observed, GROUPS, self.edges)
@@ -148,6 +149,59 @@ class FitTests(unittest.TestCase):
         self.assertGreater(len(unidentified), 0)
         self.assertGreater(fit.condition_number, 1e8)
         self.assertTrue(any("do not determine" in w for w in fit.warnings))
+
+    def test_a_rate_the_data_cannot_see_is_never_identified(self):
+        # A group that is never populated makes its outgoing rate invisible to
+        # the residuals. A pseudo-inverse reports ZERO variance for such a
+        # direction, which previously marked it identified with stderr 0.
+        edges = parse_edges("CBM->BCF,BCF->VBM", GROUPS)
+        K = build_rate_matrix([6.0, 1.0], edges, len(GROUPS))
+        time = np.linspace(0.0, 1.5, 300)
+        observed = propagate(K, np.array([1.0, 0.0, 0.0, 0.0]), time)
+        self.assertEqual(observed[:, 2].max(), 0.0)  # PCBM never populated
+
+        blind_edges = parse_edges("CBM->BCF,BCF->VBM,PCBM->BCF", GROUPS)
+        fit = fit_master_equation(time, observed, GROUPS, blind_edges)
+        blind = next(r for r in fit.rates if r.name == "PCBM->BCF")
+        self.assertFalse(blind.identified)
+        self.assertIsNotNone(blind.unidentified_reason)
+        self.assertIn("do not change", blind.unidentified_reason)
+        self.assertIsNone(blind.stderr_per_ns)
+        # The rates the data does constrain are still reported.
+        for name in ("CBM->BCF", "BCF->VBM"):
+            self.assertTrue(next(r for r in fit.rates if r.name == name).identified)
+
+    def test_a_singular_jacobian_raises_the_ill_conditioning_warning(self):
+        # np.isfinite(inf) is False, so the guard used to go quiet in exactly
+        # the most degenerate case while warning about merely large values.
+        edges = parse_edges("CBM->BCF,BCF->VBM", GROUPS)
+        K = build_rate_matrix([6.0, 1.0], edges, len(GROUPS))
+        time = np.linspace(0.0, 1.5, 300)
+        observed = propagate(K, np.array([1.0, 0.0, 0.0, 0.0]), time)
+        fit = fit_master_equation(
+            time, observed, GROUPS, parse_edges("CBM->BCF,BCF->VBM,PCBM->BCF", GROUPS)
+        )
+        self.assertFalse(np.isfinite(fit.condition_number))
+        self.assertTrue(fit.rank_deficient)
+        self.assertTrue(any("ill-conditioned" in w for w in fit.warnings), fit.warnings)
+        self.assertTrue(any("rank deficient" in w for w in fit.warnings), fit.warnings)
+        payload = fit.as_dict()["identifiability"]
+        self.assertTrue(payload["jacobian_is_singular"])
+        self.assertTrue(payload["jacobian_rank_deficient"])
+
+    def test_initial_condition_uncertainty_widens_the_standard_errors(self):
+        # P(0) is read from a noisy sample; treating it as exact understated
+        # the standard errors severalfold.
+        rng = np.random.default_rng(11)
+        noisy = self.observed + 0.004 * rng.standard_normal(self.observed.shape)
+        fit = fit_master_equation(self.time, noisy, GROUPS, self.edges)
+        self.assertTrue(
+            fit.as_dict()["standard_errors"]["method"].startswith("asymptotic")
+        )
+        self.assertIn("LOWER BOUND", fit.as_dict()["standard_errors"]["caveat"])
+        for estimate in fit.rates:
+            self.assertIsNotNone(estimate.stderr_per_ns)
+            self.assertGreater(estimate.stderr_per_ns, 0.0)
 
     def test_degenerate_partners_are_named(self):
         rng = np.random.default_rng(6)
@@ -196,12 +250,66 @@ class BootstrapTests(unittest.TestCase):
             [exact + 0.004 * rng.standard_normal(exact.shape) for _ in range(6)]
         )
         edges = parse_edges(SCHEME, GROUPS)
-        intervals = bootstrap_rates(time, per_file, GROUPS, edges, n_resamples=40, seed=1)
+        intervals, diagnostics = bootstrap_rates(
+            time, per_file, GROUPS, edges, n_resamples=40, seed=1
+        )
+        self.assertEqual(diagnostics["converged_resamples"], 40)
+        self.assertEqual(diagnostics["intervals_reported"], 4)
+        self.assertFalse(diagnostics["weighted"])
         self.assertIn("CBM->BCF", intervals)
         low, high = intervals["CBM->BCF"]
         self.assertLess(low, high)
         self.assertLess(low, 8.0 * 1.5)
         self.assertGreater(high, 8.0 * 0.5)
+
+    def test_weights_reach_the_resampled_fits(self):
+        # An interval refitted unweighted while the point estimate is weighted
+        # is centred on a different estimator and can exclude its own rate.
+        time = np.linspace(0.0, 2.0, 201)
+        exact = propagate(_true_matrix(), np.array([1.0, 0.0, 0.0, 0.0]), time)
+        rng = np.random.default_rng(12)
+        per_file = np.stack(
+            [exact + 0.004 * rng.standard_normal(exact.shape) for _ in range(5)]
+        )
+        edges = parse_edges(SCHEME, GROUPS)
+        weights = np.ones_like(exact)
+        weights[:, 0] = 50.0  # weight one group far more heavily
+        plain, plain_info = bootstrap_rates(
+            time, per_file, GROUPS, edges, n_resamples=25, seed=2
+        )
+        weighted, weighted_info = bootstrap_rates(
+            time, per_file, GROUPS, edges, n_resamples=25, seed=2, weights=weights
+        )
+        self.assertFalse(plain_info["weighted"])
+        self.assertTrue(weighted_info["weighted"])
+        self.assertNotEqual(plain["BCF->CBM"], weighted["BCF->CBM"])
+
+    def test_mismatched_weight_shape_is_rejected(self):
+        time = np.linspace(0.0, 1.0, 51)
+        exact = propagate(_true_matrix(), np.array([1.0, 0.0, 0.0, 0.0]), time)
+        per_file = np.stack([exact, exact * 1.0])
+        with self.assertRaises(KineticsError):
+            bootstrap_rates(
+                time, per_file, GROUPS, parse_edges(SCHEME, GROUPS),
+                n_resamples=5, weights=np.ones((3, 3)),
+            )
+
+    def test_diagnostics_report_dropped_resamples(self):
+        time = np.linspace(0.0, 2.0, 101)
+        exact = propagate(_true_matrix(), np.array([1.0, 0.0, 0.0, 0.0]), time)
+        rng = np.random.default_rng(13)
+        per_file = np.stack(
+            [exact + 0.003 * rng.standard_normal(exact.shape) for _ in range(4)]
+        )
+        intervals, info = bootstrap_rates(
+            time, per_file, GROUPS, parse_edges(SCHEME, GROUPS),
+            n_resamples=5, seed=3,
+        )
+        # Five resamples is below the minimum, so no interval may be claimed.
+        self.assertEqual(intervals, {})
+        self.assertEqual(info["requested_resamples"], 5)
+        self.assertIn("note", info)
+        self.assertIn("fewer than", info["note"])
 
     def test_single_file_is_rejected(self):
         time = np.linspace(0.0, 1.0, 51)

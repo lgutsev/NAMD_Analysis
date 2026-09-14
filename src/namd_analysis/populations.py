@@ -18,7 +18,11 @@ import numpy as np
 from .io.hefei import read_shprop
 from .units import FS_PER_NS
 
-TIME_UNITS = {"fs": 1.0 / FS_PER_NS, "ps": 1.0e-3, "ns": 1.0}
+#: Divisors, not multipliers: ``t_fs * (1/1e6)`` is not exactly ``t_fs / 1e6``,
+#: and the difference is enough to drop the frame sitting exactly on a
+#: requested window boundary.
+TIME_DIVISORS = {"fs": FS_PER_NS, "ps": 1.0e3, "ns": 1.0}
+TIME_UNITS = TIME_DIVISORS
 
 
 class ConfigError(ValueError):
@@ -69,9 +73,9 @@ class StateMap:
         return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
     def validate(self) -> None:
-        if self.time_unit not in TIME_UNITS:
+        if self.time_unit not in TIME_DIVISORS:
             raise ConfigError(
-                f"time_unit {self.time_unit!r} is not one of {sorted(TIME_UNITS)}"
+                f"time_unit {self.time_unit!r} is not one of {sorted(TIME_DIVISORS)}"
             )
         if not self.groups:
             raise ConfigError("at least one group must be declared")
@@ -109,7 +113,8 @@ class StateMap:
 
     @property
     def to_ns(self) -> float:
-        return TIME_UNITS[self.time_unit]
+        """Divisor taking the file's time unit to nanoseconds."""
+        return TIME_DIVISORS[self.time_unit]
 
     def ungrouped_columns(self) -> List[int]:
         assigned = {c for cols in self.groups.values() for c in cols}
@@ -170,7 +175,7 @@ def load_population_set(paths: Sequence, state_map: StateMap) -> PopulationSet:
     if len(paths) > 1:
         sem = stack.std(axis=0, ddof=1) / np.sqrt(len(paths))
 
-    time_ns = time_raw[0] * state_map.to_ns
+    time_ns = time_raw[0] / state_map.to_ns
     total = mean[:, state_map.population_columns].sum(axis=1)
     conservation = {
         "min": float(np.min(total)),

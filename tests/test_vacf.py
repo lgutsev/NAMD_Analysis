@@ -180,6 +180,22 @@ class SmoothingTests(unittest.TestCase):
                 err_msg=f"sigma={sigma}",
             )
 
+    def test_matches_scipy_when_the_pad_radius_exceeds_the_array(self):
+        # radius = int(4*sigma + 0.5), so sigma 4 on a 7-point array pads wider
+        # than the array itself -- the case np.pad handles differently per mode.
+        from scipy.ndimage import gaussian_filter1d
+
+        rng = np.random.default_rng(22)
+        for length in (3, 5, 7, 12):
+            values = rng.standard_normal(length)
+            for sigma in (2.0, 4.0, 8.0):
+                np.testing.assert_allclose(
+                    gaussian_smooth(values, sigma),
+                    gaussian_filter1d(values, sigma),
+                    atol=1e-10,
+                    err_msg=f"length={length} sigma={sigma}",
+                )
+
     def test_zero_sigma_is_a_no_op(self):
         values = np.arange(10.0)
         np.testing.assert_array_equal(gaussian_smooth(values, 0.0), values)

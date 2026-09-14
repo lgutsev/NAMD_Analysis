@@ -21,6 +21,7 @@ from .fitting import FitError, fit_single_exponential
 from .inventory import INVENTORY_HEADER, rows as inventory_rows, scan, summarize
 from .io.xdatcar import read_xdatcar
 from .kinetics import (
+    ASYMPTOTIC_UNDERSTATEMENT_FACTOR,
     RATE_HEADER,
     SINK_HEADER,
     bootstrap_rates,
@@ -349,9 +350,16 @@ def _parse_sweep(text: str) -> List[float]:
     """LOW:HIGH:COUNT on a log grid, or a comma-separated list of rates."""
     if "," in text or ":" not in text:
         try:
-            return [float(part) for part in text.split(",") if part.strip()]
+            values = [float(part) for part in text.split(",") if part.strip()]
         except ValueError as exc:
             raise SystemExit(f"error: --sink-rates {text!r} is not a list of numbers") from exc
+        if not values:
+            raise SystemExit("error: --sink-rates listed no rates")
+        if any(not np.isfinite(v) or v < 0 for v in values):
+            raise SystemExit(
+                f"error: --sink-rates {text!r} contains a negative or non-finite rate"
+            )
+        return values
     pieces = text.split(":")
     if len(pieces) != 3:
         raise SystemExit(
@@ -394,6 +402,7 @@ def cmd_kinetics(args: argparse.Namespace) -> int:
     edges = parse_edges(args.scheme, names)
 
     weights = None
+    weight_notes: List[str] = []
     if args.weight_by_sem:
         if population.sem is None:
             raise SystemExit(
@@ -402,30 +411,55 @@ def cmd_kinetics(args: argparse.Namespace) -> int:
         sem = np.column_stack(
             [s.sem if s.sem is not None else np.ones_like(s.values) for s in series]
         )[mask]
-        floor = np.max(sem) * 1e-3 if np.max(sem) > 0 else 1.0
+        positive = sem[sem > 0]
+        if positive.size == 0:
+            raise SystemExit(
+                "error: every between-file SEM is zero, so --weight-by-sem has no "
+                "information to weight with; the input files are identical"
+            )
+        # Floor on the MEDIAN positive spread, not the maximum. A group that is
+        # never populated has SEM exactly zero in every file, and a floor tied
+        # to the maximum would hand it the largest weight in the problem.
+        floor = float(np.median(positive))
         weights = 1.0 / np.maximum(sem, floor)
+        zero_sem_groups = [
+            name for index, name in enumerate(names) if np.all(sem[:, index] <= 0)
+        ]
+        if zero_sem_groups:
+            weight_notes.append(
+                "these groups have zero spread between files and are weighted at "
+                "the median level rather than infinitely: " + ", ".join(zero_sem_groups)
+            )
 
     fit = fit_master_equation(time_ns, observed, names, edges, weights=weights)
 
     bootstrap = {}
+    bootstrap_diagnostics = {}
     bootstrap_note = "not requested"
     if args.bootstrap:
         per_file = per_file_group_populations(population, state_map)
         if per_file is None or per_file.shape[0] < 2:
             bootstrap_note = "skipped: bootstrapping whole files needs at least two files"
         else:
-            bootstrap = bootstrap_rates(
+            bootstrap, bootstrap_diagnostics = bootstrap_rates(
                 time_ns, per_file[:, mask, :], names, edges,
                 n_resamples=args.bootstrap, seed=args.bootstrap_seed,
+                weights=weights,
             )
             for estimate in fit.rates:
                 if estimate.name in bootstrap:
                     estimate.bootstrap_ci_per_ns = bootstrap[estimate.name]
+            converged = bootstrap_diagnostics.get("converged_resamples", 0)
             bootstrap_note = (
-                f"{args.bootstrap} resamples of the {per_file.shape[0]} input files, "
-                "2.5-97.5 percentile; this is the spread between the files supplied, "
-                "not an ensemble error bar"
+                f"{converged} of {args.bootstrap} resamples of the "
+                f"{per_file.shape[0]} input files converged, 2.5-97.5 percentile, "
+                + ("weighted the same way as the point estimate" if weights is not None
+                   else "unweighted, matching the point estimate")
+                + "; this is the spread between the files supplied, not an "
+                "ensemble error bar"
             )
+            if bootstrap_diagnostics.get("note"):
+                bootstrap_note += ". " + bootstrap_diagnostics["note"]
 
     sweep = []
     if args.sink_group:
@@ -466,9 +500,14 @@ def cmd_kinetics(args: argparse.Namespace) -> int:
         },
         "scheme": args.scheme,
         "weighting": "1/SEM per point" if weights is not None else "unweighted",
+        "weighting_notes": weight_notes,
         "conservation": population.conservation,
         "fit": fit.as_dict(),
-        "bootstrap": {"intervals_per_ns": bootstrap, "note": bootstrap_note},
+        "bootstrap": {
+            "intervals_per_ns": bootstrap,
+            "diagnostics": bootstrap_diagnostics,
+            "note": bootstrap_note,
+        },
         "sink_sweep": (
             {
                 "sink_group": args.sink_group,
@@ -511,6 +550,12 @@ def cmd_kinetics(args: argparse.Namespace) -> int:
         )
     print("  eigenvalue timescales (ns): "
           + ", ".join(f"{t:.4g}" for t in fit.eigen_timescales_ns))
+    if not bootstrap and any(e.stderr_per_ns is not None for e in fit.rates):
+        print(
+            f"  note: those +- values are a linearized LOWER bound (measured at up "
+            f"to {ASYMPTOTIC_UNDERSTATEMENT_FACTOR:g}x too small because P(0) is read "
+            "from a noisy sample). Pass --bootstrap for an interval that varies it."
+        )
     for warning in fit.warnings:
         print(f"  warning: {warning}")
     if sweep:
