@@ -1,0 +1,16 @@
+{
+  "_instructions": "TEMPLATE. Populate population_columns and groups from the ACTUAL SHPROP files and their provenance before using this. The column numbers are deliberately left empty: they are zero-based table columns in your SHPROP files, they differ between campaigns, and guessing them silently produces confident numbers for the wrong states. Loading this file unedited fails with 'group ... is empty', which is the intended behaviour.",
+  "name": "FAPI_001_BCF_PCBM_B",
+  "time_column": 0,
+  "time_unit": "fs",
+  "population_columns": [],
+  "groups": {
+    "CBM": [],
+    "BCF": [],
+    "PCBM": [],
+    "VBM": []
+  },
+  "complete_population": true,
+  "recombined_group": "VBM",
+  "notes": "Configuration B. Verify every assignment against the band characters you computed for this system. A fixed column map cannot follow a state whose spatial character changes during the trajectory, which is exactly what happens near a crossing; see docs/scope.md."
+}

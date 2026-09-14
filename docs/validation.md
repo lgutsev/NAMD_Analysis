@@ -427,6 +427,58 @@ plus the existing commands are built to run. **No campaign population figure
 or lifetime has been reproduced by this release.** Everything above is
 validated against synthetic inputs with known answers.
 
+## Charge-transfer analysis (v0.4)
+
+No campaign `SHPROP.*` files have been supplied, so this layer is validated
+against closed forms, independent solvers and synthetic histories with known
+answers.
+
+**First passage against its closed form.** For a source with exactly two
+competing channels, P(success before failure) must equal `a / (a + b)`. The
+solver matches to 12 decimal places across rates spanning four orders of
+magnitude, and the competing-channel ratio agrees with it exactly in that
+topology.
+
+**First passage against an independent solve and against Monte Carlo.** On a
+network with back-transfer (`CBM<->BCF`, `BCF<->PCBM`, `BCF->VBM`) the solver
+reproduces a hand-built linear solve of the transient block to 12 decimals, and
+a 20 000-trajectory Monte Carlo over the embedded jump chain agrees within
+sampling error.
+
+**Edge cases resolve rather than crash.** A disconnected target returns zero. A
+source already in the success or failure set returns exactly 1 or 0 and depends
+on no fitted rate. A state that can reach neither outcome is not an error and
+does not make the question ill posed for the others: it is reported as stranded,
+its probability is zero for both outcomes, and the remainder is reported as
+unresolved rather than being folded into the complement.
+
+**Dependency analysis is tight, not conservative.** A blind rate sitting behind
+an absorbing state genuinely cannot affect the branch, and the grader does not
+count it against the result. A rate that does contribute and lies in the null
+space of the Jacobian does make the branch `not_identifiable`: fitting only
+after a fast pair has equilibrated reproduces exactly that, and the reviewer
+table then leaves the probability cell empty rather than printing the 0.85 the
+optimizer returned.
+
+**The sink is a genuine competing channel.** Extracted plus recombined yields
+sum to one to 1e-8 at every escape rate, the extracted yield is monotonic in
+the escape rate, zero escape extracts nothing, and the reported crossover
+reproduces equal yields to seven decimals when fed back through the solver. A
+grid with no crossing reports that rather than inventing one.
+
+**The early transient survives a late-only view.** On a synthetic history whose
+acceptor spikes to 0.40 at 17 ps and then sits flat at 0.050 for the rest of
+the trajectory, the late window reports a net change below 0.01 and a peak
+indistinguishable from its minimum, while the full-trajectory and transient
+views both retain the 0.40 peak and its time. The regime comparison emits the
+note that a fit starting after the early window must not be described as
+showing the group does not change.
+
+**End to end.** A synthetic four-group campaign with true rates giving
+`a / (a + b) = 0.75` is recovered through the whole CLI chain to within 0.05,
+graded `identified`, and written into `reviewer_branching.csv` with a matching
+local ratio and a consistent escape crossover.
+
 ## Running the checks
 
 ```bash
@@ -437,7 +489,7 @@ ruff check src tests
 CI runs the suite on Python 3.9, 3.11 and 3.13, plus a Ruff pass over `src`
 and `tests`.
 
-247 tests, covering table and XDATCAR parsing (including the negative scale
+320 tests, covering table and XDATCAR parsing (including the negative scale
 factor on triclinic cells), namelist coercion, the audit checks including the
 timestep-limit and engineered-ceiling diagnostics, canonical master SHPROP
 generation, population conservation and averaging, fit recovery and rejection,

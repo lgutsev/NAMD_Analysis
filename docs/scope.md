@@ -28,10 +28,70 @@ ran.
 
 ## Known limits
 
+**Three kinds of number, never interchangeable.** Every reported quantity
+carries one of `observed_from_SHPROP`, `model_inferred` or `counterfactual`.
+Peaks, endpoints and time-integrated populations are read from the data. Rates
+and first-passage probabilities come from a fitted model and inherit all of its
+assumptions. Extraction yields are propagated under an escape rate that was
+never simulated. A first-passage probability is not a device extraction
+efficiency, a sink yield is not measured, and a crossover escape rate is a
+requirement on the transport layer rather than an observed extraction time.
+The simulated cell contains no electrode and no long-range transport.
+
+**A time-integrated population is not a flux.** It is the area under an
+occupation curve, in population x ns. Population that arrives, leaves and
+arrives again is counted every time it is present, and population that never
+moves contributes as much as population that turns over continuously. It does
+not measure an amount transferred.
+
+**A branching probability is a rate-model inference, not an event count.**
+`P(acceptor before recombination)` is computed from the fitted generator by
+solving the backward equation. It says what the fitted model implies, not how
+many carriers actually made a transition. Averaged SHPROP populations cannot
+answer the second question at all; see [hopping histories](hopping_histories.md).
+
+**The competing-channel ratio is only sometimes the branching probability.**
+`k_S / (k_S + k_F)` equals the first-passage probability only when every exit
+from the source lands directly in one of the two outcome sets. With any other
+exit the carrier can leave, return and try again. The ratio is withheld in that
+case and the reason is stated.
+
+**A branch inherits every identifiability limit of its rates.** Each branching
+result is graded `identified`, `weakly_identified` or `not_identifiable` from
+the rates it actually depends on -- the edges leaving the transient states
+reachable from the source. A rate behind an absorbing state cannot affect the
+answer and is not counted against it. When the grade is `not_identifiable` the
+reviewer table leaves the cell empty rather than printing a number, and the
+bootstrap interval is suppressed unless the branch was identifiable in at least
+80% of successful resamples.
+
+**Windows are yours, not the package's.** There is no default transient window
+and no default late window. Where one regime ends and the next begins is a
+property of the system, and encoding one campaign's choice as a constant would
+silently misdescribe another.
+
 **A fixed state map cannot follow a moving state.** Grouping is by table
 column. If a state's spatial character changes during the trajectory — which
 is exactly what happens near a trivial crossing — the column keeps its label
 and the group population becomes a mixture. Nothing here detects that.
+
+Frame-dependent state character is deliberately *not* implemented. Where
+time-dependent projections already exist (orbital projections, spatial
+localization, fragment charge analysis, wavefunction overlap tracking), they
+could eventually drive a per-frame physical-state map:
+
+```
+frame -> electronic state -> physical character / projection
+      -> time-dependent physical state mapping
+      -> acceptor / interfacial / donor populations
+```
+
+That is worth building, and it is not built here. Doing it from a heuristic
+would be worse than not doing it: this package does not infer state character
+from energies, and it does not track bands by nearest energy as a substitute.
+Until such an input exists, the fixed map is the honest description of what is
+being analysed, and its limitation is stated wherever a group population is
+reported.
 
 This is a stated limit, not a gap to be filled heuristically. State character
 is never inferred from column number, energy or coupling magnitude, and no

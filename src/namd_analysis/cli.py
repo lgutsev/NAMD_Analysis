@@ -19,7 +19,27 @@ import numpy as np
 from . import __version__
 from .audit import DEFAULT_WARNING_FRACTION, PAIR_HEADER, audit_run
 from .fitting import FitError, fit_single_exponential, bootstrap_single_exponential
+from .branching import (
+    COMPETITION_HEADER,
+    BranchingError,
+    bootstrap_branch_probability,
+    branch_probability,
+    extraction_competition,
+)
 from .comparison import compare_schemes, compare_runs
+from .observables import LEGEND, MODEL_INFERRED
+from .reviewer import REVIEWER_HEADER, ReviewerError, build_summary
+from .transient import (
+    METRIC_CLASSES,
+    METRIC_HEADER,
+    REGIME_HEADER,
+    TransientError,
+    Window,
+    analyze,
+    compare_regimes,
+    flat_group_fields,
+    parse_window,
+)
 from .inventory import INVENTORY_HEADER, rows as inventory_rows, scan, summarize
 from .master import (
     INPUT_HEADER,
@@ -51,6 +71,7 @@ from .populations import (
     trapezoid,
 )
 from .plotting import (
+    plot_competition,
     plot_kinetics,
     plot_populations,
     plot_sink_sweep,
@@ -939,6 +960,330 @@ def cmd_compare_runs(args):
     return 0
 
 
+# --------------------------------------------------------------------------
+# transient-populations
+
+
+def _load_groups(args):
+    """Shared front half of the population-reading commands."""
+    state_map = StateMap.from_json(args.config)
+    paths = _expand(args.files)
+    population = load_population_set(paths, state_map)
+    series = group_series(population, state_map)
+    return state_map, paths, population, series
+
+
+def cmd_transient_populations(args: argparse.Namespace) -> int:
+    state_map, paths, population, series = _load_groups(args)
+    time_ns = population.time_ns
+    pairs = [(s.name, s.values) for s in series]
+
+    windows = [parse_window(text) for text in (args.window or [])]
+    regime = None
+    if args.transient_window or args.late_window:
+        if not (args.transient_window and args.late_window):
+            raise SystemExit(
+                "error: --transient-window and --late-window must be given together"
+            )
+        early = parse_window(args.transient_window, name="transient")
+        late = parse_window(args.late_window, name="late")
+        windows = windows + [early, late]
+    if not windows:
+        windows = [Window(name="full")]
+
+    try:
+        metrics = analyze(time_ns, pairs, windows)
+        if args.transient_window:
+            regime = compare_regimes(time_ns, pairs, windows[-2], windows[-1])
+    except TransientError as exc:
+        raise SystemExit(f"error: {exc}") from exc
+
+    out = prepare_output(args.out, overwrite=args.overwrite)
+    write_csv(out / "transient_populations.csv", METRIC_HEADER,
+              [m.as_row() for m in metrics])
+    if regime is not None:
+        write_csv(out / "regime_comparison.csv", REGIME_HEADER, regime["rows"])
+
+    flat = {}
+    for group, _ in pairs:
+        for window in windows:
+            for key, value in flat_group_fields(metrics, group, window.name).items():
+                flat[f"{window.name}__{key}"] = value
+
+    payload = {
+        "command": "transient-populations",
+        "environment": environment(),
+        "inputs": fingerprint(paths),
+        "state_map": {"name": state_map.name, "groups": state_map.groups},
+        "n_files": population.n_files,
+        "time_span_ns": [float(time_ns[0]), float(time_ns[-1])],
+        "conservation": population.conservation,
+        "windows": [
+            {"name": w.name, "start_ns": w.resolve(time_ns)[0],
+             "end_ns": w.resolve(time_ns)[1]} for w in windows
+        ],
+        "metrics": [m.as_dict() for m in metrics],
+        "flat_fields": flat,
+        "regime_comparison": regime,
+        "observable_class": METRIC_CLASSES,
+        "observable_class_legend": LEGEND,
+        "interpretation_limits": [
+            "every field here is read from the populations and none of it is a "
+            "flux: a time-integrated population is the area under an occupation "
+            "curve, not an amount transferred",
+            "population that arrives, leaves and arrives again is counted every "
+            "time it is present",
+            "a group that peaks and falls back before a later fit window opens "
+            "will look flat to that fit; the peak and its time are reported here "
+            "so that cannot be stated as an absence of change",
+        ],
+    }
+    write_json(out / "report.json", payload)
+
+    print(f"{population.n_files} file(s), {time_ns.size} time points, "
+          f"{len(windows)} window(s)")
+    for window in windows:
+        low, high = window.resolve(time_ns)
+        print(f"  window {window.name!r} = [{low:g}, {high:g}] ns")
+        for m in metrics:
+            if m.window != window.name:
+                continue
+            print(f"    {m.group:<8s} init={m.initial_population:.4f} "
+                  f"peak={m.peak_population:.4f} @ {m.peak_time_ns:.4g} ns  "
+                  f"final={m.final_population:.4f}  "
+                  f"integral={m.integrated_population_ns:.4g} ns")
+    for note in (regime or {}).get("notes", []):
+        print(f"  note: {note}")
+    print(f"written to {out}")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# branching
+
+
+def _fit_for_branching(args):
+    state_map, paths, population, series = _load_groups(args)
+    if not state_map.complete_population:
+        raise SystemExit(
+            "error: branching needs complete_population: true in the "
+            "configuration. A master equation over a subset of states is not a "
+            "closed system, and a first-passage probability derived from one is "
+            "not meaningful."
+        )
+    names = [s.name for s in series]
+    observed_full = np.column_stack([s.values for s in series])
+    time_full = population.time_ns
+    lo = time_full[0] if args.fit_start_ns is None else args.fit_start_ns
+    hi = time_full[-1] if args.fit_end_ns is None else args.fit_end_ns
+    mask = (time_full >= lo) & (time_full <= hi)
+    if np.count_nonzero(mask) < 3:
+        raise SystemExit(f"error: the window [{lo}, {hi}] ns holds too few samples")
+    edges = parse_edges(args.scheme, names)
+    fit = fit_master_equation(time_full[mask], observed_full[mask], names, edges)
+    return state_map, paths, population, series, names, edges, fit, mask
+
+
+def cmd_branching(args: argparse.Namespace) -> int:
+    (state_map, paths, population, series, names, edges,
+     fit, mask) = _fit_for_branching(args)
+
+    success = [s.strip() for s in args.success.split(",") if s.strip()]
+    failure = [s.strip() for s in args.failure.split(",") if s.strip()]
+    try:
+        result = branch_probability(fit, args.source, success, failure)
+    except BranchingError as exc:
+        raise SystemExit(f"error: {exc}") from exc
+
+    if args.bootstrap:
+        per_file = per_file_group_populations(population, state_map)
+        if per_file is None or per_file.shape[0] < 2:
+            result.bootstrap = {
+                "branch_ci_status": "skipped: needs at least two input files"
+            }
+        else:
+            result.bootstrap = bootstrap_branch_probability(
+                population.time_ns[mask], per_file[:, mask, :], names, edges,
+                args.source, success, failure,
+                n_resamples=args.bootstrap, seed=args.bootstrap_seed,
+            )
+    else:
+        result.bootstrap = {"branch_ci_status": "not requested"}
+
+    out = prepare_output(args.out, overwrite=args.overwrite)
+    write_csv(
+        out / "branching.csv",
+        ["quantity", "value", "unit", "observable_class"],
+        [
+            ["source", result.source, "", MODEL_INFERRED],
+            ["success_set", ";".join(result.success), "", MODEL_INFERRED],
+            ["failure_set", ";".join(result.failure), "", MODEL_INFERRED],
+            ["probability_success_before_failure", result.probability, "",
+             MODEL_INFERRED],
+            ["probability_failure_before_success", result.complement, "",
+             MODEL_INFERRED],
+            ["probability_never_absorbed", result.unresolved, "", MODEL_INFERRED],
+            ["local_branching_ratio", result.local_ratio.get("ratio"), "",
+             MODEL_INFERRED],
+            ["branching_status", result.status, "", MODEL_INFERRED],
+            ["bootstrap_ci_low", result.bootstrap.get("branch_ci_low"), "",
+             MODEL_INFERRED],
+            ["bootstrap_ci_high", result.bootstrap.get("branch_ci_high"), "",
+             MODEL_INFERRED],
+        ],
+    )
+    write_csv(out / "rates.csv", RATE_HEADER, rate_rows(fit))
+
+    payload = {
+        "command": "branching",
+        "environment": environment(),
+        "inputs": fingerprint(paths),
+        "scheme": args.scheme,
+        "fit": fit.as_dict(),
+        "branching": result.as_dict(),
+        "observable_class_legend": LEGEND,
+        "interpretation_limits": [
+            "a first-passage probability is a property of the fitted rate "
+            "matrix, not a count of transitions. Averaged SHPROP populations do "
+            "not record individual hops",
+            "it is not a device extraction efficiency: the simulated cell has no "
+            "electrode and no long-range transport",
+            "if the contributing rates are not identifiable, the probability is "
+            "not a result no matter how precise it looks",
+        ],
+    }
+    write_json(out / "report.json", payload)
+
+    print(f"P({'/'.join(success)} before {'/'.join(failure)} | {args.source}) = "
+          f"{result.probability:.4f}")
+    print(f"  complement = {result.complement:.4f}, "
+          f"never absorbed = {result.unresolved:.4f}")
+    print(f"  status: {result.status}")
+    if result.status_reason:
+        print(f"    {result.status_reason}")
+    if result.local_ratio.get("available"):
+        print(f"  local competing-channel ratio = {result.local_ratio['ratio']:.4f}")
+    else:
+        print(f"  local ratio unavailable: {result.local_ratio.get('reason')}")
+    if result.bootstrap.get("branch_ci_status") == "reported":
+        print(f"  bootstrap 95% CI = [{result.bootstrap['branch_ci_low']:.4f}, "
+              f"{result.bootstrap['branch_ci_high']:.4f}]")
+    else:
+        print(f"  bootstrap: {result.bootstrap.get('branch_ci_status')}")
+    print(f"written to {out}")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# extraction-competition
+
+
+def cmd_extraction_competition(args: argparse.Namespace) -> int:
+    (state_map, paths, population, series, names, edges,
+     fit, mask) = _fit_for_branching(args)
+
+    recombined = [s.strip() for s in args.recombined.split(",") if s.strip()]
+    if not recombined:
+        if state_map.recombined_group is None:
+            raise SystemExit(
+                "error: --recombined is required when the state map declares no "
+                "recombined_group"
+            )
+        recombined = [state_map.recombined_group]
+    try:
+        payload_competition = extraction_competition(
+            fit, args.sink_group, recombined,
+            _parse_sweep(args.escape_rates), source=args.source,
+        )
+    except BranchingError as exc:
+        raise SystemExit(f"error: {exc}") from exc
+
+    out = prepare_output(args.out, overwrite=args.overwrite)
+    write_csv(out / "extraction_competition.csv", COMPETITION_HEADER,
+              payload_competition["rows"])
+    figures = plot_competition(payload_competition, out / "extraction_competition")
+
+    payload = {
+        "command": "extraction-competition",
+        "environment": environment(),
+        "inputs": fingerprint(paths),
+        "scheme": args.scheme,
+        "fit": fit.as_dict(),
+        "competition": payload_competition,
+        "figures": [str(p) for p in figures],
+        "observable_class_legend": LEGEND,
+    }
+    write_json(out / "report.json", payload)
+
+    first = payload_competition["points"][0]
+    last = payload_competition["points"][-1]
+    print(f"extraction out of {args.sink_group} against recombination into "
+          f"{','.join(recombined)}")
+    print(f"  extracted yield runs {first['extracted_yield']:.4f} -> "
+          f"{last['extracted_yield']:.4f} across the escape-rate grid")
+    rate = payload_competition.get("required_escape_rate_per_ns")
+    if rate:
+        print(f"  required onward escape rate = {rate:.4g} /ns "
+              f"(escape time {payload_competition['required_escape_time_ns']:.4g} ns)")
+        print("  that is the speed onward transport would have to reach, not a "
+              "measured extraction time")
+    else:
+        print(f"  {payload_competition['crossover_note']}")
+    print(f"written to {out}")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# reviewer-summary
+
+
+def cmd_reviewer_summary(args: argparse.Namespace) -> int:
+    try:
+        payload = build_summary(args.manifest, criterion=args.criterion)
+    except ReviewerError as exc:
+        raise SystemExit(f"error: {exc}") from exc
+
+    out = prepare_output(args.out, overwrite=args.overwrite)
+    write_csv(out / "reviewer_branching.csv", REVIEWER_HEADER, payload["rows"])
+    payload_full = {
+        "command": "reviewer-summary",
+        "environment": environment(),
+        "manifest": str(Path(args.manifest).resolve()),
+        "inputs": fingerprint([Path(args.manifest)]),
+        **payload,
+        "observable_class_legend": LEGEND,
+    }
+    write_json(out / "report.json", payload_full)
+
+    print(f"{len(payload['rows'])} configuration(s), criterion {payload['criterion']}")
+    for row in payload["rows"]:
+        record = dict(zip(REVIEWER_HEADER, row))
+        branch = record["first_passage_pcbm_before_vbm"]
+        print(
+            f"  {record['configuration']:<10s} files={record['n_shprop_files']} "
+            f"acceptor peak={_show(record['pcbm_peak'])} "
+            f"@ {_show(record['pcbm_peak_time_ns'])} ns  "
+            f"scheme={record['selected_scheme']}  "
+            f"P(acceptor before recombination)={_show(branch)} "
+            f"[{record['branching_status']}]"
+        )
+    for failure in payload["failures"]:
+        print(f"  {failure['configuration']}: FAILED - {failure['error']}")
+    for config in payload["configurations"]:
+        for note in config["notes"]:
+            print(f"  note ({config['configuration']}): {note}")
+    print(f"written to {out}")
+    return 0
+
+
+def _show(value) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, float):
+        return f"{value:.4g}"
+    return str(value)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="namd-analysis",
@@ -1076,6 +1421,93 @@ def build_parser() -> argparse.ArgumentParser:
     run_compare.add_argument("--end-ns", type=float)
     add_output(run_compare)
     run_compare.set_defaults(func=cmd_compare_runs)
+
+    transient = sub.add_parser(
+        "transient-populations",
+        help="population observables per group over user-declared time windows",
+    )
+    transient.add_argument("--files", nargs="+", required=True)
+    transient.add_argument("--config", required=True, help="state map JSON")
+    transient.add_argument(
+        "--window", action="append", default=[],
+        help="NAME=START:END in ns; repeatable. Either end may be blank",
+    )
+    transient.add_argument(
+        "--transient-window", default=None,
+        help="START:END in ns for the early regime; pairs with --late-window",
+    )
+    transient.add_argument(
+        "--late-window", default=None,
+        help="START:END in ns for the late regime; pairs with --transient-window",
+    )
+    add_output(transient)
+    transient.set_defaults(func=cmd_transient_populations)
+
+    branch = sub.add_parser(
+        "branching",
+        help="first-passage probability of reaching one group set before another",
+    )
+    branch.add_argument("--files", nargs="+", required=True)
+    branch.add_argument("--config", required=True, help="state map JSON (must be complete)")
+    branch.add_argument("--scheme", required=True, help="kinetic graph, as for `kinetics`")
+    branch.add_argument("--source", required=True, help="group the carrier starts in")
+    branch.add_argument(
+        "--success", required=True,
+        help="comma-separated group(s) counted as the successful outcome",
+    )
+    branch.add_argument(
+        "--failure", required=True,
+        help="comma-separated group(s) counted as the competing outcome",
+    )
+    branch.add_argument("--fit-start-ns", type=float, default=None)
+    branch.add_argument("--fit-end-ns", type=float, default=None)
+    branch.add_argument(
+        "--bootstrap", type=int, default=0, metavar="N",
+        help="resample whole input files N times and re-derive the probability",
+    )
+    branch.add_argument("--bootstrap-seed", type=int, default=0)
+    add_output(branch)
+    branch.set_defaults(func=cmd_branching)
+
+    competition = sub.add_parser(
+        "extraction-competition",
+        help="counterfactual extraction against recombination versus escape rate",
+    )
+    competition.add_argument("--files", nargs="+", required=True)
+    competition.add_argument("--config", required=True)
+    competition.add_argument("--scheme", required=True)
+    competition.add_argument(
+        "--sink-group", required=True,
+        help="group from which onward transport is assumed to drain",
+    )
+    competition.add_argument(
+        "--recombined", default="",
+        help="comma-separated recombination group(s); defaults to the state map's",
+    )
+    competition.add_argument(
+        "--source", default=None,
+        help="start all population in this group instead of the observed P(0)",
+    )
+    competition.add_argument(
+        "--escape-rates", default="0.001:1000:40",
+        help="LOW:HIGH:COUNT on a log grid, or a comma-separated list, in ns^-1",
+    )
+    competition.add_argument("--fit-start-ns", type=float, default=None)
+    competition.add_argument("--fit-end-ns", type=float, default=None)
+    add_output(competition)
+    competition.set_defaults(func=cmd_extraction_competition)
+
+    reviewer = sub.add_parser(
+        "reviewer-summary",
+        help="run the whole chain per configuration into one reviewer table",
+    )
+    reviewer.add_argument("manifest", help="JSON manifest of configurations")
+    reviewer.add_argument(
+        "--criterion", choices=["aic", "aicc", "bic"], default=None,
+        help="overrides the manifest's criterion for scheme selection",
+    )
+    add_output(reviewer)
+    reviewer.set_defaults(func=cmd_reviewer_summary)
 
     spectra = sub.add_parser(
         "vacf-spectra", help="describe and compare existing spectral density files"

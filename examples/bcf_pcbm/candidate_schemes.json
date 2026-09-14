@@ -1,0 +1,9 @@
+{
+  "_instructions": "Candidate kinetic graphs for the BCF/PCBM interface. These are candidates, not a result: compare-schemes ranks them descriptively on the observations you supply, and a lower information criterion does not establish a mechanism. Add or remove candidates to match what you are willing to entertain physically. Group names must match your state map.",
+  "schemes": {
+    "minimal": "CBM->BCF,BCF->PCBM,BCF->VBM",
+    "direct_acceptor_transfer": "CBM->BCF,CBM->PCBM,BCF->PCBM,BCF->VBM",
+    "back_transfer": "CBM->BCF,CBM->PCBM,BCF->PCBM,PCBM->BCF,BCF->VBM",
+    "expanded": "CBM->BCF,CBM->PCBM,BCF->PCBM,PCBM->BCF,BCF->VBM,PCBM->VBM"
+  }
+}

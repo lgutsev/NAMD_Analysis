@@ -28,6 +28,16 @@ Version 0.3 provides:
   correlation, and SVD null-space participation — plus refusal of any rate
   that stopped on an optimizer bound, identifiability-aware bootstrap
   intervals, and an optional extraction sink.
+- Transient population observables over user-declared windows: peak, time of
+  peak, endpoints and time-integrated population, so an early event that ends
+  before a later fit window cannot be reported as an absence of change.
+- First-passage branching: P(reach one group set before another) solved from
+  the fitted generator, with the competing-channel ratio given only where it is
+  exact, and the whole observable bootstrapped under the identifiability tests.
+- Counterfactual extraction-versus-recombination competition, including the
+  onward escape rate that would be required for extraction to win.
+- A reviewer-facing table, one row per interface configuration, where every
+  cell is labelled observed, model-inferred or counterfactual.
 - VACF and phonon spectral density: descriptive comparison of existing
   `spectral_density_*.txt` files, and computation from an XDATCAR with
   Cartesian minimum-image velocities, optional mass weighting, segment
@@ -236,6 +246,102 @@ Outputs include `report.json`, `populations.csv`, `populations.png`, and
 `populations.pdf`; a requested fit also writes `fit.csv`. SEM is omitted for
 one file. It is a between-file estimate, not uncertainty from independent MD
 sampling, and can be too small for correlated initial conditions.
+
+## Charge transfer: what the populations show and what a model infers
+
+Three commands answer the interfacial-transfer question, and they are
+deliberately separated by how much modelling each one requires.
+
+### What the populations actually show
+
+```bash
+namd-analysis transient-populations   --files '/path/to/run/SHPROP.*'   --config state_map.json   --transient-window 0:0.1 --late-window 0.1:10   --out results/transient
+```
+
+Reports, per group and per window: initial, final, peak, time of peak, minimum,
+net change and time-integrated population. `--window NAME=START:END` is
+repeatable for arbitrary windows; either end may be left blank.
+
+This exists because a late-window fit cannot see an early transient. A group
+can rise to substantial occupation and fall back before the fit window opens,
+and the fit will then report it as flat. When the early peak clearly exceeds
+anything in the late window, the report says so in as many words.
+
+**The windows are yours.** There is no default transient window. Where one
+regime ends is a property of the system; run this command first and read it off
+the data.
+
+A time-integrated population is the area under an occupation curve, in
+population x ns. It is not a flux and not an amount transferred.
+
+### What a kinetic model infers
+
+```bash
+namd-analysis branching   --files '/path/to/run/SHPROP.*'   --config state_map.json   --scheme 'CBM->BCF,BCF->PCBM,BCF->VBM'   --source BCF --success PCBM --failure VBM   --bootstrap 200   --out results/branching
+```
+
+Solves the backward equation on the fitted generator for the probability that a
+carrier starting in `--source` reaches `--success` before `--failure`. This is
+what accumulated population cannot tell you: back-transfer erases accumulation,
+so a carrier can reach the acceptor, return and leave again while the final
+occupancy records none of it. Both sets accept several groups.
+
+The simple competing-channel ratio `k_S / (k_S + k_F)` is printed **only** when
+every exit from the source lands directly in one of the two outcome sets —
+otherwise a carrier can leave and come back, the ratio is not the branching
+probability, and the reason it is withheld is stated.
+
+Every result is graded `identified`, `weakly_identified` or `not_identifiable`
+from the rates it actually depends on. `--bootstrap` resamples whole files,
+refits, re-runs the v0.3 identifiability tests and only then takes the branch;
+if fewer than 80% of successful resamples produce an identifiable branch, the
+interval is suppressed and the counts are reported rather than the interval
+being quietly narrowed by the draws that were dropped.
+
+### What would have to be true
+
+```bash
+namd-analysis extraction-competition   --files '/path/to/run/SHPROP.*'   --config state_map.json   --scheme 'CBM->BCF,BCF->PCBM,BCF->VBM'   --sink-group PCBM --escape-rates 0.001:1000:40   --out results/competition
+```
+
+Adds an absorbing onward-escape channel at an assumed rate and competes it
+against recombination by first passage, then finds the escape rate at which the
+two yields are equal.
+
+Call that a **required onward escape timescale**. It is not a measured
+extraction time. The escape rate is supplied by you, the transfer rates were
+fitted to data containing no extraction at all, and the simulated cell has no
+electrode and no long-range transport.
+
+### One table for a campaign
+
+```bash
+namd-analysis reviewer-summary comparison_manifest.json --out results/reviewer
+```
+
+Runs the whole chain per configuration and writes `reviewer_branching.csv`,
+one row each, plus a `report.json` with provenance, scheme comparison and every
+identifiability verdict. See [examples/bcf_pcbm](examples/bcf_pcbm/) for a
+worked recipe and templates.
+
+**An empty cell means the quantity was unavailable or its underlying rates were
+not identifiable. It is never a zero.**
+
+### Three kinds of number
+
+Every reported quantity is labelled:
+
+| class | meaning |
+| --- | --- |
+| `observed_from_SHPROP` | read off the populations |
+| `model_inferred` | from the fitted rate matrix |
+| `counterfactual` | propagated under a condition never simulated |
+
+A first-passage probability is never a device extraction efficiency. A sink
+yield is never measured. And no fitted rate is an event count: averaged SHPROP
+populations do not record individual hops, so directional counts such as
+`BCF->PCBM` against `PCBM->BCF` cannot be recovered from them at all. See
+[docs/hopping_histories.md](docs/hopping_histories.md).
 
 ## Analyze phonon spectra
 
@@ -484,7 +590,7 @@ ruff check src tests
 Tested on Python 3.9, 3.11 and 3.13 in CI; those are the versions the
 `requires-python = ">=3.9"` declaration is actually backed by.
 
-247 tests cover table and XDATCAR parsing (including VASP's negative
+320 tests cover table and XDATCAR parsing (including VASP's negative
 target-volume scale factor), namelist coercion, audit checks including the
 timestep-limit and engineered-ceiling diagnostics and declared NAC policies,
 canonical master SHPROP generation with full source provenance, conservation,

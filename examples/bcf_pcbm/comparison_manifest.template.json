@@ -1,0 +1,63 @@
+{
+  "_instructions": "TEMPLATE for `namd-analysis reviewer-summary`. Copy to comparison_manifest.json, point `files` at your original SHPROP histories, point `state_map` at the state map you populated, and choose the windows from your own data rather than from another campaign. Relative paths resolve against this file's directory.",
+  "criterion": "aicc",
+  "roles": {
+    "acceptor": "PCBM",
+    "interfacial": "BCF",
+    "recombination": "VBM",
+    "donor": "CBM"
+  },
+  "configurations": [
+    {
+      "name": "A",
+      "files": [
+        "REPLACE/WITH/PATH/TO/A/SHPROP.*"
+      ],
+      "state_map": "state_map_A.json",
+      "_window_note": "Choose these from the populations themselves - run transient-populations first and look at where the early regime ends. They are not universal constants and are not defaulted anywhere in the code.",
+      "transient_window": "0:0.1",
+      "late_window": "0.1:10",
+      "candidate_schemes": {
+        "minimal": "CBM->BCF,BCF->PCBM,BCF->VBM",
+        "direct_acceptor_transfer": "CBM->BCF,CBM->PCBM,BCF->PCBM,BCF->VBM",
+        "back_transfer": "CBM->BCF,CBM->PCBM,BCF->PCBM,PCBM->BCF,BCF->VBM"
+      },
+      "bootstrap": 200,
+      "bootstrap_seed": 0,
+      "escape_rates": "0.001:1000:40"
+    },
+    {
+      "name": "B",
+      "files": [
+        "REPLACE/WITH/PATH/TO/B/SHPROP.*"
+      ],
+      "state_map": "state_map_B.json",
+      "transient_window": "0:0.1",
+      "late_window": "0.1:10",
+      "candidate_schemes": {
+        "minimal": "CBM->BCF,BCF->PCBM,BCF->VBM",
+        "direct_acceptor_transfer": "CBM->BCF,CBM->PCBM,BCF->PCBM,BCF->VBM",
+        "back_transfer": "CBM->BCF,CBM->PCBM,BCF->PCBM,PCBM->BCF,BCF->VBM"
+      },
+      "bootstrap": 200,
+      "escape_rates": "0.001:1000:40"
+    },
+    {
+      "name": "C",
+      "files": [
+        "REPLACE/WITH/PATH/TO/C/SHPROP.*"
+      ],
+      "state_map": "state_map_C.json",
+      "_window_note": "Configuration C's transient runs much longer than A and B; set these from its own populations.",
+      "transient_window": "0:5",
+      "late_window": "5:10",
+      "candidate_schemes": {
+        "minimal": "CBM->BCF,BCF->PCBM,BCF->VBM",
+        "direct_acceptor_transfer": "CBM->BCF,CBM->PCBM,BCF->PCBM,BCF->VBM",
+        "back_transfer": "CBM->BCF,CBM->PCBM,BCF->PCBM,PCBM->BCF,BCF->VBM"
+      },
+      "bootstrap": 200,
+      "escape_rates": "0.001:1000:40"
+    }
+  ]
+}

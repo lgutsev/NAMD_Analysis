@@ -164,3 +164,40 @@ def plot_vacf(vacf: VacfResult, stem: Path, title: str = "Velocity autocorrelati
     axes.set_title(title)
     axes.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
     return _save(figure, stem)
+
+
+def plot_competition(payload, stem: Path, title: str = "Extraction versus recombination") -> List[Path]:
+    """First-passage yields against the assumed onward escape rate.
+
+    The escape rate is a swept assumption, not a measurement, and the title
+    says so on the figure itself.
+    """
+    points = payload["points"]
+    rates = [p["k_escape_per_ns"] for p in points]
+    figure, axes = plt.subplots(figsize=(7.5, 5.0))
+    axes.plot(rates, [p["extracted_yield"] for p in points], marker="o",
+              markersize=3, linewidth=1.6, label="extracted")
+    axes.plot(rates, [p["recombined_yield"] for p in points], marker="s",
+              markersize=3, linewidth=1.6, label="recombined")
+    unresolved = [p["unresolved"] for p in points]
+    if max(unresolved) > 1e-9:
+        axes.plot(rates, unresolved, marker="^", markersize=3, linewidth=1.2,
+                  linestyle=":", label="never absorbed")
+    crossover = payload.get("required_escape_rate_per_ns")
+    if crossover:
+        axes.axvline(crossover, color="black", linestyle="--", linewidth=1.0)
+        axes.annotate(
+            f"required escape rate\n{crossover:.3g} /ns"
+            f"  ({payload['required_escape_time_ns']:.3g} ns)",
+            xy=(crossover, 0.5), xytext=(6, 0), textcoords="offset points",
+            fontsize=8, va="center",
+        )
+    if all(r > 0 for r in rates):
+        axes.set_xscale("log")
+    axes.set_ylim(-0.02, 1.02)
+    axes.set_xlabel(r"assumed onward escape rate $k_{\rm esc}$ (ns$^{-1}$)")
+    axes.set_ylabel("first-passage yield")
+    axes.set_title(f"{title} (counterfactual: the escape rate is assumed)")
+    axes.grid(True, which="both", linestyle="--", linewidth=0.5, alpha=0.6)
+    axes.legend(frameon=True)
+    return _save(figure, stem)
