@@ -49,3 +49,6 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B011"]
+# Manifest entries are (frame, path); the loader consumes paths in this pass
+# and preserves frame numbers from the same entries when building the result.
+"src/namd_analysis/character.py" = ["B007"]
