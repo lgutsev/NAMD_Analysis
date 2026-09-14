@@ -7,8 +7,6 @@ import glob as globlib
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-import numpy as np
-
 from .character import (
     AtomGroupMap,
     CharacterError,
