@@ -1,4 +1,10 @@
-"""CLI for projection-weighted physical-state populations."""
+"""CLI for projection-weighted diagonal subsystem populations.
+
+The populations written here are the diagonal contraction defined by
+``character.POPULATION_DEFINITION``, not the exact subsystem populations of
+the propagated state. Every output that carries a population carries that
+qualification with it.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +15,8 @@ from typing import List, Optional, Sequence
 
 from .character import (
     DISCREPANCY_HEADER,
+    POPULATION_DEFINITION,
+    POPULATION_LABEL,
     AtomGroupMap,
     CharacterError,
     character_populations,
@@ -53,6 +61,9 @@ QUALITY_BAND_HEADER = [
     "fraction_below_threshold",
     "most_common_character",
     "dominant_character_swaps",
+    "adjacent_swaps",
+    "changes_across_a_frame_gap",
+    "cycle_wrap_swaps",
     "mixed_fraction",
 ]
 
@@ -151,7 +162,16 @@ def _plot(result, out: Path) -> List[str]:
             low = result.mean[:, gi] - result.sem[:, gi]
             high = result.mean[:, gi] + result.sem[:, gi]
             ax.fill_between(result.time_ns, low, high, alpha=0.2)
-    ax.set(xlabel="Time (ns)", ylabel="Projection-weighted population", ylim=(-0.03, 1.03))
+    ax.set(
+        xlabel="Time (ns)",
+        ylabel="Projection-weighted diagonal subsystem population",
+        ylim=(-0.03, 1.03),
+    )
+    ax.set_title(
+        "diagonal approximation: coherences are not recorded by SHPROP",
+        fontsize=8,
+        loc="left",
+    )
     ax.legend()
     outputs = []
     for suffix in ("png", "pdf"):
@@ -193,6 +213,12 @@ def _run_preflight(args, paths, state_map, atom_groups) -> int:
             f"NSW-1={cycle['header_derived_periods_nsw_minus_1']}, "
             f"disagree={cycle['disagree']}"
         )
+        if cycle.get("period_used") is not None:
+            print(
+                f"  cycle wrap: frame {cycle['period_used']} -> 1 crossed by "
+                f"{cycle['histories_crossing_the_wrap']} of "
+                f"{report['n_shprop_files']} history/histories"
+            )
     frames = report.get("frames")
     if frames:
         print(
@@ -273,7 +299,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
     write_csv(
         out / "character_populations.csv",
-        ["time_ns", "group", "population", "sem", "observable_class"],
+        [
+            "time_ns",
+            "group",
+            "projection_weighted_diagonal_population",
+            "sem",
+            "observable_class",
+        ],
         rows,
     )
 
@@ -296,7 +328,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
     write_csv(
         out / "fixed_vs_projected.csv",
-        ["time_ns", "group", "fixed_population", "projected_population", "difference"],
+        [
+            "time_ns",
+            "group",
+            "fixed_column_population",
+            "projection_weighted_diagonal_population",
+            "difference",
+        ],
         comparison_rows,
     )
     write_csv(
@@ -332,6 +370,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 entry["fraction_below_threshold"],
                 dominance_by_band[entry["band"]]["most_common_character"],
                 dominance_by_band[entry["band"]]["dominant_character_swaps"],
+                dominance_by_band[entry["band"]]["adjacent_swaps"],
+                dominance_by_band[entry["band"]]["changes_across_a_frame_gap"],
+                dominance_by_band[entry["band"]]["cycle_wrap_swaps"],
                 dominance_by_band[entry["band"]]["mixed_fraction"],
             ]
             for entry in quality["per_band"]
@@ -374,6 +415,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "inputs": fingerprint(input_paths),
         "frame_mode": args.frame_mode,
         "projection_cycle_length": result.projection.cycle_length,
+        "cycle_period_used": result.projection.cycle_period,
         "state_map": state_map.as_dict(),
         "atom_groups": {
             "groups": atom_groups.groups,
@@ -387,7 +429,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "dominance": dominance,
         "character_swaps": swap_summary,
         "shprop_alignment": result.file_alignment,
-        "physical_population_conservation": result.conservation,
+        "population_definition": POPULATION_DEFINITION,
+        "projection_weighted_population_conservation": result.conservation,
+        "cycle_wrap": swap_summary["cycle_wrap"],
         "fixed_vs_projected_summary": discrepancy,
         "shared_fixed_projection_groups": sorted(
             set(result.fixed_mean).intersection(result.group_names)
@@ -396,9 +440,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "observable_class": OBSERVED,
         "observable_class_legend": LEGEND,
         "interpretation_limits": [
+            POPULATION_DEFINITION,
+            "the reported population is the diagonal contraction of SHPROP "
+            "populations with PROCAR subsystem weights: electronic coherences "
+            "are absent from both input files and are therefore omitted from "
+            "the result rather than estimated or bounded",
             "projection-weighted populations are derived directly from SHPROP "
             "populations and declared PROCAR subsystem projections; no kinetic "
             "model or nearest-energy band tracking is used",
+            "dominant-character swap counts use one transition set: adjacent "
+            "steps, changes across unexamined frame gaps and the cyclic "
+            "period-to-first-frame step are counted separately, and the "
+            "per-band counts sum to the campaign total",
             "each original SHPROP is projected before ensemble averaging because "
             "different NAMDTINI values select different electronic-structure frames",
             "for dish-cyclic alignment an explicit manifest cycle_length overrides "
@@ -417,10 +470,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         f"parsed of {consumption['manifest_declared_frames']} declared, "
         f"{len(result.projection.bands)} band(s)"
     )
+    print(f"reporting the {POPULATION_LABEL} (coherences are not in the inputs)")
     print(
-        f"projection-weighted groups: {', '.join(result.group_names)}; "
-        f"dominant-character swaps: {swap_summary['dominant_character_swaps']}"
+        f"groups: {', '.join(result.group_names)}; dominant-character swaps: "
+        f"{swap_summary['dominant_character_swaps']} "
+        f"({swap_summary['adjacent_swaps']} adjacent, "
+        f"{swap_summary['changes_across_a_frame_gap']} across a frame gap, "
+        f"{swap_summary['cycle_wrap_swaps']} at the cycle wrap)"
     )
+    wrap = swap_summary["cycle_wrap"]
+    if args.frame_mode == "dish-cyclic" or wrap["period"] is not None:
+        state = "examined" if wrap["examined"] else f"excluded ({wrap['state']})"
+        print(f"cycle wrap frame {wrap['frame_before']} -> {wrap['frame_after']}: {state}")
     print(
         f"captured projection median={quality['median_captured_projection']:.3g} "
         f"(p5={quality['p5_captured_projection']:.3g}, "

@@ -5,10 +5,13 @@ as the same thing:
 
 ``observed_from_SHPROP``
     Read directly from reconstructed population histories, optionally combined
-    with explicitly supplied frame-dependent physical-state projections.  It
+    with explicitly supplied frame-dependent subsystem projections.  It
     depends on the trajectories, the declared state/projection mapping and no
     fitted kinetic model.  A peak population, a time-integrated population, or
-    a PROCAR-weighted physical population is of this kind.
+    a PROCAR-weighted diagonal subsystem population is of this kind.  Such a
+    population is still an approximation of the subsystem occupation -- it
+    drops the coherences SHPROP does not record -- but the approximation lives
+    in the inputs, not in a fitted model, which is why it sits in this class.
 
 ``model_inferred``
     Produced by fitting a kinetic model to those populations.  It is
@@ -89,7 +92,7 @@ def uniform(names: Iterable[str], kind: str) -> Dict[str, str]:
 LEGEND = {
     OBSERVED: (
         "read from reconstructed SHPROP populations, optionally combined with "
-        "explicitly supplied frame-dependent physical-state projections; "
+        "explicitly supplied frame-dependent subsystem projections; "
         "conditional on the declared mappings and on the trajectories that were "
         "run, but not on a fitted kinetic model"
     ),

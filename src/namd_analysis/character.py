@@ -1,9 +1,17 @@
-"""Frame-dependent physical-state character from PROCAR projections.
+"""Frame-dependent subsystem character from PROCAR projections.
 
 An adiabatic band index can exchange BCF/PCBM/perovskite character during an
 MD trajectory.  Projection-weighted populations therefore combine every
 *original* SHPROP history with the PROCAR frame that actually generated that
 NAMD step, and only then average across SHPROP files.
+
+What this module produces is a *diagonal*, projection-weighted subsystem
+population, not the exact subsystem population of the propagated state.  See
+:data:`POPULATION_DEFINITION`.  Nothing here is called simply "the physical
+population", because the two approximations behind it -- dropping the
+electronic coherences and renormalizing PAW-sphere weight over the declared
+groups -- are properties of the input files, not of the physics, and a reader
+has to be able to see them.
 
 The implementation is deliberately strict: no nearest-energy band tracking,
 no inferred frame alignment, and no implicit k-point/spin averaging.
@@ -30,6 +38,30 @@ from .populations import PopulationSet, StateMap, load_population_set
 
 class CharacterError(ValueError):
     """Raised when state-character analysis would require guessing."""
+
+
+#: The quantity this module computes, stated in full.  Carried into every
+#: report so the qualification travels with the numbers rather than living
+#: only in documentation the reader may not open.
+POPULATION_DEFINITION = (
+    "Projection-weighted DIAGONAL subsystem population: "
+    "P_g^(r)(t) = sum_i P_i^(r)(t) * w_ig[f_r(t)], formed for each original "
+    "SHPROP history r and only then averaged over r. "
+    "It is not the exact subsystem population of the propagated electronic "
+    "state. Tr[rho(t) P_g] = sum_i rho_ii <i|P_g|i> + sum_{i!=j} rho_ij "
+    "<j|P_g|i>; SHPROP records only the diagonal rho_ii, and a PROCAR records "
+    "only diagonal, band-by-band projections, so the coherence term is absent "
+    "from the inputs entirely. It is omitted, not estimated, and its size is "
+    "not bounded by anything reported here. "
+    "The weights are a second qualification: w_ig = W_ig / sum_g W_ig is the "
+    "share of the PAW-sphere weight that fell inside the declared groups, not "
+    "a fraction of the whole band. Interstitial and undeclared-atom weight is "
+    "divided away by that normalization; captured_projection reports how much "
+    "was there to begin with."
+)
+
+#: Short label for axes, column headers and one-line summaries.
+POPULATION_LABEL = "projection-weighted diagonal subsystem population"
 
 
 @dataclass
@@ -102,12 +134,149 @@ class ProjectionSeries:
     source_paths: List[Path]
     quality_threshold: float
     cycle_length: Optional[int] = None
+    #: Frame period actually used to align time points to frames, whether it
+    #: came from the manifest or from ``NSW - 1``.  ``None`` for a linear
+    #: analysis, or when the series was loaded without an alignment plan and
+    #: so has no idea whether the frames form a ring.
+    cycle_period: Optional[int] = None
+    #: How many SHPROP histories actually take the ``cycle_period -> 1`` step.
+    #: Counted from the resolved frame series, never inferred from coverage.
+    #: ``None`` means nobody told this series, which is not the same as zero.
+    cycle_wrap_histories: Optional[int] = None
 
     def frame_index(self) -> Dict[int, int]:
         return {int(frame): i for i, frame in enumerate(self.frames)}
 
     def band_index(self) -> Dict[int, int]:
         return {int(band): i for i, band in enumerate(self.bands)}
+
+    def cycle_wrap_status(self) -> Dict[str, Any]:
+        """Whether the ``period -> 1`` step is examined, and if not, why not.
+
+        The loaded frames are held in ascending order, so a plain scan over
+        consecutive entries never compares the last frame of a cycle with the
+        first.  In a cyclic campaign that step is taken by the dynamics like
+        any other, and a character change across it is a real change in the
+        state the trajectory occupies.  It is still reported separately from
+        an ordinary adjacent step, because the nuclear geometry does *not*
+        evolve continuously there: the trajectory restarts at frame 1, so the
+        change reflects the discontinuity of re-using one MD run cyclically.
+
+        Every branch is labelled.  Silence about this edge is what the caller
+        must never get.
+        """
+        frames = {int(frame) for frame in self.frames}
+        status: Dict[str, Any] = {
+            "examined": False,
+            "period": self.cycle_period,
+            "frame_before": None,
+            "frame_after": None,
+            "histories_traversing": self.cycle_wrap_histories,
+        }
+        if self.cycle_period is None:
+            status["state"] = "not_cyclic_or_not_declared"
+            status["note"] = (
+                "no cyclic period is attached to this projection series, so the "
+                "last-frame to first-frame step was not examined. A linear "
+                "analysis has no such step; a cyclic one loaded without an "
+                "alignment plan has one that could not be identified here"
+            )
+            return status
+        period = int(self.cycle_period)
+        status["frame_before"] = period
+        status["frame_after"] = 1
+        if period == 1:
+            # Every time step uses frame 1; the "wrap" would compare a frame
+            # with itself and could never find a change. Saying it was
+            # examined would imply a check that carries no information.
+            status["state"] = "degenerate_period"
+            status["note"] = (
+                "the cyclic period is 1, so every time point uses frame 1 and "
+                "the wrap step would compare that frame with itself; there is "
+                "no character change it could detect"
+            )
+            return status
+        if self.cycle_wrap_histories is None:
+            status["state"] = "traversal_unknown"
+            status["note"] = (
+                f"the cyclic period is {period}, but this series was not told "
+                "how many histories step across it, so the wrap step is "
+                "excluded rather than guessed from frame coverage"
+            )
+            return status
+        if self.cycle_wrap_histories <= 0:
+            status["state"] = "not_traversed"
+            status["note"] = (
+                f"no supplied history reaches frame {period} and continues, so "
+                "the wrap step is not part of this campaign and is excluded"
+            )
+            return status
+        if period not in frames or 1 not in frames:
+            missing = sorted({period, 1} - frames)
+            status["state"] = "frames_not_loaded"
+            status["note"] = (
+                f"{self.cycle_wrap_histories} history/histories cross the wrap, "
+                f"but frame(s) {missing} are absent from the loaded projection, "
+                "so the step cannot be evaluated"
+            )
+            return status
+        status["examined"] = True
+        status["state"] = "examined"
+        status["note"] = (
+            f"frame {period} -> frame 1 is one step of the dynamics, taken by "
+            f"{self.cycle_wrap_histories} history/histories, and is compared. "
+            "It is labelled 'cycle_wrap' rather than 'adjacent' because the "
+            "nuclear geometry jumps there: the cyclic mapping restarts the MD "
+            "trajectory instead of continuing it"
+        )
+        return status
+
+    def examined_transitions(self) -> List[Dict[str, Any]]:
+        """Every frame-to-frame step this analysis is able to compare.
+
+        One definition, used by both the per-band dominance statistics and the
+        swap table, so the two can never disagree about what a swap is.  Each
+        entry carries the index pair into ``frames``/``weights``, the MD frame
+        gap, and how well resolved the step is:
+
+        ``adjacent``
+            consecutive MD frames; a change here is located exactly.
+        ``across_gap``
+            the intervening MD frames were never loaded, so the change
+            happened somewhere inside the gap, not in one step.
+        ``cycle_wrap``
+            the ``period -> 1`` step of a cyclic campaign; one step of the
+            dynamics, but a discontinuity of the nuclear trajectory.
+        """
+        frames = [int(frame) for frame in self.frames]
+        transitions: List[Dict[str, Any]] = []
+        for i in range(1, len(frames)):
+            gap = frames[i] - frames[i - 1]
+            transitions.append(
+                {
+                    "before_index": i - 1,
+                    "after_index": i,
+                    "frame_before": frames[i - 1],
+                    "frame_after": frames[i],
+                    "frame_gap": gap,
+                    "resolution": "adjacent" if gap == 1 else "across_gap",
+                }
+            )
+        wrap = self.cycle_wrap_status()
+        if wrap["examined"]:
+            lookup = self.frame_index()
+            transitions.append(
+                {
+                    "before_index": lookup[int(self.cycle_period)],
+                    "after_index": lookup[1],
+                    "frame_before": int(self.cycle_period),
+                    "frame_after": 1,
+                    # One step of the dynamics, whatever the frame numbers do.
+                    "frame_gap": 1,
+                    "resolution": "cycle_wrap",
+                }
+            )
+        return transitions
 
     def quality_summary(self, worst_n: int = 10) -> Dict[str, Any]:
         """How much of each band actually lands inside the declared subsystems.
@@ -185,8 +354,60 @@ class ProjectionSeries:
             ),
         }
 
+    def swap_events(
+        self, dominance_threshold: float = 0.6
+    ) -> List[Dict[str, Any]]:
+        """Every dominant-character change over every examined transition.
+
+        The single source of truth for what counts as a swap.  Both the
+        per-band dominance statistics and the swap table are built from this
+        list, so a band's swap count and the swap rows for that band cannot
+        drift apart, and neither can ignore a frame gap or a cycle wrap.
+        """
+        if not (0.0 < dominance_threshold <= 1.0):
+            raise CharacterError("dominance_threshold must lie in (0, 1]")
+        transitions = self.examined_transitions()
+        events: List[Dict[str, Any]] = []
+        for bi in range(self.weights.shape[1]):
+            weights = self.weights[:, bi, :]
+            dominant = np.argmax(weights, axis=1)
+            confidence = np.max(weights, axis=1)
+            for step in transitions:
+                before = int(dominant[step["before_index"]])
+                after = int(dominant[step["after_index"]])
+                if before == after:
+                    continue
+                events.append(
+                    {
+                        "band_index": bi,
+                        "band": int(self.bands[bi]),
+                        "frame_before": step["frame_before"],
+                        "frame_after": step["frame_after"],
+                        "dominant_before": self.group_names[before],
+                        "dominant_after": self.group_names[after],
+                        "confidence_before": float(confidence[step["before_index"]]),
+                        "confidence_after": float(confidence[step["after_index"]]),
+                        "frame_gap": step["frame_gap"],
+                        "resolution": step["resolution"],
+                    }
+                )
+        return events
+
     def dominance_summary(self, dominance_threshold: float = 0.6) -> Dict[str, Any]:
-        """Per-band dominant-character occupancy and swap counts."""
+        """Per-band dominant-character occupancy and swap counts.
+
+        The swap counts here use the same transition set as
+        :func:`character_swap_rows`: gaps left by selective loading are
+        counted apart from resolved adjacent steps, and a cyclic campaign's
+        ``period -> 1`` step is included when it is actually traversed.  Summing
+        ``dominant_character_swaps`` over bands reproduces the campaign total
+        in the swap summary exactly.
+        """
+        events = self.swap_events(dominance_threshold)
+        by_band: Dict[int, List[Dict[str, Any]]] = {}
+        for event in events:
+            by_band.setdefault(event["band_index"], []).append(event)
+        transitions = self.examined_transitions()
         bands_out: List[Dict[str, Any]] = []
         for bi in range(self.weights.shape[1]):
             weights = self.weights[:, bi, :]
@@ -196,24 +417,49 @@ class ProjectionSeries:
                 name: float(np.mean(dominant == gi))
                 for gi, name in enumerate(self.group_names)
             }
-            swaps = int(np.count_nonzero(dominant[1:] != dominant[:-1]))
+            band_events = by_band.get(bi, [])
+            counts = {"adjacent": 0, "across_gap": 0, "cycle_wrap": 0}
+            for event in band_events:
+                counts[event["resolution"]] += 1
             bands_out.append(
                 {
                     "band": int(self.bands[bi]),
                     "dominant_occupancy_fraction": occupancy,
                     "most_common_character": max(occupancy, key=occupancy.get),
-                    "dominant_character_swaps": swaps,
+                    "dominant_character_swaps": len(band_events),
+                    "adjacent_swaps": counts["adjacent"],
+                    "changes_across_a_frame_gap": counts["across_gap"],
+                    "cycle_wrap_swaps": counts["cycle_wrap"],
                     "median_dominant_weight": float(np.median(confidence)),
                     "mixed_samples": int(np.count_nonzero(confidence < dominance_threshold)),
                     "mixed_fraction": float(np.mean(confidence < dominance_threshold)),
                 }
             )
-        return {"dominance_threshold": dominance_threshold, "per_band": bands_out}
+        return {
+            "dominance_threshold": dominance_threshold,
+            "transitions_examined_per_band": len(transitions),
+            "cycle_wrap": self.cycle_wrap_status(),
+            "per_band": bands_out,
+            "note": (
+                "occupancy fractions are over the frames actually loaded, and "
+                "swap counts use the same transition set as character_swaps.csv: "
+                "adjacent, across_gap and cycle_wrap are counted separately and "
+                "summing dominant_character_swaps over bands gives the campaign "
+                "total reported there"
+            ),
+        }
 
 
 @dataclass
 class CharacterPopulationResult:
-    """Projection-weighted population ensemble and alignment diagnostics."""
+    """Projection-weighted diagonal subsystem populations, and how they were made.
+
+    ``mean`` and ``per_file`` hold the quantity defined by
+    :data:`POPULATION_DEFINITION`.  They are not the exact subsystem
+    populations of the propagated state; the qualification is carried on the
+    object as ``population_definition`` so anything writing a report can
+    reproduce it without restating it from memory.
+    """
 
     time_ns: np.ndarray
     group_names: List[str]
@@ -224,6 +470,7 @@ class CharacterPopulationResult:
     projection: ProjectionSeries
     file_alignment: List[Dict[str, Any]]
     conservation: Dict[str, float]
+    population_definition: str = POPULATION_DEFINITION
 
 
 def _load_json(path: Path, what: str) -> Any:
@@ -375,6 +622,8 @@ def load_projection_series(
     required_bands: Sequence[int],
     required_frames: Optional[Sequence[int]] = None,
     manifest: Optional[ProjectionManifest] = None,
+    cycle_period: Optional[int] = None,
+    cycle_wrap_histories: Optional[int] = None,
 ) -> ProjectionSeries:
     """Load subsystem weights for exactly the bands needed by the NAMD basis.
 
@@ -389,6 +638,13 @@ def load_projection_series(
 
     ``manifest`` lets a caller that already parsed the manifest pass it in
     rather than re-reading it.
+
+    ``cycle_period`` and ``cycle_wrap_histories`` carry the alignment facts a
+    plain projection load cannot know: the frame period actually used, and how
+    many histories genuinely step from that frame back to frame 1.  They are
+    what lets the swap diagnostics treat the frame sequence as a ring.  Left
+    unset, the wrap step is excluded and labelled as unevaluated rather than
+    inferred from which frames happen to be present.
     """
     required = [int(band) for band in required_bands]
     if not required or len(set(required)) != len(required):
@@ -501,6 +757,8 @@ def load_projection_series(
         source_paths=[path for _, path in entries],
         quality_threshold=atom_groups.min_projection_weight,
         cycle_length=manifest.cycle_length,
+        cycle_period=cycle_period,
+        cycle_wrap_histories=cycle_wrap_histories,
     )
 
 
@@ -587,6 +845,41 @@ class AnalysisPlan:
     def missing_frames(self) -> List[int]:
         available = {frame for frame, _ in self.manifest.frames}
         return sorted(set(self.required_frames) - available)
+
+    def cycle_period(self) -> Optional[int]:
+        """The one frame period in force, or ``None`` if there is not exactly one.
+
+        ``plan_analysis`` already refuses a cyclic campaign whose histories
+        imply different periods, so more than one value here means the mode is
+        linear or the period was never resolved.
+        """
+        if self.frame_mode != "dish-cyclic":
+            return None
+        periods = {record.get("cycle_length_used") for record in self.alignments}
+        if len(periods) != 1:
+            return None
+        period = periods.pop()
+        return int(period) if period is not None else None
+
+    def cycle_wrap_histories(self) -> Optional[int]:
+        """How many histories actually take the ``period -> 1`` step.
+
+        Counted from the resolved per-history frame series, not deduced from
+        which frames the union happens to contain: a campaign can load both
+        frame 1 and frame ``period`` without any single history stepping
+        between them.
+        """
+        period = self.cycle_period()
+        if period is None:
+            return None
+        crossings = 0
+        for frames in self.frames_by_file:
+            values = np.asarray(frames, dtype=int)
+            if values.size < 2:
+                continue
+            if np.any((values[:-1] == period) & (values[1:] == 1)):
+                crossings += 1
+        return crossings
 
     def consumption(self) -> Dict[str, Any]:
         """Declared manifest range against the subset actually consumed."""
@@ -832,6 +1125,10 @@ def preflight_report(
             explicit is not None and header_periods and [explicit] != header_periods
         ),
         "applies_to_this_frame_mode": frame_mode == "dish-cyclic",
+        # Says in advance whether the swap diagnostics will examine the
+        # period -> 1 step, so a surprise there is caught before the run.
+        "period_used": plan.cycle_period(),
+        "histories_crossing_the_wrap": plan.cycle_wrap_histories(),
     }
     if payload["cycle"]["disagree"] and frame_mode == "dish-cyclic":
         warnings.append(
@@ -936,7 +1233,7 @@ def preflight_report(
     payload["ok"] = not problems
     payload["note"] = (
         "preflight reads SHPROP headers, the projection manifest and one PROCAR "
-        "header. It parses no projection data and produces no physical populations."
+        "header. It parses no projection data and produces no subsystem populations."
     )
     return payload
 
@@ -949,9 +1246,14 @@ def character_populations(
     frame_mode: str,
     plan: Optional[AnalysisPlan] = None,
 ) -> CharacterPopulationResult:
-    """Project each original SHPROP into physical character before averaging.
+    """Projection-weight each original SHPROP history, then average.
 
-    This ordering is essential.  Different SHPROP histories may have different
+    Produces the diagonal subsystem population of
+    :data:`POPULATION_DEFINITION`, not the exact subsystem population: the
+    coherences SHPROP does not record are absent from the result, and the
+    weights are normalized over the declared groups.
+
+    The ordering is essential.  Different SHPROP histories may have different
     NAMDTINI values, so averaging their adiabatic populations first destroys
     the phase needed to select the correct PROCAR frame.
     """
@@ -986,21 +1288,25 @@ def character_populations(
         bands,
         required_frames=plan.required_frames,
         manifest=plan.manifest,
+        cycle_period=plan.cycle_period(),
+        cycle_wrap_histories=plan.cycle_wrap_histories(),
     )
     frame_lookup = projection.frame_index()
     band_lookup = projection.band_index()
     projection_band_indices = np.asarray([band_lookup[band] for band in bands], dtype=int)
 
-    physical_files: List[np.ndarray] = []
+    projected_files: List[np.ndarray] = []
     alignments: List[Dict[str, Any]] = list(plan.alignments)
     for record, frames in zip(records, plan.frames_by_file):
         frame_indices = np.asarray([frame_lookup[int(frame)] for frame in frames], dtype=int)
         weights = projection.weights[frame_indices][:, projection_band_indices, :]
         pops = record.table[:, state_map.population_columns]
-        physical = np.einsum("ts,tsg->tg", pops, weights)
-        physical_files.append(physical)
+        # Diagonal contraction: SHPROP supplies only rho_ii and PROCAR only
+        # <i|P_g|i>, so no coherence term exists in the inputs to contract.
+        projected = np.einsum("ts,tsg->tg", pops, weights)
+        projected_files.append(projected)
 
-    per_file = np.stack(physical_files, axis=0)
+    per_file = np.stack(projected_files, axis=0)
     mean = per_file.mean(axis=0)
     sem = None
     if len(paths) > 1:
@@ -1019,8 +1325,8 @@ def character_populations(
     }
     if state_map.complete_population and conservation["max_abs_deviation_from_one"] > 1.0e-5:
         raise CharacterError(
-            "projection-weighted physical populations do not conserve the complete "
-            f"SHPROP population: total ranges [{conservation['min']:.8g}, "
+            "projection-weighted diagonal subsystem populations do not conserve the "
+            f"complete SHPROP population: total ranges [{conservation['min']:.8g}, "
             f"{conservation['max']:.8g}] and departs from 1 by up to "
             f"{conservation['max_abs_deviation_from_one']:.3g} (tolerance 1e-5). "
             "Check that the state map covers the whole basis and that the atom "
@@ -1052,71 +1358,72 @@ def character_swap_rows(
     change is reported with its frame gap and counted separately from an
     adjacent, fully resolved swap, rather than being presented as a single
     step between two distant frames.
+
+    In a cyclic campaign the frames form a ring, and the ``period -> 1`` step
+    is taken by the dynamics like any other.  It is examined when some history
+    actually takes it, labelled ``cycle_wrap`` rather than ``adjacent``, and
+    the summary states explicitly when it was excluded and why.
+
+    The transition set and the swap definition are shared with
+    :meth:`ProjectionSeries.dominance_summary`, so per-band counts sum to the
+    totals here.
     """
-    if not (0.0 < dominance_threshold <= 1.0):
-        raise CharacterError("dominance_threshold must lie in (0, 1]")
-    rows: List[List[Any]] = []
-    mixed = 0
+    events = projection.swap_events(dominance_threshold)
+    rows = [
+        [
+            event["band"],
+            event["frame_before"],
+            event["frame_after"],
+            event["dominant_before"],
+            event["dominant_after"],
+            event["confidence_before"],
+            event["confidence_after"],
+            event["frame_gap"],
+            event["resolution"],
+        ]
+        for event in events
+    ]
+    confidence = np.max(projection.weights, axis=2)
+    mixed = int(np.count_nonzero(confidence < dominance_threshold))
     total = projection.weights.shape[0] * projection.weights.shape[1]
-    swap_count = 0
-    adjacent_swaps = 0
-    gap_changes = 0
+    counts = {"adjacent": 0, "across_gap": 0, "cycle_wrap": 0}
+    for event in events:
+        counts[event["resolution"]] += 1
+
     frames_list = [int(frame) for frame in projection.frames]
     unobserved = sum(
         max(0, b - a - 1) for a, b in zip(frames_list, frames_list[1:])
     )
-    for bi, band in enumerate(projection.bands):
-        weights = projection.weights[:, bi, :]
-        dominant = np.argmax(weights, axis=1)
-        confidence = np.max(weights, axis=1)
-        mixed += int(np.count_nonzero(confidence < dominance_threshold))
-        for fi in range(1, len(projection.frames)):
-            if dominant[fi] == dominant[fi - 1]:
-                continue
-            swap_count += 1
-            before = int(dominant[fi - 1])
-            after = int(dominant[fi])
-            gap = frames_list[fi] - frames_list[fi - 1]
-            if gap == 1:
-                adjacent_swaps += 1
-                resolution = "adjacent"
-            else:
-                gap_changes += 1
-                resolution = "across_gap"
-            rows.append(
-                [
-                    int(band),
-                    int(projection.frames[fi - 1]),
-                    int(projection.frames[fi]),
-                    projection.group_names[before],
-                    projection.group_names[after],
-                    float(confidence[fi - 1]),
-                    float(confidence[fi]),
-                    int(gap),
-                    resolution,
-                ]
-            )
-    summary = {
-        "dominance_threshold": dominance_threshold,
-        "dominant_character_swaps": swap_count,
-        "adjacent_swaps": adjacent_swaps,
-        "changes_across_a_frame_gap": gap_changes,
-        "mixed_frame_band_samples": mixed,
-        "total_frame_band_samples": total,
-        "mixed_fraction": float(mixed / total) if total else 0.0,
-        "frames_examined": len(frames_list),
-        "md_frames_skipped_between_examined_frames": unobserved,
-        "resolution_note": (
+    wrap = projection.cycle_wrap_status()
+    if unobserved:
+        resolution_note = (
             "only the electronic frames the SHPROP histories visit are loaded, so "
             f"{unobserved} MD frame(s) lie between examined frames and were not "
             "inspected. A change marked 'across_gap' happened somewhere inside "
             "that gap, not in one step between the two frames named. Swap counts "
             "are a lower bound on the number of character changes along the full "
             "MD trajectory"
-            if unobserved
-            else "every examined frame is adjacent to the next, so the swap count "
+        )
+    else:
+        resolution_note = (
+            "every examined frame is adjacent to the next, so the swap count "
             "resolves every change over the range examined"
-        ),
+        )
+    summary = {
+        "dominance_threshold": dominance_threshold,
+        "dominant_character_swaps": len(events),
+        "adjacent_swaps": counts["adjacent"],
+        "changes_across_a_frame_gap": counts["across_gap"],
+        "cycle_wrap_swaps": counts["cycle_wrap"],
+        "mixed_frame_band_samples": mixed,
+        "total_frame_band_samples": total,
+        "mixed_fraction": float(mixed / total) if total else 0.0,
+        "frames_examined": len(frames_list),
+        "transitions_examined_per_band": len(projection.examined_transitions()),
+        "md_frames_skipped_between_examined_frames": unobserved,
+        "cycle_wrap": wrap,
+        "cycle_wrap_note": wrap["note"],
+        "resolution_note": resolution_note,
     }
     return rows, summary
 
@@ -1177,7 +1484,9 @@ def fixed_vs_projected_summary(result: "CharacterPopulationResult") -> Dict[str,
             "the fixed comparison assigns each SHPROP column to one group for the "
             "whole trajectory; the projected one reassigns character frame by frame. "
             "A large difference means the fixed labelling was wrong somewhere, not "
-            "that either number is a flux or a transfer"
+            "that either number is a flux or a transfer. Both series are diagonal "
+            "in the adiabatic basis, so this difference is about labelling alone "
+            "and says nothing about the coherences neither one contains"
         ),
     }
 

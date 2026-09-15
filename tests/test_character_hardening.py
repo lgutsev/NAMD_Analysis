@@ -18,6 +18,7 @@ from character_fixtures import (
     write_state_map,
 )
 from namd_analysis.character import (
+    POPULATION_DEFINITION,
     AtomGroupMap,
     CharacterError,
     aligned_frames,
@@ -31,6 +32,9 @@ from namd_analysis.character import (
 from namd_analysis.dispatch import main as dispatch_main
 from namd_analysis.io.procar import ProcarFormatError, procar_structure, read_procar_ion_totals
 from namd_analysis.populations import StateMap
+
+#: Repository root, for the documentation assertions.
+REPO = Path(__file__).resolve().parent.parent
 
 
 class _Campaign(unittest.TestCase):
@@ -313,8 +317,13 @@ class QualityDiagnosticTests(_Campaign):
         dominance = self._run().projection.dominance_summary(0.6)
         self.assertEqual(len(dominance["per_band"]), 2)
         for entry in dominance["per_band"]:
-            # Each band is BCF for frames 1-2 and PCBM for 3-4: exactly one swap.
-            self.assertEqual(entry["dominant_character_swaps"], 1)
+            # Each band changes character once inside the ascending scan
+            # (frame 2 -> 3) and once across the cycle wrap (frame 4 -> 1),
+            # which history SHPROP.3 actually takes.
+            self.assertEqual(entry["dominant_character_swaps"], 2)
+            self.assertEqual(entry["adjacent_swaps"], 1)
+            self.assertEqual(entry["changes_across_a_frame_gap"], 0)
+            self.assertEqual(entry["cycle_wrap_swaps"], 1)
             self.assertAlmostEqual(
                 sum(entry["dominant_occupancy_fraction"].values()), 1.0, places=12
             )
@@ -831,11 +840,17 @@ class AuditFindingTests(_Campaign):
         rows, summary = character_swap_rows(self._run().projection)
         self.assertEqual(summary["md_frames_skipped_between_examined_frames"], 0)
         self.assertEqual(summary["changes_across_a_frame_gap"], 0)
-        self.assertEqual(summary["adjacent_swaps"], summary["dominant_character_swaps"])
         self.assertIn("resolves every change", summary["resolution_note"])
+        # Nothing is skipped, so every change is located exactly -- but the
+        # cyclic wrap is a step of the dynamics, not an unexamined gap, and it
+        # is labelled apart from an ordinary adjacent step.
+        self.assertEqual(
+            summary["adjacent_swaps"] + summary["cycle_wrap_swaps"],
+            summary["dominant_character_swaps"],
+        )
         for row in rows:
             self.assertEqual(row[7], 1)
-            self.assertEqual(row[8], "adjacent")
+            self.assertIn(row[8], ("adjacent", "cycle_wrap"))
 
     def test_a_plan_built_from_other_files_is_refused(self):
         plan = self._plan()
@@ -898,6 +913,326 @@ class AuditFindingTests(_Campaign):
         self.assertLess(len(message), 600, "diagnostic must not list every file")
         self.assertIn("SHPROP.odd", message)
         self.assertIn("30 file(s)", message)
+
+class PopulationDefinitionTests(_Campaign):
+    """The reported population must never be presented as unqualified occupation."""
+
+    def test_definition_names_the_dropped_coherence_term(self):
+        self.assertIn("DIAGONAL", POPULATION_DEFINITION)
+        self.assertIn("rho_ij", POPULATION_DEFINITION)
+        self.assertIn("omitted, not estimated", POPULATION_DEFINITION)
+        # The normalization is the second qualification and must be stated too.
+        self.assertIn("W_ig / sum_g W_ig", POPULATION_DEFINITION)
+        self.assertIn("captured_projection", POPULATION_DEFINITION)
+
+    def test_result_carries_the_definition(self):
+        self.assertEqual(self._run().population_definition, POPULATION_DEFINITION)
+
+    def test_report_and_csv_qualify_the_population(self):
+        out = self.root / "qualified"
+        code = dispatch_main(
+            [
+                "character-populations",
+                "--files", str(self.campaign["shprop"][0]), str(self.campaign["shprop"][1]),
+                "--config", str(self.campaign["state_map"]),
+                "--projection-manifest", str(self.campaign["manifest"]),
+                "--atom-groups", str(self.campaign["atom_groups"]),
+                "--frame-mode", "dish-cyclic",
+                "--out", str(out),
+            ]
+        )
+        self.assertEqual(code, 0)
+        report = json.loads((out / "report.json").read_text(encoding="utf-8"))
+        self.assertEqual(report["population_definition"], POPULATION_DEFINITION)
+        # The old unqualified key must be gone, not merely supplemented.
+        self.assertNotIn("physical_population_conservation", report)
+        self.assertIn("projection_weighted_population_conservation", report)
+        self.assertIn(POPULATION_DEFINITION, report["interpretation_limits"])
+
+        header = (out / "character_populations.csv").read_text(
+            encoding="utf-8"
+        ).splitlines()[0]
+        self.assertIn("projection_weighted_diagonal_population", header)
+        comparison = (out / "fixed_vs_projected.csv").read_text(
+            encoding="utf-8"
+        ).splitlines()[0]
+        self.assertIn("fixed_column_population", comparison)
+        self.assertIn("projection_weighted_diagonal_population", comparison)
+
+    def test_documentation_states_the_approximation(self):
+        doc = (REPO / "docs" / "state_character.md").read_text(encoding="utf-8")
+        self.assertIn("diagonal subsystem population", doc)
+        self.assertIn("Tr[rho(t) P_g]", doc)
+        readme = (REPO / "README.md").read_text(encoding="utf-8")
+        self.assertIn("projection-weighted diagonal subsystem population", readme)
+
+
+class CycleWrapTests(_Campaign):
+    """The period -> 1 step is examined when taken, and labelled when it is not."""
+
+    def test_wrap_is_examined_and_labelled_separately(self):
+        projection = self._run().projection
+        status = projection.cycle_wrap_status()
+        self.assertTrue(status["examined"])
+        self.assertEqual(status["state"], "examined")
+        self.assertEqual((status["frame_before"], status["frame_after"]), (4, 1))
+        # Only SHPROP.3 (NAMDTINI=3, frames 3,4,1,2) crosses the wrap.
+        self.assertEqual(status["histories_traversing"], 1)
+
+        rows, summary = character_swap_rows(projection)
+        wrap_rows = [row for row in rows if row[8] == "cycle_wrap"]
+        self.assertEqual(len(wrap_rows), 2)  # both bands change across it
+        for row in wrap_rows:
+            self.assertEqual((row[1], row[2]), (4, 1))
+            self.assertEqual(row[7], 1)  # one step of the dynamics
+        self.assertEqual(summary["cycle_wrap_swaps"], 2)
+        self.assertNotIn("cycle_wrap", [row[8] for row in rows if row[1] != 4])
+
+    def test_wrap_swaps_are_not_counted_as_adjacent_or_as_a_gap(self):
+        _, summary = character_swap_rows(self._run().projection)
+        self.assertEqual(summary["adjacent_swaps"], 2)
+        self.assertEqual(summary["changes_across_a_frame_gap"], 0)
+        self.assertEqual(summary["cycle_wrap_swaps"], 2)
+        self.assertEqual(summary["dominant_character_swaps"], 4)
+
+    def _linear_projection(self):
+        # Only the NAMDTINI=1 history can run linearly here: SHPROP.3 would
+        # walk to frames 5 and 6, which this four-frame manifest lacks.
+        return character_populations(
+            [self.campaign["shprop"][0]], self.state_map, self.campaign["manifest"],
+            self.atom_groups, "linear",
+        ).projection
+
+    def test_linear_mode_has_no_wrap_and_says_so(self):
+        projection = self._linear_projection()
+        status = projection.cycle_wrap_status()
+        self.assertFalse(status["examined"])
+        self.assertEqual(status["state"], "not_cyclic_or_not_declared")
+        _, summary = character_swap_rows(projection)
+        self.assertEqual(summary["cycle_wrap_swaps"], 0)
+        self.assertIn("linear", summary["cycle_wrap_note"])
+
+    def test_a_cyclic_campaign_that_never_wraps_excludes_the_step(self):
+        # One history, NAMDTINI=1, four time points: frames 1,2,3,4. It reaches
+        # the last frame of the cycle but never continues past it, so there is
+        # no wrap step to examine and none is invented.
+        plan = plan_analysis(
+            [self.campaign["shprop"][0]], self.state_map,
+            self.campaign["manifest"], "dish-cyclic",
+        )
+        self.assertEqual(plan.cycle_period(), 4)
+        self.assertEqual(plan.cycle_wrap_histories(), 0)
+        result = character_populations(
+            [self.campaign["shprop"][0]], self.state_map, self.campaign["manifest"],
+            self.atom_groups, "dish-cyclic", plan=plan,
+        )
+        status = result.projection.cycle_wrap_status()
+        self.assertFalse(status["examined"])
+        self.assertEqual(status["state"], "not_traversed")
+        _, summary = character_swap_rows(result.projection)
+        self.assertEqual(summary["cycle_wrap_swaps"], 0)
+
+    def test_loading_both_wrap_frames_does_not_imply_the_step_was_taken(self):
+        # Frames 1 and 4 are both loaded by the single history above. Traversal
+        # is counted from the resolved series, never inferred from coverage.
+        plan = plan_analysis(
+            [self.campaign["shprop"][0]], self.state_map,
+            self.campaign["manifest"], "dish-cyclic",
+        )
+        frames = sorted({int(f) for f in plan.frames_by_file[0]})
+        self.assertEqual(frames, [1, 2, 3, 4])
+        self.assertEqual(plan.cycle_wrap_histories(), 0)
+
+    def test_a_series_loaded_without_a_plan_excludes_the_step_rather_than_guessing(self):
+        projection = load_projection_series(
+            self.campaign["manifest"], self.atom_groups, [10, 11]
+        )
+        status = projection.cycle_wrap_status()
+        self.assertFalse(status["examined"])
+        self.assertEqual(status["state"], "not_cyclic_or_not_declared")
+        self.assertIsNone(status["histories_traversing"])
+
+    def test_traversal_without_a_period_is_labelled_unknown(self):
+        projection = load_projection_series(
+            self.campaign["manifest"], self.atom_groups, [10, 11], cycle_period=4
+        )
+        status = projection.cycle_wrap_status()
+        self.assertFalse(status["examined"])
+        self.assertEqual(status["state"], "traversal_unknown")
+        self.assertIn("excluded rather than guessed", status["note"])
+
+    def test_a_traversed_wrap_with_a_missing_frame_is_labelled_not_silently_dropped(self):
+        projection = load_projection_series(
+            self.campaign["manifest"], self.atom_groups, [10, 11],
+            required_frames=[2, 3, 4], cycle_period=4, cycle_wrap_histories=1,
+        )
+        status = projection.cycle_wrap_status()
+        self.assertFalse(status["examined"])
+        self.assertEqual(status["state"], "frames_not_loaded")
+        self.assertIn("[1]", status["note"])
+
+    def test_preflight_announces_the_wrap_before_any_procar_is_parsed(self):
+        report = preflight_report(
+            self.campaign["shprop"], self.state_map, self.campaign["manifest"],
+            self.atom_groups, "dish-cyclic",
+        )
+        self.assertEqual(report["cycle"]["period_used"], 4)
+        self.assertEqual(report["cycle"]["histories_crossing_the_wrap"], 1)
+        self.assertTrue(report["ok"])
+
+    def test_a_single_frame_cycle_is_labelled_degenerate_not_examined(self):
+        # period 1 means every time point uses frame 1, so the wrap would
+        # compare a frame with itself. That is reported, not counted.
+        one = write_manifest(
+            self.root / "one.json", {1: self.campaign["frames"][1]}, cycle_length=1
+        )
+        history = write_shprop(
+            self.root / "SHPROP.one", 1, np.array([[0.6, 0.4]] * 3), nsw=2
+        )
+        plan = plan_analysis([history], self.state_map, one, "dish-cyclic")
+        self.assertEqual(plan.cycle_period(), 1)
+        result = character_populations(
+            [history], self.state_map, one, self.atom_groups, "dish-cyclic", plan=plan
+        )
+        status = result.projection.cycle_wrap_status()
+        self.assertFalse(status["examined"])
+        self.assertEqual(status["state"], "degenerate_period")
+        _, summary = character_swap_rows(result.projection)
+        self.assertEqual(summary["dominant_character_swaps"], 0)
+
+    def test_cli_reports_the_wrap(self):
+        out = self.root / "wrap"
+        code = dispatch_main(
+            [
+                "character-populations",
+                "--files", str(self.campaign["shprop"][0]), str(self.campaign["shprop"][1]),
+                "--config", str(self.campaign["state_map"]),
+                "--projection-manifest", str(self.campaign["manifest"]),
+                "--atom-groups", str(self.campaign["atom_groups"]),
+                "--frame-mode", "dish-cyclic",
+                "--out", str(out),
+            ]
+        )
+        self.assertEqual(code, 0)
+        report = json.loads((out / "report.json").read_text(encoding="utf-8"))
+        self.assertTrue(report["cycle_wrap"]["examined"])
+        self.assertEqual(report["cycle_period_used"], 4)
+        self.assertEqual(report["character_swaps"]["cycle_wrap_swaps"], 2)
+        self.assertTrue(report["dominance"]["cycle_wrap"]["examined"])
+        resolutions = {
+            line.split(",")[8]
+            for line in (out / "character_swaps.csv").read_text(
+                encoding="utf-8"
+            ).splitlines()[1:]
+        }
+        self.assertEqual(resolutions, {"adjacent", "cycle_wrap"})
+
+
+class UnifiedSwapStatisticTests(_Campaign):
+    """Per-band dominance counts and the swap table share one definition."""
+
+    def _assert_consistent(self, projection):
+        rows, summary = character_swap_rows(projection)
+        dominance = projection.dominance_summary()
+        per_band = {entry["band"]: entry for entry in dominance["per_band"]}
+        self.assertEqual(
+            sum(entry["dominant_character_swaps"] for entry in per_band.values()),
+            summary["dominant_character_swaps"],
+        )
+        for key in ("adjacent_swaps", "changes_across_a_frame_gap", "cycle_wrap_swaps"):
+            self.assertEqual(
+                sum(entry[key] for entry in per_band.values()), summary[key], key
+            )
+        self.assertEqual(
+            summary["transitions_examined_per_band"],
+            dominance["transitions_examined_per_band"],
+        )
+        # And the rows themselves agree band by band with the per-band counts.
+        from collections import Counter
+
+        counted = Counter(row[0] for row in rows)
+        for band, entry in per_band.items():
+            self.assertEqual(counted.get(band, 0), entry["dominant_character_swaps"])
+        return rows, summary, dominance
+
+    def test_contiguous_cyclic_campaign_is_consistent(self):
+        _, summary, _ = self._assert_consistent(self._run().projection)
+        self.assertEqual(summary["cycle_wrap_swaps"], 2)
+
+    def test_linear_campaign_is_consistent(self):
+        projection = character_populations(
+            [self.campaign["shprop"][0]], self.state_map, self.campaign["manifest"],
+            self.atom_groups, "linear",
+        ).projection
+        _, summary, _ = self._assert_consistent(projection)
+        self.assertEqual(summary["cycle_wrap_swaps"], 0)
+
+    def test_gapped_campaign_is_consistent(self):
+        frames = {}
+        for frame in range(1, 11):
+            bcf = [1.0, 1.0, 0.0, 0.0]
+            pcbm = [0.0, 0.0, 1.0, 1.0]
+            swapped = 4 <= frame <= 7
+            frames[frame] = write_procar(
+                self.root / f"PROCAR.u{frame}",
+                {10: pcbm if swapped else bcf, 11: bcf if swapped else pcbm},
+            )
+        manifest = write_manifest(self.root / "unified.json", frames)
+        histories = [
+            write_shprop(self.root / f"SHPROP.u{start}", start,
+                         np.array([[0.7, 0.3], [0.7, 0.3]]), nsw=11)
+            for start in (1, 5, 9)
+        ]
+        plan = plan_analysis(histories, self.state_map, manifest, "linear")
+        result = character_populations(
+            histories, self.state_map, manifest, self.atom_groups, "linear", plan=plan
+        )
+        _, summary, _ = self._assert_consistent(result.projection)
+        self.assertGreater(summary["changes_across_a_frame_gap"], 0)
+
+    def test_dominance_counts_are_no_longer_wrap_blind(self):
+        # The pre-unification statistic scanned ascending frames only and would
+        # have reported one swap per band here. Pinning the fixed value keeps a
+        # future refactor from silently reverting to it.
+        dominance = self._run().projection.dominance_summary()
+        for entry in dominance["per_band"]:
+            self.assertEqual(entry["dominant_character_swaps"], 2)
+            self.assertEqual(entry["cycle_wrap_swaps"], 1)
+
+    def test_quality_by_band_csv_carries_the_split_counts(self):
+        out = self.root / "byband"
+        code = dispatch_main(
+            [
+                "character-populations",
+                "--files", str(self.campaign["shprop"][0]), str(self.campaign["shprop"][1]),
+                "--config", str(self.campaign["state_map"]),
+                "--projection-manifest", str(self.campaign["manifest"]),
+                "--atom-groups", str(self.campaign["atom_groups"]),
+                "--frame-mode", "dish-cyclic",
+                "--out", str(out),
+            ]
+        )
+        self.assertEqual(code, 0)
+        lines = (out / "projection_quality_by_band.csv").read_text(
+            encoding="utf-8"
+        ).splitlines()
+        header = lines[0].split(",")
+        for column in ("adjacent_swaps", "changes_across_a_frame_gap", "cycle_wrap_swaps"):
+            self.assertIn(column, header)
+        total = header.index("dominant_character_swaps")
+        wrap = header.index("cycle_wrap_swaps")
+        for line in lines[1:]:
+            cells = line.split(",")
+            self.assertEqual(int(cells[total]), 2)
+            self.assertEqual(int(cells[wrap]), 1)
+
+    def test_swap_events_reject_an_invalid_threshold(self):
+        projection = self._run().projection
+        for bad in (0.0, -0.1, 1.5):
+            with self.assertRaises(CharacterError):
+                projection.swap_events(bad)
+            with self.assertRaises(CharacterError):
+                projection.dominance_summary(bad)
 
 
 if __name__ == "__main__":

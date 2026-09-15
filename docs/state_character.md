@@ -1,11 +1,11 @@
-# Frame-dependent physical state character
+# Frame-dependent subsystem character
 
 Version 0.5 can combine SHPROP populations with time-dependent subsystem
 projections from PROCAR.  This addresses a limitation of fixed state maps: an
 adiabatic band index can exchange BCF, PCBM, or perovskite character during an
 MD trajectory.
 
-For SHPROP history `r`, the physical population of subsystem `g` is
+For SHPROP history `r`, the reported subsystem population is
 
 ```text
 P_g^r(t) = sum_i P_i^r(t) w_ig[f_r(t)]
@@ -22,6 +22,51 @@ Pbar_g(t) = (1/N) sum_r P_g^r(t)
 Do **not** projection-weight `SHPROP.master`.  Different SHPROP files can carry
 different `NAMDTINI` values, so averaging the adiabatic populations first
 removes the phase needed to select the correct PROCAR frame.
+
+## What this quantity is, and what it is not
+
+It is a **projection-weighted diagonal subsystem population**.  The
+documentation and the reports do not call it "the physical population" without
+that qualification, because two approximations sit between it and the actual
+occupation of a subsystem, and both come from what the input files contain
+rather than from any choice made here.
+
+**It drops the coherences.**  The subsystem occupation of the propagated
+electronic state is
+
+```text
+Tr[rho(t) P_g] = sum_i rho_ii(t) <i|P_g|i>  +  sum_{i != j} rho_ij(t) <j|P_g|i>
+```
+
+SHPROP records only the diagonal `rho_ii`.  A PROCAR records only diagonal,
+band-by-band projections, so `<j|P_g|i>` for `i != j` is not in the inputs
+either.  The second sum is therefore **omitted, not estimated**, and nothing in
+these reports bounds its size.  What is computed is the first sum alone.
+
+When does that matter?  When two states of different subsystem character are
+strongly and persistently coherent, the true subsystem occupation oscillates
+about the diagonal value and the diagonal result misses that oscillation.  In
+surface hopping the population dynamics is itself formulated on the diagonal, so
+the diagonal population is the natural companion observable — but it is an
+approximation to the subsystem occupation, not the thing itself.
+
+**The weights are a conditional share, not a fraction of the band.**
+
+```text
+w_ig = W_ig / sum_g W_ig
+```
+
+`W_ig` is PAW-sphere weight, which does not sum to one over any structure:
+interstitial density and any undeclared atom fall outside every sphere.  The
+normalization divides that missing weight away, so `w_ig` answers "of the weight
+that landed inside a declared group, what share was `g`", not "what fraction of
+band `i` is `g`".  `captured_projection` reports how much weight there was to
+normalize, which is why it is reported for every frame and band rather than
+folded away.  See [Projection normalization and quality](#projection-normalization-and-quality).
+
+The full statement is carried in `report.json` under `population_definition`, so
+it travels with the numbers.  The population columns are named
+`projection_weighted_diagonal_population` in the CSVs for the same reason.
 
 ## Inputs
 
@@ -206,9 +251,12 @@ the frame at which each minimum occurs; the worst individual frame/band samples
 with their source file; the worst frames by their minimum across bands; and the
 count and fraction below the threshold, globally and per band.  Under
 `dominance` it carries, per band, the fraction of frames on which each subsystem
-is dominant, the most common character, the number of dominant-character swaps,
-the median dominant weight, and the mixed fraction under the dominance
-threshold.
+is dominant, the most common character, the dominant-character swap counts
+split by resolution (`adjacent_swaps`, `changes_across_a_frame_gap`,
+`cycle_wrap_swaps`), the median dominant weight, and the mixed fraction under
+the dominance threshold.  Those counts use the transition set described in
+[What counts as a swap](#what-counts-as-a-swap), so they agree with
+`character_swaps.csv` by construction.
 
 All of these are diagnostics.  No sample is discarded, repaired or reweighted on
 account of them.  A captured projection of exactly zero is the one exception: it
@@ -216,25 +264,17 @@ would divide by zero, so it is a loud error naming the file and the bands.
 
 ## Outputs
 
-`character_populations.csv` contains projection-weighted physical populations
-and between-file SEM. `projection_character.csv` contains the long-form
-frame/band/subsystem character and raw projection quality.
+`character_populations.csv` contains the projection-weighted diagonal
+subsystem populations described above, in a column named
+`projection_weighted_diagonal_population`, with between-file SEM.
+`projection_character.csv` contains the long-form frame/band/subsystem
+character and raw projection quality.
 `character_swaps.csv` records changes in the dominant subsystem character of a
 fixed adiabatic band. `shprop_alignment.csv` records the exact `NAMDTINI`,
 `NSW`, header-derived cycle length, cycle length actually used, basis window,
 and projection frames used by every SHPROP file.
 
 `projection_quality_by_band.csv` summarizes capture and dominance per band.
-
-`character_swaps.csv` carries `frame_gap` and `resolution` columns.  Because
-only the frames the histories visit are loaded, two consecutive rows of the
-projection need not be adjacent MD frames.  A change marked `across_gap`
-happened *somewhere inside* that gap, not in one step between the two frames
-named, and the summary reports how many MD frames were skipped.  Swap counts
-are therefore a lower bound on the number of character changes along the full
-MD trajectory.  When every examined frame is adjacent -- the usual case for a
-short cyclic campaign -- the summary says so and the count is exact over the
-range examined.
 
 When a fixed state-map group has the same name as a projection group,
 `fixed_vs_projected.csv` compares the two definitions directly and
@@ -249,6 +289,61 @@ dropped.
 electronic frames each history uses, the number of unique frames, the wrap count
 in cyclic mode, and whether the period came from `NSW-1` or from an explicit
 manifest override.
+
+## What counts as a swap
+
+There is **one** definition of an examined transition, and every swap statistic
+in every output is built from it: the rows of `character_swaps.csv`, the summary
+under `character_swaps` in `report.json`, and the per-band counts under
+`dominance` and in `projection_quality_by_band.csv`.  Summing the per-band
+`dominant_character_swaps` reproduces the campaign total exactly, and no
+statistic can quietly use a different notion of adjacency from another.
+
+A transition carries a `resolution`:
+
+| `resolution` | meaning |
+| --- | --- |
+| `adjacent` | consecutive MD frames; a change here is located exactly |
+| `across_gap` | the frames between were never loaded; the change happened *somewhere inside* the gap |
+| `cycle_wrap` | the `period -> 1` step of a cyclic campaign |
+
+`across_gap` exists because only the frames the histories visit are loaded, so
+two consecutive rows of the projection need not be adjacent MD frames.  The
+summary reports how many MD frames were skipped.  Swap counts are therefore a
+lower bound on the number of character changes along the full MD trajectory.
+When every examined frame is adjacent -- the usual case for a short cyclic
+campaign -- the summary says so and the count is exact over the range examined.
+
+### The cyclic wrap
+
+Loaded frames are held in ascending order, so a plain scan over consecutive
+entries would compare `1 -> 2 -> ... -> period` and stop.  In a cyclic campaign
+that misses one step: the trajectory continues from `period` back to frame `1`,
+and a character change there is a real change in the state the dynamics
+occupies.  It is examined, and labelled `cycle_wrap` rather than `adjacent`,
+because the nuclear geometry does **not** evolve continuously across it — the
+cyclic mapping restarts the MD run rather than continuing it, so the change
+reflects that discontinuity as much as any physical evolution.  Read a
+`cycle_wrap` swap as an artefact of cyclic re-use unless the trajectory is
+genuinely periodic.
+
+The step is only examined when a history actually takes it.  This is counted
+from the resolved per-history frame series, not deduced from which frames
+happen to be loaded: a campaign can load both frame `1` and frame `period`
+without any single history stepping between them.
+
+When it is *not* examined, the reason is stated rather than left silent.
+`report.json` carries `cycle_wrap` under both `character_swaps` and `dominance`,
+and the CLI prints one line for it.  The `state` field is one of:
+
+| `state` | meaning |
+| --- | --- |
+| `examined` | a history takes the step and it was compared |
+| `not_traversed` | no history reaches `period` and continues; the step is not part of this campaign |
+| `not_cyclic_or_not_declared` | linear mode, or a projection series loaded without an alignment plan |
+| `traversal_unknown` | a period is known but traversal was not supplied, so the step is excluded rather than guessed |
+| `frames_not_loaded` | the wrap is traversed but one of the two frames is absent from the projection |
+| `degenerate_period` | the period is 1, so the wrap would compare frame 1 with itself |
 
 A dominant-character swap is **not** a surface hop.  It is a change in the
 chemical character of an adiabatic eigenstate.  Likewise, projection-weighted

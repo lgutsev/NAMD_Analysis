@@ -44,8 +44,9 @@ Version 0.5 provides:
   averaging, and an explicit transform convention.
 - Run/initial-state comparison on common saved times and candidate kinetic
   graph ranking by descriptive AIC/AICc/BIC.
-- Frame-dependent physical-state character from PROCAR projections, so a band
-  that exchanges subsystem character mid-trajectory is followed rather than
+- Frame-dependent subsystem character from PROCAR projections, giving a
+  projection-weighted *diagonal* subsystem population, so a band that exchanges
+  subsystem character mid-trajectory is followed rather than
   mislabelled; each original SHPROP is projected before averaging, only the
   electronic frames actually visited are parsed, and a cheap preflight checks
   the whole configuration before any projection is read.
@@ -365,6 +366,31 @@ reweights the adiabatic populations accordingly:
 P_g(t) = sum over states i of  P_i(t) * w_ig[frame(t)]
 ```
 
+### What that number is
+
+A **projection-weighted diagonal subsystem population** — never called simply
+"the physical population" here, because two approximations stand between it and
+the actual occupation of a subsystem, and both are properties of the input
+files rather than choices you can tune.
+
+*It has no coherences in it.* The true subsystem occupation is
+`Tr[rho P_g] = sum_i rho_ii <i|P_g|i> + sum_{i!=j} rho_ij <j|P_g|i>`. SHPROP
+stores only the diagonal `rho_ii`, and a PROCAR stores only diagonal,
+band-by-band projections, so the second sum is not in the inputs at all. It is
+omitted, not estimated, and nothing reported here bounds how big it is. That is
+the natural companion to surface-hopping populations, which are themselves
+diagonal — but it is an approximation to the occupation, not the occupation.
+
+*The weights are a conditional share.* `w_ig = W_ig / sum_g W_ig` says what
+fraction of the weight that landed inside a declared group was `g`, not what
+fraction of the band was `g`. Interstitial and unassigned weight is divided
+away by that normalization. `captured_projection` is what tells you how much
+there was to begin with — see below.
+
+The full statement travels with the numbers, in `report.json` under
+`population_definition`, and the CSV column is named
+`projection_weighted_diagonal_population`.
+
 ### What you need
 
 | input | what it is |
@@ -455,9 +481,28 @@ PROCAR projections. A band can change character with no hop at all, and a
 carrier can hop with no change of character. Do not report swap counts as
 transfer events.
 
-Because only the frames your histories visit are parsed, a swap seen between
-two non-adjacent frames happened somewhere in between; those rows are marked
-`across_gap` and the count is reported as a lower bound.
+Every swap statistic in every output — the rows of `character_swaps.csv`, the
+`report.json` summary, and the per-band counts in
+`projection_quality_by_band.csv` — is built from one shared definition of an
+examined transition, so the per-band counts sum to the campaign total and no
+two of them can disagree about what adjacency means. Each row carries a
+`resolution`:
+
+- `adjacent` — consecutive MD frames; the change is located exactly.
+- `across_gap` — only the frames your histories visit are parsed, so a change
+  seen between two non-adjacent frames happened somewhere in between. The count
+  is a lower bound.
+- `cycle_wrap` — in `dish-cyclic` mode the frames form a ring, and the
+  `period -> 1` step is taken by the dynamics like any other. Scanning frames in
+  ascending order would miss it, so it is examined separately. Treat it as an
+  artefact of cyclic re-use unless your trajectory is genuinely periodic: the
+  nuclear geometry jumps there, because the mapping restarts the MD run rather
+  than continuing it.
+
+The wrap step is only examined when a history actually takes it, counted from
+the resolved frame series rather than guessed from which frames happen to be
+loaded. When it is not examined the report says which of the reasons
+applies; it is never passed over in silence.
 
 ### Outputs
 
