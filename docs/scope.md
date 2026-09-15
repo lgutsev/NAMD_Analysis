@@ -5,8 +5,8 @@
 It reads results that already exist on disk and describes them: campaign
 inventory, coupling audits, SHPROP population averaging and group analysis,
 optional single-exponential fits with explicit windows and diagnostics,
-frame-dependent physical-state populations when genuine PROCAR projections are
-supplied, and VACF / phonon spectral density analysis. Every command writes a
+frame-dependent projection-weighted subsystem populations when genuine PROCAR
+projections are supplied, and VACF / phonon spectral density analysis. Every command writes a
 JSON report carrying the input SHA-256 fingerprints, the options used and the
 checks that ran.
 
@@ -31,9 +31,15 @@ checks that ran.
 
 **Three kinds of number, never interchangeable.** Every reported quantity
 carries one of `observed_from_SHPROP`, `model_inferred` or `counterfactual`.
-Projection-weighted physical populations remain in the first class: they are
+Projection-weighted subsystem populations remain in the first class: they are
 formed directly from saved SHPROP populations and explicitly supplied PROCAR
-weights, without fitting a kinetic model. Rates and first-passage probabilities
+weights, without fitting a kinetic model. They are nevertheless a *diagonal*
+approximation to subsystem occupation -- SHPROP records no coherences and a
+PROCAR no cross-band projections, so the off-diagonal term of `Tr[rho P_g]` is
+absent from the inputs and omitted from the result. The approximation lives in
+the input files rather than in a fitted model, which is why the classification
+does not change; the qualification is stated wherever the number appears. See
+[state character](state_character.md). Rates and first-passage probabilities
 come from a fitted model and inherit all of its assumptions. Extraction yields
 are propagated under an escape rate that was never simulated. A first-passage
 probability is not a device extraction efficiency, a sink yield is not
@@ -95,9 +101,10 @@ per-file phase information.
 The feature does **not** infer character from column number, nearest energy,
 energy continuity or coupling magnitude. Multiple k-points/spin components are
 rejected rather than combined implicitly. Bands must match `BMIN..BMAX`
-explicitly, and missing projection frames are fatal. The normalized physical
+explicitly, and missing projection frames are fatal. The normalized subsystem
 character is accompanied by the raw captured PAW projection so weak projection
-quality remains visible. See [state character](state_character.md).
+quality remains visible, because normalization over the declared groups divides
+that missing weight away. See [state character](state_character.md).
 
 A dominant-character change of an adiabatic band is not itself a surface hop.
 It says the chemical/spatial character of the eigenstate changed; individual
@@ -250,7 +257,7 @@ independent MD ensemble.
 | Basic output summaries | Compare systems and generate publication figures |
 | — | Fit multistate kinetics and test whether the rates are identifiable |
 | Collect raw SHPROP histories | Average them into a canonical, fingerprinted master |
-| Collect frame-resolved PROCARs/projections | Projection-weight physical subsystem populations |
+| Collect frame-resolved PROCARs/projections | Projection-weight diagonal subsystem populations |
 | Record the NAC handling policy used | Read couplings against ħ/dt and report a declared ceiling |
 
 Inputs are accepted directly, whether or not a launcher produced them. When a

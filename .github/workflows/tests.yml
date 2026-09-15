@@ -1,6 +1,12 @@
 name: tests
 on: [push, pull_request]
 
+# CI validates; it never modifies the branch. Read-only is stated explicitly so
+# that adding a step which tries to commit, push or patch fails here rather
+# than silently rewriting a scientific repository.
+permissions:
+  contents: read
+
 # A feature branch can receive several corrective commits in quick succession.
 # Only the newest run for a given push/PR ref is scientifically useful; cancel
 # superseded runs so stale matrices do not block validation of the current head.

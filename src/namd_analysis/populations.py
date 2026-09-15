@@ -196,8 +196,20 @@ def load_population_set(paths: Sequence, state_map: StateMap) -> PopulationSet:
 
     shapes = {t.shape for t in tables}
     if len(shapes) != 1:
-        detail = ", ".join(f"{p.name}:{t.shape}" for p, t in zip(paths, tables))
-        raise InputMismatchError(f"SHPROP files have different shapes ({detail})")
+        grouped: Dict[Any, List[str]] = {}
+        for path, table in zip(paths, tables):
+            grouped.setdefault(table.shape, []).append(path.name)
+        # Name the minority rather than listing every file: a campaign can pass
+        # a thousand histories, and the one that differs must be findable.
+        parts = []
+        for shape, names in sorted(grouped.items(), key=lambda item: -len(item[1])):
+            sample = ", ".join(names[:5]) + ("..." if len(names) > 5 else "")
+            parts.append(f"{shape} in {len(names)} file(s) ({sample})")
+        raise InputMismatchError(
+            "SHPROP files have different shapes: "
+            + "; ".join(parts)
+            + ". No interpolation or truncation is performed."
+        )
 
     ncols = tables[0].shape[1]
     needed = max([state_map.time_column] + state_map.population_columns)
