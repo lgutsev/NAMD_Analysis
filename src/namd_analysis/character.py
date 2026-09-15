@@ -19,7 +19,12 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 
 from .io.hefei import read_shprop_with_metadata
-from .io.procar import ProcarFormatError, read_procar_ion_totals
+from .io.procar import (
+    ProcarFormatError,
+    procar_band_numbers,
+    procar_structure,
+    read_procar_ion_totals,
+)
 from .populations import PopulationSet, StateMap, load_population_set
 
 
@@ -102,16 +107,106 @@ class ProjectionSeries:
     def band_index(self) -> Dict[int, int]:
         return {int(band): i for i, band in enumerate(self.bands)}
 
-    def quality_summary(self) -> Dict[str, Any]:
+    def quality_summary(self, worst_n: int = 10) -> Dict[str, Any]:
+        """How much of each band actually lands inside the declared subsystems.
+
+        The normalized weights divide by this, so a band whose captured
+        projection is small has character that is mostly an artefact of the
+        division.  These are diagnostics: nothing here discards, repairs or
+        reweights a low-projection sample, because doing so silently would
+        change the science.
+        """
         captured = self.captured_projection
+        threshold = self.quality_threshold
+        below = captured < threshold
+        nframes, nbands = captured.shape
+
+        per_band: List[Dict[str, Any]] = []
+        for bi in range(nbands):
+            column = captured[:, bi]
+            per_band.append(
+                {
+                    "band": int(self.bands[bi]),
+                    "median_captured_projection": float(np.median(column)),
+                    "minimum_captured_projection": float(np.min(column)),
+                    "frame_of_minimum": int(self.frames[int(np.argmin(column))]),
+                    "samples_below_threshold": int(np.count_nonzero(column < threshold)),
+                    "fraction_below_threshold": float(np.mean(column < threshold)),
+                }
+            )
+
+        per_frame_minimum = captured.min(axis=1)
+        worst_frames = np.argsort(per_frame_minimum)[: max(0, worst_n)]
+
+        flat = captured.reshape(-1)
+        order = np.argsort(flat)[: max(0, worst_n)]
+        worst_samples = []
+        for position in order:
+            fi, bi = divmod(int(position), nbands)
+            worst_samples.append(
+                {
+                    "frame": int(self.frames[fi]),
+                    "band": int(self.bands[bi]),
+                    "captured_projection": float(captured[fi, bi]),
+                    "total_projection": float(self.total_projection[fi, bi]),
+                    "source": str(self.source_paths[fi]),
+                }
+            )
+
         return {
+            "quality_threshold": threshold,
+            "n_frames": int(nframes),
+            "n_bands": int(nbands),
             "minimum_captured_projection": float(np.min(captured)),
+            "p1_captured_projection": float(np.percentile(captured, 1)),
+            "p5_captured_projection": float(np.percentile(captured, 5)),
             "median_captured_projection": float(np.median(captured)),
+            "p95_captured_projection": float(np.percentile(captured, 95)),
             "maximum_captured_projection": float(np.max(captured)),
-            "quality_threshold": self.quality_threshold,
-            "samples_below_threshold": int(np.count_nonzero(captured < self.quality_threshold)),
-            "fraction_below_threshold": float(np.mean(captured < self.quality_threshold)),
+            "samples_below_threshold": int(np.count_nonzero(below)),
+            "fraction_below_threshold": float(np.mean(below)),
+            "per_band": per_band,
+            "worst_frame_band_samples": worst_samples,
+            "worst_frames_by_minimum_capture": [
+                {
+                    "frame": int(self.frames[int(fi)]),
+                    "minimum_captured_projection": float(per_frame_minimum[int(fi)]),
+                }
+                for fi in worst_frames
+            ],
+            "note": (
+                "captured_projection is the raw PROCAR weight falling inside the "
+                "declared atom groups, before normalization. Values well below one "
+                "mean the band lies largely outside every declared PAW sphere, so its "
+                "normalized character is poorly determined. Nothing is discarded or "
+                "repaired on this basis"
+            ),
         }
+
+    def dominance_summary(self, dominance_threshold: float = 0.6) -> Dict[str, Any]:
+        """Per-band dominant-character occupancy and swap counts."""
+        bands_out: List[Dict[str, Any]] = []
+        for bi in range(self.weights.shape[1]):
+            weights = self.weights[:, bi, :]
+            dominant = np.argmax(weights, axis=1)
+            confidence = np.max(weights, axis=1)
+            occupancy = {
+                name: float(np.mean(dominant == gi))
+                for gi, name in enumerate(self.group_names)
+            }
+            swaps = int(np.count_nonzero(dominant[1:] != dominant[:-1]))
+            bands_out.append(
+                {
+                    "band": int(self.bands[bi]),
+                    "dominant_occupancy_fraction": occupancy,
+                    "most_common_character": max(occupancy, key=occupancy.get),
+                    "dominant_character_swaps": swaps,
+                    "median_dominant_weight": float(np.median(confidence)),
+                    "mixed_samples": int(np.count_nonzero(confidence < dominance_threshold)),
+                    "mixed_fraction": float(np.mean(confidence < dominance_threshold)),
+                }
+            )
+        return {"dominance_threshold": dominance_threshold, "per_band": bands_out}
 
 
 @dataclass
@@ -235,44 +330,98 @@ def load_projection_series(
     manifest_path,
     atom_groups: AtomGroupMap,
     required_bands: Sequence[int],
+    required_frames: Optional[Sequence[int]] = None,
+    manifest: Optional[ProjectionManifest] = None,
 ) -> ProjectionSeries:
-    """Load subsystem weights for exactly the bands needed by the NAMD basis."""
+    """Load subsystem weights for exactly the bands needed by the NAMD basis.
+
+    ``required_frames`` restricts parsing to the electronic frames the supplied
+    SHPROP histories actually visit.  A cyclic campaign can declare two thousand
+    PROCAR files and touch only a fraction of them, and each one is large, so
+    parsing the whole manifest to use part of it is the dominant cost.  The
+    manifest is still validated in full -- every declared file must exist, frame
+    numbers must be unique and positive, and a declared ``cycle_length`` must be
+    completely covered -- because those checks are cheap and dropping them to
+    save time would let a gap go unnoticed until it silently changed a number.
+
+    ``manifest`` lets a caller that already parsed the manifest pass it in
+    rather than re-reading it.
+    """
     required = [int(band) for band in required_bands]
     if not required or len(set(required)) != len(required):
         raise CharacterError("required band list must be nonempty and unique")
-    manifest = _load_projection_manifest(manifest_path)
+    manifest = manifest if manifest is not None else _load_projection_manifest(manifest_path)
     entries = manifest.frames
+    if required_frames is not None:
+        wanted = {int(frame) for frame in required_frames}
+        if not wanted:
+            raise CharacterError("required frame list must be nonempty")
+        available = {frame for frame, _ in entries}
+        missing = sorted(wanted - available)
+        if missing:
+            preview = missing[:10]
+            raise CharacterError(
+                f"projection manifest lacks {len(missing)} required electronic frames "
+                f"{preview}{'...' if len(missing) > 10 else ''}; the manifest covers "
+                f"{min(available)}..{max(available)} ({len(available)} frames). "
+                "Add the missing PROCAR files, or correct NAMDTINI/frame-mode/cycle_length."
+            )
+        entries = [(frame, path) for frame, path in entries if frame in wanted]
     group_names = atom_groups.names
     frame_weights: List[np.ndarray] = []
     captured_rows: List[np.ndarray] = []
     total_rows: List[np.ndarray] = []
     nions_expected: Optional[int] = None
 
+    first_path: Optional[Path] = None
     for _frame, path in entries:
         try:
-            projection = read_procar_ion_totals(path)
+            projection = read_procar_ion_totals(path, bands=required)
         except ProcarFormatError as exc:
             raise CharacterError(str(exc)) from exc
         if nions_expected is None:
             nions_expected = projection.nions
+            first_path = path
             flat_atoms = sorted(atom for atoms in atom_groups.groups.values() for atom in atoms)
             if flat_atoms and flat_atoms[-1] > nions_expected:
                 raise CharacterError(
-                    f"atom map references ion {flat_atoms[-1]} but PROCAR has {nions_expected} ions"
+                    f"atom-group map references PROCAR ion {flat_atoms[-1]} but {path} "
+                    f"has only {nions_expected} ions. Fix the atom-group JSON, or check "
+                    "that it was written for this structure."
                 )
-            if atom_groups.complete_atoms and flat_atoms != list(range(1, nions_expected + 1)):
-                raise CharacterError(
-                    "complete_atoms: true requires every PROCAR ion 1..N exactly once across groups"
-                )
+            if atom_groups.complete_atoms:
+                expected = list(range(1, nions_expected + 1))
+                if flat_atoms != expected:
+                    assigned = set(flat_atoms)
+                    unassigned = sorted(set(expected) - assigned)
+                    raise CharacterError(
+                        "complete_atoms: true requires every PROCAR ion 1.."
+                        f"{nions_expected} to appear exactly once across the atom "
+                        f"groups. {path} has {nions_expected} ions; "
+                        f"{len(assigned)} are assigned and {len(unassigned)} are not"
+                        + (
+                            f" (first missing: {unassigned[:10]}"
+                            f"{'...' if len(unassigned) > 10 else ''})"
+                            if unassigned
+                            else ""
+                        )
+                        + ". Either complete the groups or set complete_atoms: false."
+                    )
         elif projection.nions != nions_expected:
             raise CharacterError(
-                f"{path}: {projection.nions} ions but earlier PROCARs have {nions_expected}"
+                f"{path}: {projection.nions} ions, but {first_path} has "
+                f"{nions_expected}. Every PROCAR in one projection manifest must "
+                "describe the same structure."
             )
 
         band_lookup = projection.band_index()
         missing_bands = [band for band in required if band not in band_lookup]
         if missing_bands:
-            raise CharacterError(f"{path}: missing required VASP bands {missing_bands}")
+            raise CharacterError(
+                f"{path}: missing required VASP bands {missing_bands}. The NAMD basis "
+                f"needs bands {required[0]}..{required[-1]}; widen the PROCAR band "
+                "range or correct BMIN/BMAX."
+            )
 
         raw = np.empty((len(required), len(group_names)), dtype=float)
         total = np.empty(len(required), dtype=float)
@@ -284,10 +433,16 @@ def load_projection_series(
                 raw[bi, gi] = float(np.sum(ion_values[indices]))
         captured = raw.sum(axis=1)
         if np.any(captured <= 1.0e-14):
-            bad = [required[i] for i in np.flatnonzero(captured <= 1.0e-14)]
+            bad_index = np.flatnonzero(captured <= 1.0e-14)
+            bad = [required[i] for i in bad_index]
+            worst = float(np.min(captured))
             raise CharacterError(
-                f"{path}: declared subsystems capture zero projection for bands {bad}; "
-                "normalizing their character would be meaningless"
+                f"{path}: the declared subsystems capture essentially zero projection "
+                f"(smallest {worst:.3g}, expected order 1) for VASP band(s) {bad[:10]}"
+                f"{'...' if len(bad) > 10 else ''}; normalizing their character would "
+                "divide by zero and produce meaningless weights. Either those bands lie "
+                "outside the PAW spheres of every declared group, or the atom-group map "
+                "does not match this structure."
             )
         frame_weights.append(raw / captured[:, None])
         captured_rows.append(captured)
@@ -350,12 +505,383 @@ def aligned_frames(
     raise CharacterError(f"unknown frame alignment mode {mode!r}")
 
 
+@dataclass
+class AnalysisPlan:
+    """Everything decided before a single PROCAR is parsed.
+
+    Building this is cheap: it reads the SHPROP headers and the projection
+    manifest, and does all the arithmetic that decides which electronic frames
+    are needed.  Both the preflight and the real run go through it, so what
+    preflight checks is exactly what the run will do.
+    """
+
+    shprop_paths: List[Path]
+    manifest: ProjectionManifest
+    bmin: int
+    bmax: int
+    bands: List[int]
+    frame_mode: str
+    frames_by_file: List[np.ndarray]
+    required_frames: List[int]
+    alignments: List[Dict[str, Any]]
+    n_time: List[int]
+    manifest_frames: List[int]
+
+    @property
+    def manifest_frame_count(self) -> int:
+        return len(self.manifest_frames)
+
+    @property
+    def required_frame_count(self) -> int:
+        return len(self.required_frames)
+
+    def missing_frames(self) -> List[int]:
+        available = {frame for frame, _ in self.manifest.frames}
+        return sorted(set(self.required_frames) - available)
+
+    def consumption(self) -> Dict[str, Any]:
+        """Declared manifest range against the subset actually consumed."""
+        available = sorted(frame for frame, _ in self.manifest.frames)
+        return {
+            "manifest_declared_frames": len(available),
+            "manifest_frame_min": available[0] if available else None,
+            "manifest_frame_max": available[-1] if available else None,
+            "frames_required_by_shprop": len(self.required_frames),
+            "frames_required_min": self.required_frames[0] if self.required_frames else None,
+            "frames_required_max": self.required_frames[-1] if self.required_frames else None,
+            "procars_parsed": len(self.required_frames),
+            "procars_skipped": max(0, len(available) - len(self.required_frames)),
+            "note": (
+                "only the electronic frames the supplied SHPROP histories actually "
+                "visit are parsed; the whole manifest is still validated for "
+                "existence, uniqueness and cycle coverage"
+            ),
+        }
+
+
+def plan_analysis(
+    shprop_paths: Sequence,
+    state_map: StateMap,
+    projection_manifest,
+    frame_mode: str,
+) -> AnalysisPlan:
+    """Resolve band window and required electronic frames without parsing PROCARs."""
+    paths = [Path(path) for path in shprop_paths]
+    if not paths:
+        raise CharacterError("no SHPROP files were supplied")
+    records = [read_shprop_with_metadata(path) for path in paths]
+
+    band_windows: List[Tuple[int, int]] = []
+    for record in records:
+        bmin = _int_metadata(record.metadata, "BMIN", record.path)
+        bmax = _int_metadata(record.metadata, "BMAX", record.path)
+        if bmax < bmin:
+            raise CharacterError(
+                f"{record.path}: SHPROP header has BMAX={bmax} < BMIN={bmin}; the "
+                "basis window must increase"
+            )
+        band_windows.append((bmin, bmax))
+    if len(set(band_windows)) != 1:
+        detail = ", ".join(
+            f"{record.path.name}={window[0]}:{window[1]}"
+            for record, window in zip(records, band_windows)
+        )
+        raise CharacterError(
+            f"SHPROP files declare different BMIN/BMAX windows ({detail}). One "
+            "character analysis covers one basis; split the campaign by window."
+        )
+    bmin, bmax = band_windows[0]
+    bands = list(range(bmin, bmax + 1))
+    if len(bands) != len(state_map.population_columns):
+        raise CharacterError(
+            f"SHPROP basis {bmin}:{bmax} has {len(bands)} states but the state map "
+            f"declares {len(state_map.population_columns)} population columns "
+            f"({state_map.population_columns}). Character analysis needs exactly one "
+            "declared population column per basis state, ordered BMIN through BMAX. "
+            "This is fixable in the state-map JSON."
+        )
+
+    manifest = _load_projection_manifest(projection_manifest)
+    manifest_frames = sorted(frame for frame, _ in manifest.frames)
+
+    frames_by_file: List[np.ndarray] = []
+    alignments: List[Dict[str, Any]] = []
+    n_time: List[int] = []
+    for record in records:
+        ntime = int(record.table.shape[0])
+        n_time.append(ntime)
+        frames = aligned_frames(
+            record.metadata,
+            ntime,
+            frame_mode,
+            record.path,
+            cycle_length=manifest.cycle_length,
+        )
+        frames_by_file.append(frames)
+        alignments.append(
+            _alignment_record(record, frames, frame_mode, manifest, bmin, bmax, ntime)
+        )
+
+    required = sorted({int(frame) for frames in frames_by_file for frame in frames})
+    return AnalysisPlan(
+        shprop_paths=paths,
+        manifest=manifest,
+        bmin=bmin,
+        bmax=bmax,
+        bands=bands,
+        frame_mode=frame_mode,
+        frames_by_file=frames_by_file,
+        required_frames=required,
+        alignments=alignments,
+        n_time=n_time,
+        manifest_frames=manifest_frames,
+    )
+
+
+def _alignment_record(
+    record,
+    frames: np.ndarray,
+    frame_mode: str,
+    manifest: ProjectionManifest,
+    bmin: int,
+    bmax: int,
+    ntime: int,
+) -> Dict[str, Any]:
+    """Human-readable audit of how one SHPROP maps onto electronic frames."""
+    header_nsw = record.metadata.get("NSW")
+    header_period = None
+    if isinstance(header_nsw, (int, float)):
+        header_period = int(header_nsw) - 1
+    cyclic = frame_mode == "dish-cyclic"
+    period_used = manifest.cycle_length if manifest.cycle_length is not None else header_period
+    values = [int(frame) for frame in frames]
+    # A wrap is a step that does not simply increase by one.
+    wraps = sum(1 for a, b in zip(values, values[1:]) if b != a + 1)
+    return {
+        "path": str(record.path.resolve()),
+        "file": record.path.name,
+        "NAMDTINI": _int_metadata(record.metadata, "NAMDTINI", record.path),
+        "NSW": header_nsw,
+        "n_time_points": ntime,
+        "header_cycle_length": header_period,
+        "cycle_length_used": period_used if cyclic else None,
+        "cycle_length_source": (
+            "projection_manifest"
+            if cyclic and manifest.cycle_length is not None
+            else "SHPROP_NSW_minus_1"
+            if cyclic
+            else "not_applicable"
+        ),
+        "header_cycle_mismatch": bool(
+            cyclic
+            and manifest.cycle_length is not None
+            and header_period is not None
+            and manifest.cycle_length != header_period
+        ),
+        "BMIN": bmin,
+        "BMAX": bmax,
+        "frame_mode": frame_mode,
+        "first_projection_frame": values[0],
+        "last_projection_frame": values[-1],
+        "first_five_frames": values[:5],
+        "last_five_frames": values[-5:],
+        "unique_projection_frames_used": int(len(set(values))),
+        "wrap_count": wraps,
+    }
+
+
+def preflight_report(
+    shprop_paths: Sequence,
+    state_map: StateMap,
+    projection_manifest,
+    atom_groups: AtomGroupMap,
+    frame_mode: str,
+) -> Dict[str, Any]:
+    """Answer the cheap questions before the expensive analysis runs.
+
+    Reads SHPROP headers, the projection manifest, and the *header* of one
+    representative PROCAR.  It parses no projection data and computes no
+    populations, so it stays fast enough to run every time.
+
+    Problems are collected rather than raised, so a single run tells you
+    everything that is wrong instead of only the first thing.
+    """
+    problems: List[str] = []
+    warnings: List[str] = []
+    payload: Dict[str, Any] = {
+        "frame_mode": frame_mode,
+        "n_shprop_files": len(list(shprop_paths)),
+    }
+
+    try:
+        plan = plan_analysis(shprop_paths, state_map, projection_manifest, frame_mode)
+    except CharacterError as exc:
+        payload["problems"] = [str(exc)]
+        payload["warnings"] = warnings
+        payload["ok"] = False
+        payload["stage"] = "planning"
+        payload["note"] = (
+            "preflight stopped while resolving the band window and frame alignment; "
+            "nothing downstream could be checked"
+        )
+        return payload
+
+    payload["stage"] = "planned"
+    payload["shprop"] = [
+        {
+            "file": record["file"],
+            "path": record["path"],
+            "NAMDTINI": record["NAMDTINI"],
+            "NSW": record["NSW"],
+            "n_time_points": record["n_time_points"],
+            "header_cycle_length": record["header_cycle_length"],
+            "cycle_length_used": record["cycle_length_used"],
+            "cycle_length_source": record["cycle_length_source"],
+            "header_cycle_mismatch": record["header_cycle_mismatch"],
+            "first_five_frames": record["first_five_frames"],
+            "last_five_frames": record["last_five_frames"],
+            "unique_projection_frames_used": record["unique_projection_frames_used"],
+            "wrap_count": record["wrap_count"],
+        }
+        for record in plan.alignments
+    ]
+    payload["band_window"] = {
+        "BMIN": plan.bmin,
+        "BMAX": plan.bmax,
+        "basis_size": len(plan.bands),
+        "state_map_population_columns": list(state_map.population_columns),
+    }
+    payload["distinct_namdtini"] = sorted({r["NAMDTINI"] for r in plan.alignments})
+    payload["row_counts"] = sorted(set(plan.n_time))
+    payload["frames"] = plan.consumption()
+
+    explicit = plan.manifest.cycle_length
+    header_periods = sorted(
+        {r["header_cycle_length"] for r in plan.alignments if r["header_cycle_length"] is not None}
+    )
+    payload["cycle"] = {
+        "explicit_manifest_cycle_length": explicit,
+        "header_derived_periods_nsw_minus_1": header_periods,
+        "disagree": bool(
+            explicit is not None and header_periods and [explicit] != header_periods
+        ),
+        "applies_to_this_frame_mode": frame_mode == "dish-cyclic",
+    }
+    if payload["cycle"]["disagree"] and frame_mode == "dish-cyclic":
+        warnings.append(
+            f"projection manifest declares cycle_length={explicit} but the SHPROP "
+            f"headers imply NSW-1={header_periods}. The explicit manifest value wins "
+            "and the mismatch is recorded in the alignment report; confirm it is "
+            "deliberate before trusting the frame mapping."
+        )
+
+    missing = plan.missing_frames()
+    if missing:
+        available = sorted(frame for frame, _ in plan.manifest.frames)
+        problems.append(
+            f"the projection manifest lacks {len(missing)} electronic frames that the "
+            f"SHPROP histories require, first {missing[:10]}"
+            f"{'...' if len(missing) > 10 else ''}. The manifest covers "
+            f"{available[0]}..{available[-1]}. Fixable by adding those PROCAR files, "
+            "or by correcting NAMDTINI, --frame-mode or cycle_length."
+        )
+    payload["missing_required_frames"] = missing[:50]
+    payload["n_missing_required_frames"] = len(missing)
+
+    # One representative PROCAR: header only.
+    representative = None
+    lookup = dict(plan.manifest.frames)
+    for frame in plan.required_frames:
+        if frame in lookup:
+            representative = (frame, lookup[frame])
+            break
+    if representative is None:
+        problems.append("no required frame is present in the manifest at all")
+    else:
+        frame, path = representative
+        try:
+            structure = procar_structure(path)
+        except ProcarFormatError as exc:
+            problems.append(f"representative PROCAR could not be read: {exc}")
+        else:
+            structure["frame"] = frame
+            payload["representative_procar"] = structure
+            if not structure["single_kpoint"]:
+                problems.append(
+                    f"{path}: {structure['n_kpoints']} k-points. Character analysis "
+                    "requires one and will not select or average implicitly. This is "
+                    "a property of the source data, not of the configuration."
+                )
+            if not structure["single_spin_block"]:
+                problems.append(
+                    f"{path}: multiple spin components "
+                    f"{structure['spin_components_seen']}. Splitting or combining them "
+                    "must be explicit upstream; the source data is incompatible as is."
+                )
+            nions = structure["n_ions"]
+            declared = sorted(
+                atom for atoms in atom_groups.groups.values() for atom in atoms
+            )
+            payload["atom_coverage"] = {
+                "procar_ions": nions,
+                "assigned_ions": len(declared),
+                "complete_atoms": atom_groups.complete_atoms,
+                "max_declared_ion": declared[-1] if declared else None,
+            }
+            if declared and nions is not None and declared[-1] > nions:
+                problems.append(
+                    f"the atom-group map references PROCAR ion {declared[-1]} but "
+                    f"{path} has only {nions}. Fixable in the atom-group JSON."
+                )
+            elif atom_groups.complete_atoms and nions is not None:
+                unassigned = sorted(set(range(1, nions + 1)) - set(declared))
+                payload["atom_coverage"]["unassigned_ions"] = unassigned[:20]
+                payload["atom_coverage"]["n_unassigned_ions"] = len(unassigned)
+                if unassigned:
+                    problems.append(
+                        f"complete_atoms is true but {len(unassigned)} of the {nions} "
+                        f"PROCAR ions are in no group, first {unassigned[:10]}"
+                        f"{'...' if len(unassigned) > 10 else ''}. Either assign them "
+                        "or set complete_atoms: false. Fixable in the atom-group JSON."
+                    )
+            bands_declared = structure["n_bands"]
+            # Read the band numbers rather than assuming they run 1..NBANDS:
+            # comparing a required band *number* against a band *count* would
+            # be wrong for any file that labels its blocks differently.
+            present = set(procar_band_numbers(path, limit=bands_declared))
+            absent = [band for band in plan.bands if band not in present]
+            payload["band_coverage"] = {
+                "procar_declared_band_count": bands_declared,
+                "procar_band_numbers_seen": sorted(present)[:20],
+                "required_bands": [plan.bands[0], plan.bands[-1]],
+                "required_bands_absent": absent,
+            }
+            if absent:
+                problems.append(
+                    f"the NAMD basis needs VASP band(s) {absent[:10]}"
+                    f"{'...' if len(absent) > 10 else ''} but {path} labels bands "
+                    f"{sorted(present)[:10]}{'...' if len(present) > 10 else ''}. "
+                    "Either BMIN/BMAX is wrong, or the PROCAR was written over too "
+                    "narrow a band range."
+                )
+
+    payload["problems"] = problems
+    payload["warnings"] = warnings
+    payload["ok"] = not problems
+    payload["note"] = (
+        "preflight reads SHPROP headers, the projection manifest and one PROCAR "
+        "header. It parses no projection data and produces no physical populations."
+    )
+    return payload
+
+
 def character_populations(
     shprop_paths: Sequence,
     state_map: StateMap,
     projection_manifest,
     atom_groups: AtomGroupMap,
     frame_mode: str,
+    plan: Optional[AnalysisPlan] = None,
 ) -> CharacterPopulationResult:
     """Project each original SHPROP into physical character before averaging.
 
@@ -364,89 +890,32 @@ def character_populations(
     the phase needed to select the correct PROCAR frame.
     """
     paths = [Path(path) for path in shprop_paths]
+    plan = plan if plan is not None else plan_analysis(
+        paths, state_map, projection_manifest, frame_mode
+    )
     population: PopulationSet = load_population_set(paths, state_map)
     records = [read_shprop_with_metadata(path) for path in paths]
+    bands = plan.bands
 
-    band_windows: List[Tuple[int, int]] = []
-    for record in records:
-        bmin = _int_metadata(record.metadata, "BMIN", record.path)
-        bmax = _int_metadata(record.metadata, "BMAX", record.path)
-        if bmax < bmin:
-            raise CharacterError(f"{record.path}: BMAX < BMIN")
-        band_windows.append((bmin, bmax))
-    if len(set(band_windows)) != 1:
-        raise CharacterError(f"SHPROP files use different BMIN/BMAX windows: {band_windows}")
-    bmin, bmax = band_windows[0]
-    bands = list(range(bmin, bmax + 1))
-    if len(bands) != len(state_map.population_columns):
-        raise CharacterError(
-            f"SHPROP basis {bmin}:{bmax} has {len(bands)} states but state map "
-            f"declares {len(state_map.population_columns)} population columns. "
-            "Character analysis requires one declared population column per basis "
-            "state, ordered from BMIN through BMAX."
-        )
-
-    projection = load_projection_series(projection_manifest, atom_groups, bands)
+    projection = load_projection_series(
+        projection_manifest,
+        atom_groups,
+        bands,
+        required_frames=plan.required_frames,
+        manifest=plan.manifest,
+    )
     frame_lookup = projection.frame_index()
     band_lookup = projection.band_index()
     projection_band_indices = np.asarray([band_lookup[band] for band in bands], dtype=int)
 
     physical_files: List[np.ndarray] = []
-    alignments: List[Dict[str, Any]] = []
-    for record in records:
-        frames = aligned_frames(
-            record.metadata,
-            record.table.shape[0],
-            frame_mode,
-            record.path,
-            cycle_length=projection.cycle_length,
-        )
-        missing = sorted({int(frame) for frame in frames if int(frame) not in frame_lookup})
-        if missing:
-            preview = missing[:10]
-            raise CharacterError(
-                f"{record.path}: projection manifest lacks {len(missing)} required frames "
-                f"{preview}{'...' if len(missing) > 10 else ''}"
-            )
+    alignments: List[Dict[str, Any]] = list(plan.alignments)
+    for record, frames in zip(records, plan.frames_by_file):
         frame_indices = np.asarray([frame_lookup[int(frame)] for frame in frames], dtype=int)
         weights = projection.weights[frame_indices][:, projection_band_indices, :]
         pops = record.table[:, state_map.population_columns]
         physical = np.einsum("ts,tsg->tg", pops, weights)
         physical_files.append(physical)
-
-        header_nsw = record.metadata.get("NSW")
-        header_period = None
-        if isinstance(header_nsw, (int, float)):
-            header_period = int(header_nsw) - 1
-        cycle_used = projection.cycle_length if projection.cycle_length is not None else header_period
-        alignments.append(
-            {
-                "path": str(record.path.resolve()),
-                "NAMDTINI": _int_metadata(record.metadata, "NAMDTINI", record.path),
-                "NSW": header_nsw,
-                "header_cycle_length": header_period,
-                "cycle_length_used": cycle_used if frame_mode == "dish-cyclic" else None,
-                "cycle_length_source": (
-                    "projection_manifest"
-                    if frame_mode == "dish-cyclic" and projection.cycle_length is not None
-                    else "SHPROP_NSW_minus_1"
-                    if frame_mode == "dish-cyclic"
-                    else "not_applicable"
-                ),
-                "header_cycle_mismatch": bool(
-                    frame_mode == "dish-cyclic"
-                    and projection.cycle_length is not None
-                    and header_period is not None
-                    and projection.cycle_length != header_period
-                ),
-                "BMIN": bmin,
-                "BMAX": bmax,
-                "frame_mode": frame_mode,
-                "first_projection_frame": int(frames[0]),
-                "last_projection_frame": int(frames[-1]),
-                "unique_projection_frames_used": int(np.unique(frames).size),
-            }
-        )
 
     per_file = np.stack(physical_files, axis=0)
     mean = per_file.mean(axis=0)
@@ -468,7 +937,11 @@ def character_populations(
     if state_map.complete_population and conservation["max_abs_deviation_from_one"] > 1.0e-5:
         raise CharacterError(
             "projection-weighted physical populations do not conserve the complete "
-            "SHPROP population; check projection normalization and state alignment"
+            f"SHPROP population: total ranges [{conservation['min']:.8g}, "
+            f"{conservation['max']:.8g}] and departs from 1 by up to "
+            f"{conservation['max_abs_deviation_from_one']:.3g} (tolerance 1e-5). "
+            "Check that the state map covers the whole basis and that the atom "
+            "groups capture the projection; this is not repaired automatically"
         )
 
     return CharacterPopulationResult(
@@ -524,6 +997,67 @@ def character_swap_rows(
         "mixed_fraction": float(mixed / total) if total else 0.0,
     }
     return rows, summary
+
+
+DISCREPANCY_HEADER = [
+    "group",
+    "max_abs_difference",
+    "time_of_max_ns",
+    "rms_difference",
+    "integrated_abs_difference_ns",
+    "mean_signed_difference",
+    "fixed_at_max",
+    "projected_at_max",
+]
+
+
+def fixed_vs_projected_summary(result: "CharacterPopulationResult") -> Dict[str, Any]:
+    """How far the dynamic character moves the answer, per shared group.
+
+    Compares the projection-weighted population against the fixed-column
+    population on the same time grid, for groups named in both.  A large
+    discrepancy says the fixed map was mislabelling occupation; a small one
+    says the fixed map was adequate for this campaign.  Neither is a defect.
+    """
+    time_ns = result.time_ns
+    lookup = {name: i for i, name in enumerate(result.group_names)}
+    shared = [name for name in result.fixed_mean if name in lookup]
+    rows: List[List[Any]] = []
+    records: List[Dict[str, Any]] = []
+    integrate = getattr(np, "trapezoid", None) or np.trapz
+    for name in shared:
+        fixed = np.asarray(result.fixed_mean[name], dtype=float)
+        projected = result.mean[:, lookup[name]]
+        difference = projected - fixed
+        peak = int(np.argmax(np.abs(difference)))
+        record = {
+            "group": name,
+            "max_abs_difference": float(np.abs(difference)[peak]),
+            "time_of_max_ns": float(time_ns[peak]),
+            "rms_difference": float(np.sqrt(np.mean(difference**2))),
+            "integrated_abs_difference_ns": float(integrate(np.abs(difference), x=time_ns)),
+            "mean_signed_difference": float(np.mean(difference)),
+            "fixed_at_max": float(fixed[peak]),
+            "projected_at_max": float(projected[peak]),
+        }
+        records.append(record)
+        rows.append([record[key] for key in DISCREPANCY_HEADER])
+
+    largest = max(records, key=lambda r: r["max_abs_difference"]) if records else None
+    return {
+        "shared_groups": shared,
+        "groups_only_in_fixed_map": sorted(set(result.fixed_mean) - set(lookup)),
+        "groups_only_in_projection": sorted(set(lookup) - set(result.fixed_mean)),
+        "per_group": records,
+        "rows": rows,
+        "largest_disagreement": largest,
+        "note": (
+            "the fixed comparison assigns each SHPROP column to one group for the "
+            "whole trajectory; the projected one reassigns character frame by frame. "
+            "A large difference means the fixed labelling was wrong somewhere, not "
+            "that either number is a flux or a transfer"
+        ),
+    }
 
 
 def projection_table_rows(projection: ProjectionSeries) -> Iterable[List[Any]]:

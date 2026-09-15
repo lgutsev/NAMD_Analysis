@@ -6,7 +6,7 @@ fit windows, and input provenance. This package is independent of
 and runs calculations; this package reads their output. Existing manually
 prepared campaigns work too.
 
-Version 0.3 provides:
+Version 0.5 provides:
 
 - Campaign inventory and identification of failed historical single-exponential fits.
 - EIGTXT/NATXT dimension and run-setting audits, energy-gap statistics, and
@@ -44,6 +44,11 @@ Version 0.3 provides:
   averaging, and an explicit transform convention.
 - Run/initial-state comparison on common saved times and candidate kinetic
   graph ranking by descriptive AIC/AICc/BIC.
+- Frame-dependent physical-state character from PROCAR projections, so a band
+  that exchanges subsystem character mid-trajectory is followed rather than
+  mislabelled; each original SHPROP is projected before averaging, only the
+  electronic frames actually visited are parsed, and a cheap preflight checks
+  the whole configuration before any projection is read.
 - JSON reports, CSV tables, PNG/PDF plots, SHA-256 fingerprints and imported
   launcher manifests.
 
@@ -343,6 +348,124 @@ populations do not record individual hops, so directional counts such as
 `BCF->PCBM` against `PCBM->BCF` cannot be recovered from them at all. See
 [docs/hopping_histories.md](docs/hopping_histories.md).
 
+## Populations that follow the state, not the column
+
+Every other command in this package labels a state by its SHPROP column for
+the whole trajectory. That is wrong whenever an adiabatic band exchanges
+spatial character partway through: near a crossing, the band that was BCF-like
+becomes PCBM-like, the column keeps its old label, and the reported population
+becomes a mixture of two physical things.
+
+`character-populations` fixes that by reading the character from the
+electronic structure itself. For every NAMD time step it finds the MD frame
+that generated it, reads the PROCAR subsystem projection for that frame, and
+reweights the adiabatic populations accordingly:
+
+```
+P_g(t) = sum over states i of  P_i(t) * w_ig[frame(t)]
+```
+
+### What you need
+
+| input | what it is |
+| --- | --- |
+| original `SHPROP.*` histories | **not** `SHPROP.master` — see the warning below |
+| a state map | one declared population column per basis state, BMIN through BMAX |
+| a projection manifest | JSON mapping MD frame number to PROCAR file |
+| an atom-group map | JSON assigning one-based PROCAR ion indices to subsystems |
+
+Templates: `examples/projection_manifest.template.json` and
+`examples/atom_groups.template.json`.
+
+### Check before you run
+
+```bash
+namd-analysis character-preflight   --files '/path/to/run/SHPROP.*'   --config state_map.json   --projection-manifest projection.json   --atom-groups atoms.json   --frame-mode dish-cyclic
+```
+
+Reads the SHPROP headers, the manifest and one PROCAR *header*. It parses no
+projections and computes no populations, so it is fast enough to run every
+time. It reports the basis window, the distinct `NAMDTINI` values, the frames
+each history will visit, how many PROCARs will actually be parsed, the ion and
+band counts of a representative PROCAR, and whether the atom groups cover the
+structure. It collects every problem rather than stopping at the first, and
+exits non-zero if any would block the run.
+
+### The smallest working run
+
+```bash
+namd-analysis character-populations   --files '/path/to/run/SHPROP.*'   --config state_map.json   --projection-manifest projection.json   --atom-groups atoms.json   --frame-mode dish-cyclic   --out results/character
+```
+
+### Never pass SHPROP.master
+
+Pass the **original** histories. Projection must happen per history and only
+then be averaged, because histories with different `NAMDTINI` start at
+different MD frames and therefore visit different PROCAR frames. Averaging
+first destroys the alignment, and the result will look perfectly plausible
+while being wrong. `average-shprop` is for the fixed-column path; it is not an
+input to this one.
+
+### Choosing `--frame-mode`
+
+- `linear` — time step *t* uses MD frame `NAMDTINI + t - 1`. Use this when the
+  trajectory walks forward through a long MD run and never wraps.
+- `dish-cyclic` — the frame wraps around a fixed period:
+  `mod(t + NAMDTINI - 1, period)`, with 0 mapping to `period`. Use this for
+  engines that recycle a short MD segment across many trajectories.
+
+Pick the one your engine actually implements. Getting it wrong shifts every
+frame assignment and the populations will still sum to one, so nothing will
+look broken. Run the preflight and check the reported first and last frames
+against what you expect.
+
+### `cycle_length`
+
+In `dish-cyclic` mode the wrap period comes from `NSW - 1` in the SHPROP
+header. An archived campaign whose engine bookkeeping does not match the
+number of saved electronic frames can override it with `"cycle_length"` in the
+projection manifest. The explicit value wins, and the disagreement is recorded
+in `shprop_alignment.csv` and flagged by preflight rather than being silently
+absorbed. Only set it if you know why the header is wrong.
+
+### Reading `captured_projection`
+
+PROCAR weights are normalized across the declared subsystems, so
+`captured_projection` is how much of the band actually landed inside any
+declared PAW sphere before that division. Values near one mean the band is
+well described by your groups. Values well below one mean most of the band is
+somewhere else — diffuse, vacuum, or in atoms you did not assign — and its
+normalized character is then mostly an artefact of dividing a small number.
+
+The report gives the min, 1st, 5th, 50th and 95th percentiles, per-band
+medians and minima, the worst individual frame/band samples, and the fraction
+below your `min_projection_weight`. These are **diagnostics**: nothing is
+discarded, repaired or reweighted on their basis. Decide for yourself whether
+a band with poor capture belongs in the analysis.
+
+### What a character swap is and is not
+
+`character_swaps.csv` records where a band's dominant subsystem changes from
+one MD frame to the next. That is a statement about the **electronic
+structure along the MD trajectory**: the orbital moved.
+
+It is **not** a surface hop. A nonadiabatic hop is a change of *which state
+the carrier occupies*, and it lives in the SHPROP populations, not in the
+PROCAR projections. A band can change character with no hop at all, and a
+carrier can hop with no change of character. Do not report swap counts as
+transfer events.
+
+### Outputs
+
+`character_populations.csv`, `fixed_vs_projected.csv` and its summary
+`fixed_vs_projected_summary.csv` (max, RMS and integrated absolute difference
+per group, with the time of worst disagreement — this is what tells you
+whether dynamic character changed the conclusion), `character_swaps.csv`,
+`projection_quality_by_band.csv`, `projection_character.csv`,
+`shprop_alignment.csv`, a figure, and `report.json` with full provenance.
+
+Theory and conventions: [docs/state_character.md](docs/state_character.md).
+
 ## Analyze phonon spectra
 
 Two entry points. The first describes and compares spectral density files you
@@ -569,16 +692,15 @@ analysis needs per-trajectory logging from the engine; see
 be recorded.
 
 **A fixed state map cannot follow a state whose character changes.** Grouping
-is by table column, so when adiabatic states exchange spatial character near a
-crossing the column keeps its label and the group population becomes a
-mixture. Nothing here detects that. State character is **not** inferred from
-column number, energy or coupling magnitude, and no nearest-energy band
-tracking is attempted as a substitute — those would produce a confident wrong
-answer rather than an honest limit. Supporting a frame-dependent physical
-state map would need real upstream input (orbital projections, spatial
-localization, fragment charge analysis or wavefunction overlap tracking); that
-input does not exist in these archives and the format for it is not designed
-yet.
+by table column means that when adiabatic states exchange spatial character
+near a crossing, the column keeps its label and the group population becomes a
+mixture. Every command *except* `character-populations` has this limitation.
+State character is never inferred from column number, energy or coupling
+magnitude, and no nearest-energy band tracking is attempted as a substitute —
+those would produce a confident wrong answer rather than an honest limit.
+
+`character-populations` is the way out, and it needs real upstream input:
+per-frame PROCAR projections. See the section above.
 
 ## Tests and development
 

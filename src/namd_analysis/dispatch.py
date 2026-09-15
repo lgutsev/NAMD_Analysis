@@ -18,14 +18,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args and args[0] == "character-populations":
         return character_cli.main(args[1:])
+    if args and args[0] == "character-preflight":
+        # Same code path; the alias just makes the cheap check discoverable.
+        return character_cli.main([*args[1:], "--preflight"])
     if args in (["--help"], ["-h"]):
         parser = cli.build_parser()
         text = parser.format_help().rstrip()
         text += (
-            "\n\nAdditional command:\n"
+            "\n\nAdditional commands:\n"
             "  character-populations  projection-weight SHPROP populations with "
             "frame-dependent PROCAR subsystem character\n"
-            "\nRun 'namd-analysis character-populations --help' for its options.\n"
+            "  character-preflight    check configuration, SHPROP metadata, frame "
+            "alignment and PROCAR structure without parsing any projections\n"
+            "\nRun 'namd-analysis character-populations --help' for their options.\n"
         )
         print(text)
         return 0
