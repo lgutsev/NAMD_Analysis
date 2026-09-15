@@ -226,6 +226,16 @@ and projection frames used by every SHPROP file.
 
 `projection_quality_by_band.csv` summarizes capture and dominance per band.
 
+`character_swaps.csv` carries `frame_gap` and `resolution` columns.  Because
+only the frames the histories visit are loaded, two consecutive rows of the
+projection need not be adjacent MD frames.  A change marked `across_gap`
+happened *somewhere inside* that gap, not in one step between the two frames
+named, and the summary reports how many MD frames were skipped.  Swap counts
+are therefore a lower bound on the number of character changes along the full
+MD trajectory.  When every examined frame is adjacent -- the usual case for a
+short cyclic campaign -- the summary says so and the count is exact over the
+range examined.
+
 When a fixed state-map group has the same name as a projection group,
 `fixed_vs_projected.csv` compares the two definitions directly and
 `fixed_vs_projected_summary.csv` reduces that to one row per group: the maximum

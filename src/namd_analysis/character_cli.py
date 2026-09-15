@@ -312,6 +312,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "dominant_after",
             "confidence_before",
             "confidence_after",
+            "frame_gap",
+            "resolution",
         ],
         swaps,
     )

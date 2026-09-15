@@ -42,10 +42,12 @@ class AtomGroupMap:
 
     @classmethod
     def from_json(cls, path) -> "AtomGroupMap":
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        payload = _load_json(Path(path), "atom-group map")
         raw = payload.get("groups")
         if not isinstance(raw, dict) or not raw:
-            raise CharacterError("atom-group JSON needs a nonempty 'groups' object")
+            raise CharacterError(
+                f"{path}: atom-group JSON needs a nonempty 'groups' object"
+            )
         complete = payload.get("complete_atoms", True)
         if type(complete) is not bool:
             raise CharacterError("complete_atoms must be a JSON boolean")
@@ -224,6 +226,21 @@ class CharacterPopulationResult:
     conservation: Dict[str, float]
 
 
+def _load_json(path: Path, what: str) -> Any:
+    """Read JSON, naming the file when it is malformed or unreadable."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise CharacterError(f"{path}: {what} could not be read ({exc})") from exc
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise CharacterError(
+            f"{path}: {what} is not valid JSON - {exc.msg} at line {exc.lineno}, "
+            f"column {exc.colno}"
+        ) from exc
+
+
 def _expand_atom_spec(spec: Any) -> List[int]:
     if not isinstance(spec, list):
         raise CharacterError("each atom group must be a JSON list of integers/ranges")
@@ -257,7 +274,7 @@ def _expand_atom_spec(spec: Any) -> List[int]:
 
 def _load_projection_manifest(path) -> ProjectionManifest:
     manifest_path = Path(path)
-    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload = _load_json(manifest_path, "projection manifest")
     base = manifest_path.parent
     entries: List[Tuple[int, Path]] = []
 
@@ -289,17 +306,43 @@ def _load_projection_manifest(path) -> ProjectionManifest:
             pattern = str(payload["procar_pattern"])
         except (KeyError, TypeError, ValueError) as exc:
             raise CharacterError(
-                "pattern manifests need procar_pattern, first_frame and last_frame"
+                f"{manifest_path}: a pattern manifest needs procar_pattern, "
+                f"first_frame and last_frame ({exc})"
             ) from exc
         if step <= 0 or last < first:
-            raise CharacterError("projection manifest frame range is invalid")
+            raise CharacterError(
+                f"{manifest_path}: frame range first_frame={first}, "
+                f"last_frame={last}, frame_step={step} is empty or invalid; "
+                "frame_step must be >= 1 and last_frame >= first_frame"
+            )
+        # Without a {frame} field every frame would resolve to the same file,
+        # and the analysis would report constant character as though it were
+        # frame-dependent.  That is silent and unrecoverable, so refuse it.
+        if "{frame" not in pattern:
+            raise CharacterError(
+                f"{manifest_path}: procar_pattern {pattern!r} contains no "
+                "'{frame}' field, so every frame would resolve to the same "
+                "PROCAR and the character would be constant while appearing "
+                "frame-dependent. Add {frame} (for example 'frames/{frame:04d}/PROCAR')."
+            )
         for frame in range(first, last + 1, step):
-            procar = Path(pattern.format(frame=frame))
+            try:
+                rendered = pattern.format(frame=frame)
+            except (KeyError, IndexError, ValueError) as exc:
+                raise CharacterError(
+                    f"{manifest_path}: procar_pattern {pattern!r} could not be "
+                    f"expanded for frame {frame}: {type(exc).__name__} {exc}. "
+                    "The only field this package substitutes is {frame}."
+                ) from exc
+            procar = Path(rendered)
             if not procar.is_absolute():
                 procar = base / procar
             entries.append((frame, procar))
     else:
-        raise CharacterError("projection manifest needs either 'frames' or 'procar_pattern'")
+        raise CharacterError(
+            f"{manifest_path}: a projection manifest needs either a 'frames' list "
+            "or a 'procar_pattern' with first_frame/last_frame"
+        )
 
     frames = [frame for frame, _ in entries]
     if any(frame <= 0 for frame in frames):
@@ -488,6 +531,12 @@ def aligned_frames(
     of saved electronic frames.  The chosen period is recorded in provenance.
     """
     start = _int_metadata(metadata, "NAMDTINI", path)
+    if start < 1:
+        raise CharacterError(
+            f"{path}: NAMDTINI is {start}, but it is a one-based MD frame index "
+            "and must be at least 1. A non-positive value shifts every frame "
+            "assignment without changing anything that looks wrong downstream."
+        )
     tion = np.arange(1, ntime + 1, dtype=int)
     if mode == "linear":
         return start + tion - 1
@@ -582,13 +631,19 @@ def plan_analysis(
             )
         band_windows.append((bmin, bmax))
     if len(set(band_windows)) != 1:
-        detail = ", ".join(
-            f"{record.path.name}={window[0]}:{window[1]}"
-            for record, window in zip(records, band_windows)
-        )
+        grouped: Dict[Tuple[int, int], List[str]] = {}
+        for record, window in zip(records, band_windows):
+            grouped.setdefault(window, []).append(record.path.name)
+        # Name the minority groups: with a thousand histories, listing them all
+        # buries the one file that actually differs.
+        parts = []
+        for window, names in sorted(grouped.items(), key=lambda item: -len(item[1])):
+            sample = ", ".join(names[:5]) + ("..." if len(names) > 5 else "")
+            parts.append(f"{window[0]}:{window[1]} in {len(names)} file(s) ({sample})")
         raise CharacterError(
-            f"SHPROP files declare different BMIN/BMAX windows ({detail}). One "
-            "character analysis covers one basis; split the campaign by window."
+            f"SHPROP files declare {len(grouped)} different BMIN/BMAX windows: "
+            + "; ".join(parts)
+            + ". One character analysis covers one basis; split the campaign by window."
         )
     bmin, bmax = band_windows[0]
     bands = list(range(bmin, bmax + 1))
@@ -623,6 +678,17 @@ def plan_analysis(
         )
 
     required = sorted({int(frame) for frames in frames_by_file for frame in frames})
+    if frame_mode == "dish-cyclic" and manifest.cycle_length is None:
+        periods = {record["header_cycle_length"] for record in alignments}
+        if len(periods) > 1:
+            raise CharacterError(
+                "the SHPROP histories imply different cyclic periods from their "
+                f"own NSW headers ({sorted(p for p in periods if p is not None)}), "
+                "so each file would wrap on a different cycle and the ensemble "
+                "average would mix inconsistent frame mappings. Split the campaign "
+                "by period, or declare one explicit cycle_length in the projection "
+                "manifest if you know which is correct."
+            )
     return AnalysisPlan(
         shprop_paths=paths,
         manifest=manifest,
@@ -890,9 +956,26 @@ def character_populations(
     the phase needed to select the correct PROCAR frame.
     """
     paths = [Path(path) for path in shprop_paths]
-    plan = plan if plan is not None else plan_analysis(
-        paths, state_map, projection_manifest, frame_mode
-    )
+    if plan is None:
+        plan = plan_analysis(paths, state_map, projection_manifest, frame_mode)
+    else:
+        # The plan carries one frame series per file, zipped against the files
+        # below. A plan built from different paths, or a different mode, would
+        # pair the wrong frames with the wrong history silently.
+        planned = [Path(item).resolve() for item in plan.shprop_paths]
+        given = [item.resolve() for item in paths]
+        if planned != given:
+            raise CharacterError(
+                "the supplied AnalysisPlan was built from different SHPROP files "
+                f"than were passed: plan has {[p.name for p in plan.shprop_paths]}, "
+                f"call has {[p.name for p in paths]}. Frames would be paired with "
+                "the wrong history."
+            )
+        if plan.frame_mode != frame_mode:
+            raise CharacterError(
+                f"the supplied AnalysisPlan was built for frame mode "
+                f"{plan.frame_mode!r} but {frame_mode!r} was requested"
+            )
     population: PopulationSet = load_population_set(paths, state_map)
     records = [read_shprop_with_metadata(path) for path in paths]
     bands = plan.bands
@@ -960,13 +1043,28 @@ def character_populations(
 def character_swap_rows(
     projection: ProjectionSeries, dominance_threshold: float = 0.6
 ) -> Tuple[List[List[Any]], Dict[str, Any]]:
-    """Report dominant-subsystem changes along the underlying MD trajectory."""
+    """Report dominant-subsystem changes along the underlying MD trajectory.
+
+    Only the electronic frames the SHPROP histories actually visit are loaded,
+    so consecutive entries in ``projection.frames`` need not be adjacent MD
+    frames.  A change observed across a gap did happen, but it happened
+    *somewhere inside* the gap and this analysis did not look there.  Such a
+    change is reported with its frame gap and counted separately from an
+    adjacent, fully resolved swap, rather than being presented as a single
+    step between two distant frames.
+    """
     if not (0.0 < dominance_threshold <= 1.0):
         raise CharacterError("dominance_threshold must lie in (0, 1]")
     rows: List[List[Any]] = []
     mixed = 0
     total = projection.weights.shape[0] * projection.weights.shape[1]
     swap_count = 0
+    adjacent_swaps = 0
+    gap_changes = 0
+    frames_list = [int(frame) for frame in projection.frames]
+    unobserved = sum(
+        max(0, b - a - 1) for a, b in zip(frames_list, frames_list[1:])
+    )
     for bi, band in enumerate(projection.bands):
         weights = projection.weights[:, bi, :]
         dominant = np.argmax(weights, axis=1)
@@ -978,6 +1076,13 @@ def character_swap_rows(
             swap_count += 1
             before = int(dominant[fi - 1])
             after = int(dominant[fi])
+            gap = frames_list[fi] - frames_list[fi - 1]
+            if gap == 1:
+                adjacent_swaps += 1
+                resolution = "adjacent"
+            else:
+                gap_changes += 1
+                resolution = "across_gap"
             rows.append(
                 [
                     int(band),
@@ -987,14 +1092,31 @@ def character_swap_rows(
                     projection.group_names[after],
                     float(confidence[fi - 1]),
                     float(confidence[fi]),
+                    int(gap),
+                    resolution,
                 ]
             )
     summary = {
         "dominance_threshold": dominance_threshold,
         "dominant_character_swaps": swap_count,
+        "adjacent_swaps": adjacent_swaps,
+        "changes_across_a_frame_gap": gap_changes,
         "mixed_frame_band_samples": mixed,
         "total_frame_band_samples": total,
         "mixed_fraction": float(mixed / total) if total else 0.0,
+        "frames_examined": len(frames_list),
+        "md_frames_skipped_between_examined_frames": unobserved,
+        "resolution_note": (
+            "only the electronic frames the SHPROP histories visit are loaded, so "
+            f"{unobserved} MD frame(s) lie between examined frames and were not "
+            "inspected. A change marked 'across_gap' happened somewhere inside "
+            "that gap, not in one step between the two frames named. Swap counts "
+            "are a lower bound on the number of character changes along the full "
+            "MD trajectory"
+            if unobserved
+            else "every examined frame is adjacent to the next, so the swap count "
+            "resolves every change over the range examined"
+        ),
     }
     return rows, summary
 

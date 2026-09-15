@@ -106,6 +106,7 @@ def read_procar_ion_totals(
     rows_read = 0
     row_values: List[float] = []
     keep_current = False
+    expect_overflow_after: Optional[int] = None
 
     with path.open("r", errors="replace") as handle:
         for lineno, raw in enumerate(handle, start=1):
@@ -193,10 +194,32 @@ def read_procar_ion_totals(
                     if keep_current:
                         kept_bands.append(table_band)
                         kept_weights.append(row_values)
+                    finished_band = table_band
                     table_band = None
                     row_values = []
                     rows_read = 0
+                    # The row after the table is the 'tot' summary, a new band,
+                    # or a new ionic table.  If it is another *numbered ion*
+                    # row, the header under-declared the ion count and reading
+                    # only the first nions would silently drop real weight.
+                    expect_overflow_after = finished_band
                 continue
+
+            if expect_overflow_after is not None:
+                overflow = line.split()
+                if overflow:
+                    try:
+                        index = int(overflow[0])
+                    except ValueError:
+                        index = None
+                    if index == nions + 1:
+                        raise ProcarFormatError(
+                            f"{path}: line {lineno}: band {expect_overflow_after} has "
+                            f"an ion row {index} but the header declares {nions} ions. "
+                            "Reading only the first "
+                            f"{nions} would silently drop the rest of the projection."
+                        )
+                expect_overflow_after = None
 
             band_match = _BAND.match(line)
             if band_match is not None:
@@ -309,11 +332,19 @@ def procar_structure(path) -> Dict[str, object]:
             spin_match = _SPIN.match(line)
             if spin_match is not None:
                 spins.add(int(spin_match.group(1)))
+                if len(spins) > 1:
+                    # Enough to answer the question; stop reading.
+                    break
                 continue
-            fields = [field.lower() for field in line.split()]
-            if fields and fields[0] == "ion" and "tot" in fields:
-                orbital_columns = fields
-                break
+            if orbital_columns is None:
+                fields = [field.lower() for field in line.split()]
+                if fields and fields[0] == "ion" and "tot" in fields:
+                    orbital_columns = fields
+                    # Do not stop here: a spin-polarised PROCAR writes its
+                    # second spin block *after* the first block's bands, so
+                    # breaking at the first ionic header would report a
+                    # spin-polarised file as single-spin and let preflight pass
+                    # a campaign the real run aborts on.
     if nkpoints is None:
         raise ProcarFormatError(f"{path}: missing PROCAR k-point/band/ion header")
     return {

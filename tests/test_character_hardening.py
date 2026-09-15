@@ -22,6 +22,7 @@ from namd_analysis.character import (
     CharacterError,
     aligned_frames,
     character_populations,
+    character_swap_rows,
     fixed_vs_projected_summary,
     load_projection_series,
     plan_analysis,
@@ -669,6 +670,234 @@ class CliSmokeTests(_Campaign):
             ]
         )
         self.assertEqual(code, 2)
+
+
+class AuditFindingTests(_Campaign):
+    """Regressions for defects found auditing v0.5 before first real-data use.
+
+    Each of these produced a silently wrong number or an unreadable failure on
+    plausible archival input.
+    """
+
+    def test_pattern_without_a_frame_field_is_refused(self):
+        # Every frame would resolve to the same PROCAR, and the analysis would
+        # report constant character as though it were frame-dependent.
+        manifest = self.root / "nopattern.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "procar_pattern": str(self.campaign["frames"][1]).replace("\\", "/"),
+                    "first_frame": 1,
+                    "last_frame": 4,
+                }
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaises(CharacterError) as ctx:
+            plan_analysis(
+                self.campaign["shprop"], self.state_map, manifest, "dish-cyclic"
+            )
+        message = str(ctx.exception)
+        self.assertIn("{frame}", message)
+        self.assertIn("constant", message)
+
+    def test_unknown_pattern_placeholder_is_a_clean_error(self):
+        manifest = self.root / "badph.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "procar_pattern": "frames/{step:04d}/PROCAR",
+                    "first_frame": 1,
+                    "last_frame": 2,
+                }
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaises(CharacterError) as ctx:
+            plan_analysis(
+                self.campaign["shprop"], self.state_map, manifest, "dish-cyclic"
+            )
+        self.assertIn("badph.json", str(ctx.exception))
+        self.assertIn("{frame}", str(ctx.exception))
+
+    def test_pattern_range_error_names_the_file_and_the_values(self):
+        manifest = self.root / "range.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "procar_pattern": "frames/{frame}/PROCAR",
+                    "first_frame": 5,
+                    "last_frame": 4,
+                }
+            ),
+            encoding="utf-8",
+        )
+        with self.assertRaises(CharacterError) as ctx:
+            plan_analysis(
+                self.campaign["shprop"], self.state_map, manifest, "dish-cyclic"
+            )
+        message = str(ctx.exception)
+        self.assertIn("range.json", message)
+        self.assertIn("first_frame=5", message)
+        self.assertIn("last_frame=4", message)
+
+    def test_malformed_json_names_the_file(self):
+        manifest = self.root / "broken.json"
+        manifest.write_text("{not json", encoding="utf-8")
+        with self.assertRaises(CharacterError) as ctx:
+            plan_analysis(
+                self.campaign["shprop"], self.state_map, manifest, "dish-cyclic"
+            )
+        message = str(ctx.exception)
+        self.assertIn("broken.json", message)
+        self.assertIn("not valid JSON", message)
+
+    def test_atom_group_json_syntax_error_names_the_file(self):
+        path = self.root / "atoms_broken.json"
+        path.write_text("{oops", encoding="utf-8")
+        with self.assertRaises(CharacterError) as ctx:
+            AtomGroupMap.from_json(path)
+        self.assertIn("atoms_broken.json", str(ctx.exception))
+
+    def test_ion_count_under_declaration_is_refused(self):
+        # A header claiming fewer ions than the table holds would silently drop
+        # the remaining per-ion weight and then validate complete_atoms against
+        # the smaller number.
+        path = write_procar(
+            self.root / "PROCAR.lie",
+            {10: [0.4, 0.3, 0.2, 0.1], 11: [0.1, 0.2, 0.3, 0.4]},
+            declared_ions=2,
+        )
+        with self.assertRaises(ProcarFormatError) as ctx:
+            read_procar_ion_totals(path)
+        message = str(ctx.exception)
+        self.assertIn("declares 2 ions", message)
+        self.assertIn("silently drop", message)
+
+    def test_preflight_detects_a_spin_polarised_procar(self):
+        # The spin marker follows the first band block, so a probe that stopped
+        # at the first ionic header cleared files the real run aborts on.
+        path = write_procar(
+            self.root / "PROCAR.spin",
+            {10: [1.0, 1.0, 0.0, 0.0], 11: [0.0, 0.0, 1.0, 1.0]},
+            spin_blocks=2,
+        )
+        structure = procar_structure(path)
+        self.assertFalse(structure["single_spin_block"])
+        self.assertEqual(structure["spin_components_seen"], [1, 2])
+        with self.assertRaises(ProcarFormatError):
+            read_procar_ion_totals(path)
+
+    def test_non_positive_namdtini_is_refused(self):
+        for start in (0, -3):
+            with self.assertRaises(CharacterError) as ctx:
+                aligned_frames({"NAMDTINI": start, "NSW": 5}, 6, "dish-cyclic", Path("x"))
+            self.assertIn("one-based", str(ctx.exception))
+
+    def test_swaps_across_a_frame_gap_are_marked_not_presented_as_one_step(self):
+        # Selective loading means consecutive loaded frames need not be
+        # adjacent MD frames. A change seen across a gap happened somewhere
+        # inside it, and must not be reported as a single step.
+        frames = {}
+        for frame in range(1, 11):
+            bcf = [1.0, 1.0, 0.0, 0.0]
+            pcbm = [0.0, 0.0, 1.0, 1.0]
+            swapped = 4 <= frame <= 7
+            frames[frame] = write_procar(
+                self.root / f"PROCAR.g{frame}",
+                {10: pcbm if swapped else bcf, 11: bcf if swapped else pcbm},
+            )
+        manifest = write_manifest(self.root / "gapped.json", frames)
+        histories = [
+            write_shprop(self.root / f"SHPROP.g{start}", start,
+                         np.array([[0.7, 0.3], [0.7, 0.3]]), nsw=11)
+            for start in (1, 5, 9)
+        ]
+        plan = plan_analysis(histories, self.state_map, manifest, "linear")
+        self.assertEqual(plan.required_frames, [1, 2, 5, 6, 9, 10])
+        result = character_populations(
+            histories, self.state_map, manifest, self.atom_groups, "linear", plan=plan
+        )
+        rows, summary = character_swap_rows(result.projection)
+        self.assertEqual(summary["adjacent_swaps"], 0)
+        self.assertGreater(summary["changes_across_a_frame_gap"], 0)
+        self.assertEqual(summary["md_frames_skipped_between_examined_frames"], 4)
+        self.assertIn("lower bound", summary["resolution_note"])
+        for row in rows:
+            gap, resolution = row[7], row[8]
+            self.assertEqual(resolution, "across_gap" if gap != 1 else "adjacent")
+
+    def test_contiguous_frames_report_fully_resolved_swaps(self):
+        rows, summary = character_swap_rows(self._run().projection)
+        self.assertEqual(summary["md_frames_skipped_between_examined_frames"], 0)
+        self.assertEqual(summary["changes_across_a_frame_gap"], 0)
+        self.assertEqual(summary["adjacent_swaps"], summary["dominant_character_swaps"])
+        self.assertIn("resolves every change", summary["resolution_note"])
+        for row in rows:
+            self.assertEqual(row[7], 1)
+            self.assertEqual(row[8], "adjacent")
+
+    def test_a_plan_built_from_other_files_is_refused(self):
+        plan = self._plan()
+        with self.assertRaises(CharacterError) as ctx:
+            character_populations(
+                [self.campaign["shprop"][0]], self.state_map,
+                self.campaign["manifest"], self.atom_groups, "dish-cyclic", plan=plan,
+            )
+        self.assertIn("different SHPROP files", str(ctx.exception))
+
+    def test_a_plan_built_for_another_frame_mode_is_refused(self):
+        plan = self._plan("dish-cyclic")
+        with self.assertRaises(CharacterError) as ctx:
+            character_populations(
+                self.campaign["shprop"], self.state_map, self.campaign["manifest"],
+                self.atom_groups, "linear", plan=plan,
+            )
+        self.assertIn("frame mode", str(ctx.exception))
+
+    def test_histories_implying_different_cyclic_periods_are_refused(self):
+        odd = write_shprop(
+            self.root / "SHPROP.odd", 1, np.array([[0.5, 0.5]] * 4), nsw=7
+        )
+        plain = write_manifest(
+            self.root / "plain.json", self.campaign["frames"]
+        )
+        with self.assertRaises(CharacterError) as ctx:
+            plan_analysis(
+                [self.campaign["shprop"][0], odd], self.state_map, plain, "dish-cyclic"
+            )
+        message = str(ctx.exception)
+        self.assertIn("different cyclic periods", message)
+        self.assertIn("cycle_length", message)
+
+    def test_an_explicit_cycle_length_settles_differing_nsw(self):
+        odd = write_shprop(
+            self.root / "SHPROP.odd", 1, np.array([[0.5, 0.5]] * 4), nsw=7
+        )
+        plan = plan_analysis(
+            [self.campaign["shprop"][0], odd], self.state_map,
+            self.campaign["manifest"], "dish-cyclic",
+        )
+        self.assertTrue(all(r["cycle_length_used"] == 4 for r in plan.alignments))
+
+    def test_different_window_diagnostic_names_the_minority_not_every_file(self):
+        many = [
+            write_shprop(self.root / f"SHPROP.m{i}", 1,
+                         np.array([[0.5, 0.5]] * 4), nsw=5)
+            for i in range(30)
+        ]
+        odd = write_shprop(
+            self.root / "SHPROP.odd", 1, np.array([[0.4, 0.3, 0.3]] * 4),
+            bmin=10, bmax=12, nsw=5,
+        )
+        with self.assertRaises(CharacterError) as ctx:
+            plan_analysis(
+                many + [odd], self.state_map, self.campaign["manifest"], "dish-cyclic"
+            )
+        message = str(ctx.exception)
+        self.assertLess(len(message), 600, "diagnostic must not list every file")
+        self.assertIn("SHPROP.odd", message)
+        self.assertIn("30 file(s)", message)
 
 
 if __name__ == "__main__":

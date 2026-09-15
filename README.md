@@ -455,6 +455,10 @@ PROCAR projections. A band can change character with no hop at all, and a
 carrier can hop with no change of character. Do not report swap counts as
 transfer events.
 
+Because only the frames your histories visit are parsed, a swap seen between
+two non-adjacent frames happened somewhere in between; those rows are marked
+`across_gap` and the count is reported as a lower bound.
+
 ### Outputs
 
 `character_populations.csv`, `fixed_vs_projected.csv` and its summary
