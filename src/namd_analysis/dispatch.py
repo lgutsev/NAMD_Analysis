@@ -11,7 +11,16 @@ from __future__ import annotations
 import sys
 from typing import Optional, Sequence
 
-from . import character_cli, cli, prepare_cli
+# Install the real-archive provenance resolver *before* the command modules
+# bind ``plan_analysis`` / ``prepare_campaign`` into their local namespaces.
+# Production SHPROP files may be plain numeric tables: BMIN/BMAX are basis
+# provenance, not required SHPROP-header fields, and NAMDTINI may survive only
+# in the original ``SHPROP.<start-frame>`` filename.
+from .archive_provenance import install as _install_archive_provenance
+
+_install_archive_provenance()
+
+from . import character_cli, cli, prepare_cli  # noqa: E402
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -33,7 +42,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "\n\nAdditional commands:\n"
             "  character-populations  projection-weight SHPROP populations with "
             "frame-dependent PROCAR subsystem character\n"
-            "  character-preflight    check configuration, SHPROP metadata, frame "
+            "  character-preflight    check configuration, SHPROP provenance, frame "
             "alignment and PROCAR structure without parsing any projections\n"
             "  character-prepare      inspect a campaign and write state_map.json, "
             "atom_groups.json, projection_manifest.json and an audit of how every "
