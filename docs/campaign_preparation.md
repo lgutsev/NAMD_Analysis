@@ -80,6 +80,14 @@ it failed.
 `prepare_report.json` records every candidate, accepted or not, under
 `population_column_rationale`.
 
+**The sample is bounded.** Candidates are tested against the first
+`COLUMN_SAMPLE_ROWS` (2000) rows so that preparation costs the same on a 900 MB
+history as on a small one. A file whose populations leave `[0,1]` or stop
+summing to one only later in the trajectory is *not* caught here. It is caught
+by the analysis, which validates every row of every chunk and refuses to produce
+a number. The report states how many rows were sampled out of how many exist,
+and `sample_covers_whole_file` says plainly whether the check was exhaustive.
+
 **The column block is not the state identity.** Which state sits in which
 column is a property of the run that wrote SHPROP; no preset-free run of this
 command fills in `groups`, and one that cannot fill them says so in

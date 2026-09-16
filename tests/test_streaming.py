@@ -314,6 +314,37 @@ class ValidationAcrossChunksTests(_Campaign):
             )
         self.assertIn("time grid differs", str(ctx.exception))
 
+    def test_a_history_truncated_after_planning_is_detected(self):
+        # Planning counts rows in one scan and the analysis reads them in a
+        # second. A file that changed in between would otherwise leave the
+        # ensemble with a partially-updated row and a silently wrong variance.
+        plan = plan_analysis(
+            self.campaign["shprop"], self.state_map, self.campaign["manifest"], "dish-cyclic"
+        )
+        path = self.campaign["shprop"][0]
+        lines = path.read_text(encoding="utf-8").splitlines()
+        path.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+        with self.assertRaises(CharacterError) as ctx:
+            character_populations(
+                self.campaign["shprop"], self.state_map, self.campaign["manifest"],
+                self.atom_groups, "dish-cyclic", plan=plan,
+            )
+        self.assertIn("changed under the analysis", str(ctx.exception))
+
+    def test_a_history_that_grew_after_planning_is_detected(self):
+        plan = plan_analysis(
+            self.campaign["shprop"], self.state_map, self.campaign["manifest"], "dish-cyclic"
+        )
+        path = self.campaign["shprop"][0]
+        text = path.read_text(encoding="utf-8")
+        path.write_text(text + text.splitlines()[-1] + "\n", encoding="utf-8")
+        with self.assertRaises(CharacterError) as ctx:
+            character_populations(
+                self.campaign["shprop"], self.state_map, self.campaign["manifest"],
+                self.atom_groups, "dish-cyclic", plan=plan,
+            )
+        self.assertIn("changed under the analysis", str(ctx.exception))
+
     def test_duplicate_files_are_still_refused(self):
         with self.assertRaises(CharacterError) as ctx:
             character_populations(

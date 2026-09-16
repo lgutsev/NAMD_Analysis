@@ -148,12 +148,18 @@ def _print_summary(prepared, args) -> None:
         print(f"  {path}")
     print()
     print("Inferred from the SHPROP tables:")
+    rationale = report["population_column_rationale"]
     print(
         f"  population columns {report['population_columns']['value']} "
         f"(time column {report['time_column']['value']}); "
-        f"{len(report['population_column_rationale']['candidates'])} candidate "
+        f"{len(rationale['candidates'])} candidate "
         "layout(s) tested, one survived"
     )
+    if not rationale["sample_covers_whole_file"]:
+        print(
+            f"    tested against the first {rationale['sampled_rows_per_file']} of "
+            f"{rationale['total_rows_per_file']} rows; the analysis validates the rest"
+        )
     print(
         f"  basis BMIN={shprop['BMIN']} BMAX={shprop['BMAX']} "
         f"({shprop['basis_size']} states), {shprop['n_files']} file(s), "

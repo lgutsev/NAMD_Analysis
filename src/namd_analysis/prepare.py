@@ -201,7 +201,7 @@ def infer_columns(
     """
     n_states = survey.n_states
     n_columns = survey.n_columns
-    if n_columns <= n_states:
+    if n_columns <= n_states:  # noqa: SIM102 - kept separate for the message
         raise PrepareError(
             f"SHPROP files have {n_columns} columns but the header basis "
             f"{survey.bmin}:{survey.bmax} needs {n_states} population columns plus "
@@ -256,10 +256,21 @@ def infer_columns(
         candidates.append(candidate)
 
     accepted = [c for c in candidates if c.accepted]
+    sampled = int(samples[0].shape[0])
     rationale = {
         "n_columns": n_columns,
         "n_states_from_header": n_states,
-        "sampled_rows_per_file": int(samples[0].shape[0]),
+        "sampled_rows_per_file": sampled,
+        "total_rows_per_file": int(survey.n_rows),
+        "sample_covers_whole_file": sampled >= survey.n_rows,
+        "sampling_caveat": (
+            "candidates are tested against the first "
+            f"{sampled} of {survey.n_rows} row(s), so that preparation costs the "
+            "same on a 900 MB history as on a small one. A file whose populations "
+            "leave [0,1] or stop summing to one only later in the trajectory would "
+            "not be caught here -- but it is caught by the analysis, which "
+            "validates every row of every chunk and refuses to produce a number"
+        ),
         "candidates": [
             {
                 "population_columns": c.population_columns,
@@ -361,6 +372,7 @@ def discover_frames(projection_dir, procar_name: str = "PROCAR") -> FrameDiscove
     spellings: Dict[int, List[str]] = {}
     without: List[str] = []
     paddings: set = set()
+    unpadded = True
     for entry in sorted(root.iterdir()):
         if not entry.is_dir() or not _NUMERIC_DIR.match(entry.name):
             continue
@@ -372,6 +384,8 @@ def discover_frames(projection_dir, procar_name: str = "PROCAR") -> FrameDiscove
         spellings.setdefault(number, []).append(entry.name)
         frames[number] = procar
         paddings.add(len(entry.name))
+        if entry.name != str(number):
+            unpadded = False
     if not frames:
         raise PrepareError(
             f"{root}: no numbered subdirectory contains a {procar_name}. "
@@ -390,12 +404,21 @@ def discover_frames(projection_dir, procar_name: str = "PROCAR") -> FrameDiscove
     numbers = sorted(frames)
     first, last = numbers[0], numbers[-1]
     missing = [n for n in range(first, last + 1) if n not in frames]
-    padding = next(iter(paddings)) if len(paddings) == 1 else None
+    # An unpadded tree has mixed name widths (1..9 then 10..) and is still
+    # perfectly regular: "{frame}" reproduces every name exactly. Only a
+    # *zero-padded* tree needs one shared width.
+    if unpadded:
+        padding = 1
+    else:
+        padding = next(iter(paddings)) if len(paddings) == 1 else None
     regular = True
     reason: Optional[str] = None
     if padding is None:
         regular = False
-        reason = f"directory names use mixed widths {sorted(paddings)}"
+        reason = (
+            f"directory names use mixed widths {sorted(paddings)} and are not the "
+            "plain decimal spelling, so no single pattern reproduces them"
+        )
     elif missing:
         regular = False
         reason = f"{len(missing)} frame(s) are missing between {first} and {last}"

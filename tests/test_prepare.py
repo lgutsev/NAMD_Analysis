@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from namd_analysis import __version__
-from namd_analysis.character import AtomGroupMap
+from namd_analysis.character import AtomGroupMap, _load_projection_manifest
 from namd_analysis.dispatch import main as dispatch_main
 from namd_analysis.populations import StateMap
 from namd_analysis.prepare import (
@@ -128,6 +128,22 @@ class ColumnInferenceTests(_Prepared):
         with self.assertRaises(PrepareError) as ctx:
             infer_columns(survey_shprop([path]))
         self.assertIn("behaves like a complete population", str(ctx.exception))
+
+    def test_the_rationale_states_how_much_of_the_file_was_sampled(self):
+        # The sample is bounded so preparation costs the same on a 900 MB
+        # history as on a small one. That bound is a real blind spot and the
+        # report says so rather than implying the whole file was checked.
+        survey = survey_shprop(self.campaign["shprop"])
+        _, _, rationale = infer_columns(survey, sample_rows=5)
+        self.assertEqual(rationale["sampled_rows_per_file"], 5)
+        self.assertEqual(rationale["total_rows_per_file"], survey.n_rows)
+        self.assertFalse(rationale["sample_covers_whole_file"])
+        self.assertIn("validates every row", rationale["sampling_caveat"])
+
+    def test_a_full_sample_is_reported_as_covering_the_file(self):
+        survey = survey_shprop(self.campaign["shprop"])
+        _, _, rationale = infer_columns(survey)
+        self.assertTrue(rationale["sample_covers_whole_file"])
 
     def test_inconsistent_table_structure_is_refused(self):
         odd = write_campaign_shprop(
@@ -277,6 +293,57 @@ class FrameDiscoveryTests(_Prepared):
         self.assertEqual(payload["last_frame"], 20)
         self.assertEqual(payload["frame_step"], 1)
         self.assertEqual(payload["cycle_length"], 20)
+
+    def test_an_unpadded_tree_is_regular_and_uses_a_plain_frame_field(self):
+        # Names "1".."12" have mixed widths but are still exactly reproduced by
+        # "{frame}": a width check alone would wrongly call this irregular and
+        # emit 1999 explicit entries for a real campaign.
+        campaign = build_campaign(self.root / "flat", frames=range(1, 13), padding=1)
+        discovery = discover_frames(campaign["projection_dir"])
+        self.assertTrue(discovery.regular)
+        self.assertEqual(discovery.padding, 1)
+        payload = build_manifest_payload(discovery, 12)
+        self.assertIn("{frame}/", payload["procar_pattern"])
+        self.assertNotIn("{frame:0", payload["procar_pattern"])
+
+    def test_generated_patterns_round_trip_through_the_real_loader(self):
+        for padding in (1, 4):
+            campaign = build_campaign(
+                self.root / f"rt{padding}", frames=range(1, 13), padding=padding
+            )
+            discovery = discover_frames(campaign["projection_dir"])
+            payload = build_manifest_payload(discovery, 12)
+            path = self.root / f"rt{padding}.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            manifest = _load_projection_manifest(path)
+            self.assertEqual(len(manifest.frames), 12)
+            self.assertEqual(manifest.cycle_length, 12)
+            self.assertTrue(all(p.is_file() for _, p in manifest.frames))
+            self.assertEqual(sorted(f for f, _ in manifest.frames), list(range(1, 13)))
+
+    def test_a_genuinely_mixed_tree_is_irregular(self):
+        campaign = build_campaign(self.root / "mix", frames=range(1, 10), padding=4)
+        write_campaign_procar(
+            campaign["projection_dir"] / "12" / "PROCAR", A_IONS, range(10, 16)
+        )
+        discovery = discover_frames(campaign["projection_dir"])
+        self.assertFalse(discovery.regular)
+        self.assertIn("mixed widths", discovery.irregular_reason)
+        payload = build_manifest_payload(discovery, None)
+        self.assertNotIn("procar_pattern", payload)
+
+    def test_explicit_entries_also_round_trip(self):
+        campaign = build_campaign(self.root / "exp", frames=range(1, 10), padding=4)
+        write_campaign_procar(
+            campaign["projection_dir"] / "12" / "PROCAR", A_IONS, range(10, 16)
+        )
+        discovery = discover_frames(campaign["projection_dir"])
+        payload = build_manifest_payload(discovery, None)
+        path = self.root / "exp.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        manifest = _load_projection_manifest(path)
+        self.assertEqual(len(manifest.frames), 10)
+        self.assertTrue(all(p.is_file() for _, p in manifest.frames))
 
     def test_an_irregular_tree_falls_back_to_explicit_entries(self):
         write_campaign_procar(
