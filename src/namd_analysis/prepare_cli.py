@@ -10,10 +10,16 @@ claim and a reader has to be able to tell them apart.
 from __future__ import annotations
 
 import argparse
+import shlex
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from .character import AtomGroupMap, CharacterError, preflight_report
+from .character import (
+    SHPROP_IO_MODES,
+    AtomGroupMap,
+    CharacterError,
+    preflight_report,
+)
 from .populations import ConfigError, StateMap
 from .prepare import PrepareError, SlurmOptions, prepare_campaign
 from .presets import campaign_names, preset_names
@@ -111,6 +117,24 @@ def build_parser(prog: str = "namd-analysis character-prepare") -> argparse.Argu
         type=int,
         default=None,
         help="passed through to the generated batch script's analysis step",
+    )
+    parser.add_argument(
+        "--shprop-io-mode",
+        choices=SHPROP_IO_MODES,
+        default="auto",
+        help=(
+            "SHPROP residency policy passed through to the generated batch script; "
+            "'stream' forces bounded row chunks even for small files"
+        ),
+    )
+    parser.add_argument(
+        "--accumulator-memmap-dir",
+        default=None,
+        help=(
+            "directory passed to character-populations for spilling large running "
+            "mean/variance accumulators to memory maps; on Slurm, $SLURM_TMPDIR is "
+            "a good choice when available"
+        ),
     )
     return parser
 
@@ -222,9 +246,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             f"{campaign_names(args.preset)}; name one with --campaign"
         )
         return 2
-    extra: List[str] = []
+    extra: List[str] = [f"--shprop-io-mode {args.shprop_io_mode}"]
     if args.shprop_chunk_rows is not None:
         extra.append(f"--shprop-chunk-rows {args.shprop_chunk_rows}")
+    if args.accumulator_memmap_dir is not None:
+        extra.append(
+            f"--accumulator-memmap-dir {shlex.quote(args.accumulator_memmap_dir)}"
+        )
     try:
         paths = _shprop_files(args.shprop_dir, args.files)
         prepared = prepare_campaign(
