@@ -31,6 +31,40 @@ run_character_test.sbatch
 `character-init` is the same command. `character-sbatch` is the same command
 with `--write-sbatch` implied.
 
+## Where the basis, the origin and the period come from
+
+Production SHPROP files are plain numeric tables. `BMIN`/`BMAX` are properties
+of the NAMD input and need not appear in one at all, and `NAMDTINI` often
+survives only in the historical `SHPROP.<start-frame>` filename. Each quantity
+has an ordered list of independent sources:
+
+| quantity | precedence |
+| --- | --- |
+| exact VASP bands | `state_map.json: band_numbers` > registered campaign provenance > optional *agreeing* SHPROP `BMIN`/`BMAX` |
+| `NAMDTINI` | optional SHPROP metadata > validated `SHPROP.<integer>` filename suffix |
+| cyclic period | explicit `projection_manifest.json: cycle_length` > optional `NSW - 1` |
+
+Three rules apply to all of them:
+
+- **A present key must be readable.** `NAMDTINI = 37.5` is not the same as a
+  missing `NAMDTINI`. Treating it as absent would silently demote to the
+  filename and use a value the file itself contradicts, so it is refused.
+- **Two sources that disagree are not reconciled.** A `NAMDTINI` header that
+  contradicts the filename suffix is an error: choosing either would shift
+  every frame assignment invisibly.
+- **A higher source that wins is still compared with the lower one.** Bands are
+  the one quantity nothing downstream can detect as wrong — a plausible
+  population comes out either way — so when `band_numbers` or a preset supplies
+  the basis, any `BMIN`/`BMAX` the files carry is still read and a disagreement
+  is reported as a warning in `prepare_report.json`, `preflight` and the run.
+
+For campaign A the basis is `[976, 977, 978, 979, 980, 981]` and
+`state_map.json` records it explicitly with
+`"band_numbers_source": "preset_bcf_pcbm_A"` — it is campaign provenance, not
+SHPROP inference. Campaigns B and C are registered as *known but unresolved*:
+asking for them is an error that says their provenance was never supplied, and
+they cannot inherit A's.
+
 ## Three kinds of claim, never mixed
 
 The command prints, and `prepare_report.json` records, a `source` for every
@@ -139,6 +173,21 @@ this package cannot see it. A disagreement means either frames are missing from
 the archive or the header describes a different run length — both worth knowing
 before the analysis, neither resolvable from the files.
 
+## Memory
+
+`character-prepare` passes these through to both steps of the generated script:
+
+| flag | effect |
+| --- | --- |
+| `--memory-budget 24G` | ceiling checked against an estimate made before any file is opened; a run that cannot fit is refused rather than started |
+| `--retain-per-file auto\|yes\|no` | keep the per-history projected populations. They are a diagnostic: the mean and SEM come from a running accumulator and never depend on them |
+| `--accumulator-memmap-dir DIR` | spill the running mean/variance to memory maps |
+| `--shprop-chunk-rows N`, `--shprop-io-mode` | how much of a history is resident at once |
+
+`auto` estimates every array, prints what it will retain, stream or spill, and
+says why. A malformed budget is rejected at preparation, not hours into a
+queued job.
+
 ## The generated batch script
 
 ```
@@ -151,10 +200,19 @@ starting proposal, not a measurement.
 
 The script sets `set -euo pipefail`, prints host, date, working directory, job
 id, the resolved `namd-analysis`, the package version and the git commit when
-running from an editable checkout, lists its inputs, **runs
-`character-preflight` first** — a non-zero exit aborts the job before any
-PROCAR is parsed — then runs the analysis under `/usr/bin/time -v`, and lists
-what it produced.
+running from an editable checkout, and lists its inputs. Then:
+
+- it writes into a **job-specific** directory and **refuses to start** if a
+  completed result (`report.json`) is already there, so a resubmission cannot
+  quietly overwrite one;
+- it puts the memory-mapped accumulators on `$SLURM_TMPDIR` when the scheduler
+  provides it, falling back to `$TMPDIR` then `/tmp`;
+- **preflight runs first** — a non-zero exit aborts the job before any PROCAR
+  is parsed;
+- the analysis runs under `/usr/bin/time -v`, and the maximum resident set size
+  is repeated on its own line so a log skim finds it;
+- scratch is removed on a clean exit and **kept, with a listing, on failure**,
+  where what was half-written is worth the disk.
 
 ## Reading `prepare_report.json`
 
