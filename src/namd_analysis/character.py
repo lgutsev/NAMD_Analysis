@@ -913,6 +913,11 @@ class AnalysisPlan:
     #: that the analysis pass does not re-scan a multi-hundred-megabyte file
     #: just to learn its column count.
     shprop_structures: List[ShpropStructure] = field(default_factory=list)
+    #: Which provenance source supplied the exact VASP band numbers.
+    band_numbers_source: str = "unresolved"
+    #: Disagreements between the chosen basis and what the files themselves
+    #: carry.  Reported, never silently resolved.
+    band_provenance_conflicts: List[str] = field(default_factory=list)
 
     @property
     def manifest_frame_count(self) -> int:
@@ -1007,6 +1012,79 @@ def _optional_int(value: Any) -> Optional[int]:
     return None
 
 
+def _required_int(value: Any, key: str, path: Path) -> Optional[int]:
+    """An integer, ``None`` if the key is absent -- but an error if it is junk.
+
+    Absent and unreadable are different things.  Treating ``NAMDTINI = 37.5``
+    as absent silently demotes to the next provenance source, so a file that
+    states something wrong is handled as though it stated nothing.  A key that
+    is present must be usable.
+    """
+    if value is None:
+        return None
+    number = _optional_int(value)
+    if number is None:
+        raise CharacterError(
+            f"{path}: SHPROP metadata has {key}={value!r}, which is not an integer. "
+            "A key that is present must be readable: treating it as absent would "
+            "silently fall through to a lower-precedence source and use a value "
+            "this file contradicts."
+        )
+    return number
+
+
+def _header_band_windows(
+    records: Sequence[ShpropStructure],
+) -> Tuple[Dict[Tuple[int, int], List[str]], List[str]]:
+    """Optional BMIN/BMAX windows the files carry, and which files carry none."""
+    windows: Dict[Tuple[int, int], List[str]] = {}
+    without: List[str] = []
+    for record in records:
+        low = _required_int(record.metadata.get("BMIN"), "BMIN", record.path)
+        high = _required_int(record.metadata.get("BMAX"), "BMAX", record.path)
+        if low is None or high is None:
+            without.append(record.path.name)
+            continue
+        if high < low:
+            raise CharacterError(
+                f"{record.path}: optional SHPROP metadata has BMAX={high} < "
+                f"BMIN={low}; the basis window must increase"
+            )
+        windows.setdefault((low, high), []).append(record.path.name)
+    return windows, without
+
+
+def band_provenance_conflicts(
+    bands: Sequence[int], source: str, records: Sequence[ShpropStructure]
+) -> List[str]:
+    """Where a chosen basis contradicts what the SHPROP files themselves say.
+
+    The basis is the one quantity nothing downstream can detect as wrong: a
+    plausible population comes out either way.  So when a higher-precedence
+    source wins, the lower one is still read and compared, and a disagreement
+    is reported rather than left invisible.  It is a warning, not an error --
+    precedence is deliberate and an archived header can legitimately describe a
+    different run -- but it is never silent.
+    """
+    if source == "SHPROP_BMIN_BMAX_metadata":
+        return []
+    windows, _without = _header_band_windows(records)
+    chosen = (int(bands[0]), int(bands[-1]))
+    conflicts: List[str] = []
+    for window, names in sorted(windows.items()):
+        if window == chosen and len(bands) == window[1] - window[0] + 1:
+            continue
+        sample = ", ".join(sorted(names)[:5]) + ("..." if len(names) > 5 else "")
+        conflicts.append(
+            f"basis {chosen[0]}..{chosen[1]} came from {source}, but "
+            f"{len(names)} SHPROP file(s) carry BMIN/BMAX = {window[0]}:{window[1]} "
+            f"({sample}). The higher-precedence source was used, as documented, but "
+            "the two disagree about which bands this basis is. Confirm which "
+            "describes the run that produced these histories."
+        )
+    return conflicts
+
+
 def resolve_band_numbers(
     state_map: StateMap, records: Sequence[ShpropStructure]
 ) -> Tuple[List[int], str]:
@@ -1051,20 +1129,7 @@ def resolve_band_numbers(
             source,
         )
 
-    windows: Dict[Tuple[int, int], List[str]] = {}
-    without: List[str] = []
-    for record in records:
-        low = _optional_int(record.metadata.get("BMIN"))
-        high = _optional_int(record.metadata.get("BMAX"))
-        if low is None or high is None:
-            without.append(record.path.name)
-            continue
-        if high < low:
-            raise CharacterError(
-                f"{record.path}: optional SHPROP metadata has BMAX={high} < "
-                f"BMIN={low}; the basis window must increase"
-            )
-        windows.setdefault((low, high), []).append(record.path.name)
+    windows, without = _header_band_windows(records)
 
     if len(windows) > 1:
         parts = []
@@ -1115,7 +1180,7 @@ def resolve_namdtini(record: ShpropStructure) -> Tuple[int, str]:
     a disagreement means one of them describes a different run, and choosing
     either would silently shift every frame assignment.
     """
-    header = _optional_int(record.metadata.get("NAMDTINI"))
+    header = _required_int(record.metadata.get("NAMDTINI"), "NAMDTINI", record.path)
     match = _SHPROP_SUFFIX.match(record.path.name)
     suffix = int(match.group(1)) if match else None
 
@@ -1161,7 +1226,7 @@ def resolve_cycle_period(
     different run length than the frames that were actually saved; the
     disagreement is recorded, never averaged away.
     """
-    raw_nsw = _optional_int(record.metadata.get("NSW"))
+    raw_nsw = _required_int(record.metadata.get("NSW"), "NSW", record.path)
     header_period = raw_nsw - 1 if raw_nsw is not None else None
     if frame_mode != "dish-cyclic":
         return None, "not_applicable", header_period
@@ -1236,6 +1301,9 @@ def plan_analysis(
     # resolver decides it and says which source won; see resolve_band_numbers.
     bands, band_source = resolve_band_numbers(state_map, records)
     bmin, bmax = bands[0], bands[-1]
+    # The basis is the one quantity nothing downstream can detect as wrong, so
+    # a higher-precedence source is still compared with what the files say.
+    band_conflicts = band_provenance_conflicts(bands, band_source, records)
     # Only now: a column index past the end of the table. Checked after the
     # basis-size comparison because a state map with the wrong number of states
     # usually also overruns, and "you declared 3 states for a 2-state basis" is
@@ -1315,6 +1383,8 @@ def plan_analysis(
         n_time=n_time,
         manifest_frames=manifest_frames,
         shprop_structures=records,
+        band_numbers_source=band_source,
+        band_provenance_conflicts=band_conflicts,
     )
 
 
@@ -1446,10 +1516,12 @@ def preflight_report(
             "BMIN/BMAX at all"
         ),
     }
+    warnings.extend(plan.band_provenance_conflicts)
     payload["provenance"] = {
         "band_numbers": {
             "value": list(plan.bands),
             "source": first_alignment.get("band_numbers_source"),
+            "conflicts_with_shprop_metadata": list(plan.band_provenance_conflicts),
         },
         "NAMDTINI": [
             {"file": r["file"], "value": r["NAMDTINI"], "source": r["NAMDTINI_source"]}

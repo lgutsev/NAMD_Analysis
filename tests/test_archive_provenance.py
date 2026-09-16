@@ -26,6 +26,7 @@ import numpy as np
 
 from namd_analysis.character import (
     CharacterError,
+    band_provenance_conflicts,
     plan_analysis,
     resolve_band_numbers,
     resolve_cycle_period,
@@ -184,6 +185,121 @@ class BandProvenanceTests(_Temp):
     def test_campaign_b_and_c_do_not_inherit_a_bands(self):
         for name in ("FAPI_001_BCF_PCBM_B", "FAPI_001_BCF_PCBM_C"):
             self.assertIsNone(bands_for_campaign_name(name))
+
+
+class BandConflictReportingTests(_Temp):
+    """A higher-precedence basis must still be compared with what the files say.
+
+    Bands are the one quantity nothing downstream can detect as wrong: a
+    plausible population comes out either way. So precedence decides which
+    value is used, but a disagreement is always reported.
+    """
+
+    def _records(self, header_lines):
+        return [
+            shprop_structure(
+                write_plain_shprop(self.root / "SHPROP.37", header_lines=header_lines)
+            )
+        ]
+
+    def test_a_disagreement_with_the_headers_is_reported(self):
+        records = self._records(("# BMIN = 500", "# BMAX = 505"))
+        conflicts = band_provenance_conflicts(A_BANDS, "state_map.band_numbers", records)
+        self.assertEqual(len(conflicts), 1)
+        self.assertIn("976..981", conflicts[0])
+        self.assertIn("500:505", conflicts[0])
+        self.assertIn("state_map.band_numbers", conflicts[0])
+
+    def test_agreement_reports_nothing(self):
+        records = self._records(("# BMIN = 976", "# BMAX = 981"))
+        self.assertEqual(
+            band_provenance_conflicts(A_BANDS, "state_map.band_numbers", records), []
+        )
+
+    def test_headerless_files_report_nothing(self):
+        self.assertEqual(
+            band_provenance_conflicts(A_BANDS, "preset_bcf_pcbm_A", self._records(())), []
+        )
+
+    def test_the_headers_cannot_conflict_with_themselves(self):
+        records = self._records(("# BMIN = 10", "# BMAX = 15"))
+        self.assertEqual(
+            band_provenance_conflicts(
+                [10, 11, 12, 13, 14, 15], "SHPROP_BMIN_BMAX_metadata", records
+            ),
+            [],
+        )
+
+    def test_the_plan_carries_the_conflict_and_still_uses_precedence(self):
+        paths = [
+            write_plain_shprop(
+                self.root / "SHPROP.37", header_lines=("# BMIN = 500", "# BMAX = 505")
+            )
+        ]
+        plan = plan_analysis(
+            paths, state_map(band_numbers=A_BANDS), write_manifest(self.root, 4), "dish-cyclic"
+        )
+        self.assertEqual(plan.bands, A_BANDS)
+        self.assertEqual(plan.band_numbers_source, "state_map.band_numbers")
+        self.assertEqual(len(plan.band_provenance_conflicts), 1)
+        self.assertIn("500:505", plan.band_provenance_conflicts[0])
+
+    def test_a_preset_basis_conflicting_with_headers_is_reported(self):
+        paths = [
+            write_plain_shprop(
+                self.root / "SHPROP.37", header_lines=("# BMIN = 10", "# BMAX = 15")
+            )
+        ]
+        plan = plan_analysis(
+            paths, state_map(), write_manifest(self.root, 4), "dish-cyclic"
+        )
+        self.assertEqual(plan.bands, A_BANDS)
+        self.assertEqual(plan.band_numbers_source, "preset_bcf_pcbm_A")
+        self.assertTrue(plan.band_provenance_conflicts)
+        self.assertIn("10:15", plan.band_provenance_conflicts[0])
+
+
+class MalformedMetadataTests(_Temp):
+    """A key that is present must be readable, not quietly treated as absent.
+
+    Demoting an unreadable value to the next provenance source means a file
+    that states something wrong is handled as though it stated nothing.
+    """
+
+    def _record(self, name, header_lines):
+        return shprop_structure(
+            write_plain_shprop(self.root / name, header_lines=header_lines)
+        )
+
+    def test_unreadable_namdtini_is_refused_not_demoted_to_the_filename(self):
+        for bad in ("37.5", "abc", "", "1,5"):
+            with self.assertRaises(CharacterError) as ctx:
+                resolve_namdtini(self._record("SHPROP.37", (f"# NAMDTINI = {bad}",)))
+            message = str(ctx.exception)
+            self.assertIn("not an integer", message)
+            self.assertIn("silently fall through", message)
+
+    def test_unreadable_nsw_is_refused(self):
+        from namd_analysis.character import _load_projection_manifest
+
+        manifest = _load_projection_manifest(write_manifest(self.root, cycle_length=None))
+        with self.assertRaises(CharacterError) as ctx:
+            resolve_cycle_period(
+                self._record("SHPROP.1", ("# NSW = later",)), manifest, "dish-cyclic"
+            )
+        self.assertIn("not an integer", str(ctx.exception))
+
+    def test_unreadable_bmin_is_refused(self):
+        with self.assertRaises(CharacterError) as ctx:
+            resolve_band_numbers(
+                state_map(name="unregistered"),
+                [self._record("SHPROP.1", ("# BMIN = ten", "# BMAX = 15"))],
+            )
+        self.assertIn("not an integer", str(ctx.exception))
+
+    def test_an_absent_key_still_falls_through_normally(self):
+        value, source = resolve_namdtini(self._record("SHPROP.37", ()))
+        self.assertEqual((value, source), (37, "SHPROP_filename_suffix"))
 
 
 class NamdtiniProvenanceTests(_Temp):

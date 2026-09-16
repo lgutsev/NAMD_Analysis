@@ -646,6 +646,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         },
         "frame_consumption": plan.consumption(),
         "procar_parsing": result.projection.parse_stats,
+        "band_provenance_conflicts": plan.band_provenance_conflicts,
         "shprop_io": {**io_plan, **result.io},
         "memory": memory.as_dict(),
         "projection_frames": [int(v) for v in result.projection.frames],
@@ -696,6 +697,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         f"parsed of {consumption['manifest_declared_frames']} declared, "
         f"{len(result.projection.bands)} band(s)"
     )
+    for conflict in plan.band_provenance_conflicts:
+        print(f"warning: {conflict}")
     print(f"reporting the {POPULATION_LABEL} (coherences are not in the inputs)")
     print(
         f"estimated peak {human(memory.resident_bytes)} of arrays plus assumed overhead"
