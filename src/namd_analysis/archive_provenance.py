@@ -23,7 +23,6 @@ from __future__ import annotations
 import json
 import re
 from contextvars import ContextVar
-from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -34,7 +33,7 @@ from .io.hefei import ShpropStructure, shprop_structure
 from .populations import StateMap
 
 
-# Basis provenance established from the original campaign setup.  These are
+# Basis provenance established from the original campaign setup. These are
 # VASP band numbers, ordered exactly like population_columns.
 CAMPAIGN_BANDS: Dict[Tuple[str, str], List[int]] = {
     ("bcf_pcbm", "A"): [976, 977, 978, 979, 980, 981],
@@ -228,11 +227,11 @@ def plan_analysis(
     heights = {record.n_rows for record in records}
     if len(widths) != 1:
         raise character.CharacterError(
-            "SHPROP files have different column counts; no interpolation or truncation is performed"
+            "SHPROP files have different column counts; No interpolation or truncation is performed"
         )
     if len(heights) != 1:
         raise character.CharacterError(
-            "SHPROP files have different row counts; no interpolation or truncation is performed"
+            "SHPROP files have different row counts; No interpolation or truncation is performed"
         )
     ncolumns = next(iter(widths))
     ntime = next(iter(heights))
@@ -347,7 +346,9 @@ def _survey_shprop(paths: Sequence) -> prepare.ShpropSurvey:
     paths = [Path(path) for path in paths]
     if not paths:
         raise prepare.PrepareError("no SHPROP files were supplied")
-    structures = [shprop_structure(path) for path in paths]
+    # Call through the prepare module so tests and callers can instrument the
+    # exact structure-scan path. This still performs streaming, not table loading.
+    structures = [prepare.shprop_structure(path) for path in paths]
 
     widths = {record.n_columns for record in structures}
     heights = {record.n_rows for record in structures}
@@ -362,10 +363,15 @@ def _survey_shprop(paths: Sequence) -> prepare.ShpropSurvey:
         bands = CAMPAIGN_BANDS.get((context[0], context[1] or ""))
     if bands is None:
         windows = []
+        missing_keys: List[str] = []
         for record in structures:
             lo = _integer(record.metadata.get("BMIN"))
             hi = _integer(record.metadata.get("BMAX"))
             if lo is None or hi is None:
+                if lo is None:
+                    missing_keys.append("BMIN")
+                if hi is None:
+                    missing_keys.append("BMAX")
                 windows = []
                 break
             windows.append((lo, hi))
@@ -373,10 +379,11 @@ def _survey_shprop(paths: Sequence) -> prepare.ShpropSurvey:
             lo, hi = windows[0]
             bands = list(range(lo, hi + 1))
     if not bands:
+        missing = missing_keys[0] if missing_keys else "BMIN/BMAX"
         raise prepare.PrepareError(
-            "SHPROP does not contain BMIN/BMAX, which is allowed. Preparation now "
-            "needs a registered campaign preset with known band_numbers (or SHPROP "
-            "files carrying optional agreeing BMIN/BMAX metadata)."
+            f"SHProp header has no integer {missing}; BMIN/BMAX are optional for "
+            "preset-backed preparation, but without a registered campaign preset "
+            "the exact VASP band numbers must come from agreeing optional metadata."
         )
 
     starts: List[int] = []
