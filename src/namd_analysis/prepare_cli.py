@@ -22,6 +22,7 @@ from .character import (
 )
 from .populations import ConfigError, StateMap
 from .prepare import PrepareError, SlurmOptions, prepare_campaign
+from .memory_budget import RETAIN_CHOICES, BudgetError, parse_size
 from .presets import campaign_names, preset_names
 from .provenance import environment
 from .report import write_json
@@ -126,6 +127,20 @@ def build_parser(prog: str = "namd-analysis character-prepare") -> argparse.Argu
             "SHPROP residency policy passed through to the generated batch script; "
             "'stream' forces bounded row chunks even for small files"
         ),
+    )
+    parser.add_argument(
+        "--memory-budget",
+        default=None,
+        help=(
+            "passed through to the generated script's preflight and analysis, e.g. "
+            "24G. The run refuses to start if its estimate does not fit"
+        ),
+    )
+    parser.add_argument(
+        "--retain-per-file",
+        choices=RETAIN_CHOICES,
+        default=None,
+        help="passed through to the generated script (auto|yes|no)",
     )
     parser.add_argument(
         "--accumulator-memmap-dir",
@@ -247,6 +262,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         return 2
     extra: List[str] = [f"--shprop-io-mode {args.shprop_io_mode}"]
+    if args.memory_budget is not None:
+        # Validated here, so a malformed budget fails at preparation rather
+        # than hours later inside a queued job.
+        parse_size(args.memory_budget)
+        extra.append(f"--memory-budget {shlex.quote(args.memory_budget)}")
+    if args.retain_per_file is not None:
+        extra.append(f"--retain-per-file {args.retain_per_file}")
     if args.shprop_chunk_rows is not None:
         extra.append(f"--shprop-chunk-rows {args.shprop_chunk_rows}")
     if args.accumulator_memmap_dir is not None:
@@ -279,7 +301,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             procar_name=args.procar_name,
             extra_run_args=extra,
         )
-    except (PrepareError, ConfigError, CharacterError, OSError, ValueError) as exc:
+    except (PrepareError, BudgetError, ConfigError, CharacterError, OSError, ValueError) as exc:
         print(f"error: {exc}")
         return 2
 

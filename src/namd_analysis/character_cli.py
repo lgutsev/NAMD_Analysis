@@ -31,7 +31,7 @@ from .character import (
 from .memory_budget import RETAIN_CHOICES, BudgetError, estimate_memory, human, parse_size
 from .observables import LEGEND, OBSERVED
 from .populations import StateMap
-from .provenance import environment, fingerprint
+from .provenance import describe, environment, fingerprint
 from .report import prepare_output, write_csv, write_json
 from .validation_summary import write as write_validation_summary
 
@@ -193,6 +193,14 @@ def build_parser(prog: str = "namd-analysis character-populations") -> argparse.
         "--out",
         default=None,
         help="new output directory (optional with --preflight, which can print only)",
+    )
+    parser.add_argument(
+        "--fingerprint-data",
+        action="store_true",
+        help=(
+            "SHA-256 the SHPROP histories and every parsed PROCAR as well as the "
+            "configuration. Correct but expensive: a second full read of the archive"
+        ),
     )
     parser.add_argument("--overwrite", action="store_true")
     return parser
@@ -629,12 +637,31 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     figures = _plot(result, out)
 
-    input_paths = paths + [Path(args.config), Path(args.projection_manifest), Path(args.atom_groups)]
-    input_paths += result.projection.source_paths
+    # Configuration files are small and are always hashed. The data files are
+    # not, by default: SHA-256 over five 889 MB histories and up to two thousand
+    # PROCARs is a second full read of the archive, which would cost more than
+    # the analysis itself. --fingerprint-data forces it when integrity matters
+    # more than time, and the report says which was done.
+    config_paths = [Path(args.config), Path(args.projection_manifest), Path(args.atom_groups)]
+    data_paths = list(paths) + list(result.projection.source_paths)
+    if args.fingerprint_data:
+        inputs = fingerprint(config_paths + data_paths)
+    else:
+        inputs = fingerprint(config_paths) + describe(data_paths)
     payload = {
         "command": "character-populations",
         "environment": environment(),
-        "inputs": fingerprint(input_paths),
+        "inputs": inputs,
+        "input_fingerprinting": {
+            "configuration_files": "sha256",
+            "data_files": "sha256" if args.fingerprint_data else "size and mtime only",
+            "note": (
+                "hashing every SHPROP history and PROCAR is a second full read of "
+                "the archive. Configuration files are always hashed because they "
+                "are small and they are what a reader needs to reproduce the run; "
+                "pass --fingerprint-data to hash the data too"
+            ),
+        },
         "frame_mode": args.frame_mode,
         "projection_cycle_length": result.projection.cycle_length,
         "cycle_period_used": result.projection.cycle_period,

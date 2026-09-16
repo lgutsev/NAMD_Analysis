@@ -827,8 +827,13 @@ def render_sbatch(
     ]
     for arg in extra_args:
         common.append(f"  {arg}")
+    # Node-local spill is the default for a batch run -- the histories this
+    # script is written for are large enough that it is barely a choice -- but
+    # only when the caller has not already named a directory of their own.
+    if not any("--accumulator-memmap-dir" in arg for arg in extra_args):
+        common.append('  --accumulator-memmap-dir "$SCRATCH"')
     preflight_body = " \\\n".join(common)
-    run_body = " \\\n".join(common + [f'  --out "{out_dir}"'])
+    run_body = " \\\n".join(common + ['  --out "$OUTDIR"'])
 
     lines = [
         "#!/bin/bash",
@@ -867,6 +872,34 @@ def render_sbatch(
     lines += [
         f'ls -l "{state_map.as_posix()}" "{atom_groups.as_posix()}" "{manifest.as_posix()}"',
         "",
+        'echo "--- output directory ---"',
+        "# Job-specific, so two submissions cannot interleave their outputs and a",
+        "# previous successful result is never overwritten by accident.",
+        f'OUTDIR="{out_dir}/${{SLURM_JOB_ID:-manual}}"',
+        'if [ -e "$OUTDIR/report.json" ]; then',
+        '  echo "refusing to overwrite the completed result in $OUTDIR" >&2',
+        '  echo "move it aside, or prepare again with a different --results-dir" >&2',
+        "  exit 1",
+        "fi",
+        'echo "output: $OUTDIR"',
+        "",
+        "# Node-local scratch for the memory-mapped accumulators when the",
+        "# scheduler provides any. Removed on a clean exit; kept on failure,",
+        "# where knowing what was half-written is worth the disk.",
+        'SCRATCH="${SLURM_TMPDIR:-${TMPDIR:-/tmp}}/namd-character-${SLURM_JOB_ID:-$$}"',
+        'mkdir -p "$SCRATCH"',
+        'echo "scratch: $SCRATCH"',
+        "cleanup() {",
+        "  status=$?",
+        "  if [ \"$status\" -eq 0 ]; then",
+        '    rm -rf "$SCRATCH"',
+        "  else",
+        '    echo "job failed (exit $status); scratch kept at $SCRATCH" >&2',
+        '    ls -l "$SCRATCH" >&2 || true',
+        "  fi",
+        "}",
+        "trap cleanup EXIT",
+        "",
         'echo "--- preflight (cheap; a non-zero exit aborts this job) ---"',
         "namd-analysis character-preflight \\",
         preflight_body,
@@ -876,7 +909,11 @@ def render_sbatch(
         run_body,
         "",
         'echo "--- generated files ---"',
-        f'ls -l "{out_dir}"',
+        'ls -l "$OUTDIR"',
+        'echo "--- peak resident set size ---"',
+        "# /usr/bin/time -v prints it among many lines; repeat it alone so a log",
+        "# skim finds the number without reading the whole block.",
+        'grep -h "Maximum resident set size" "character_${SLURM_JOB_ID:-manual}.err" 2>/dev/null || true',
     ]
     return "\n".join(lines) + "\n"
 

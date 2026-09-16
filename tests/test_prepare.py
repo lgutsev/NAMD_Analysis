@@ -529,6 +529,50 @@ class SbatchTests(_Prepared):
         self.assertIn(prepared.state_map_path.resolve().as_posix(), script)
         self.assertIn("--- generated files ---", script)
 
+    def test_the_script_uses_node_local_scratch_for_memmaps(self):
+        _, script = self._script()
+        self.assertIn("SLURM_TMPDIR", script)
+        self.assertIn('--accumulator-memmap-dir "$SCRATCH"', script)
+
+    def test_the_script_cleans_scratch_on_success_and_keeps_it_on_failure(self):
+        _, script = self._script()
+        self.assertIn("trap cleanup EXIT", script)
+        self.assertIn('rm -rf "$SCRATCH"', script)
+        self.assertIn("scratch kept at $SCRATCH", script)
+
+    def test_the_script_uses_a_job_specific_output_directory(self):
+        _, script = self._script()
+        self.assertIn("${SLURM_JOB_ID:-manual}", script)
+        self.assertIn('--out "$OUTDIR"', script)
+
+    def test_the_script_refuses_to_overwrite_a_completed_result(self):
+        _, script = self._script()
+        self.assertIn('if [ -e "$OUTDIR/report.json" ]; then', script)
+        self.assertIn("refusing to overwrite", script)
+        self.assertIn("exit 1", script)
+
+    def test_the_script_prints_peak_resident_set_size(self):
+        _, script = self._script()
+        self.assertIn("Maximum resident set size", script)
+
+    def test_a_caller_supplied_memmap_dir_is_not_duplicated(self):
+        prepared = self._prepare(
+            write_sbatch=True,
+            extra_run_args=["--accumulator-memmap-dir /my/scratch"],
+        )
+        script = prepared.sbatch_path.read_text(encoding="utf-8")
+        self.assertIn("/my/scratch", script)
+        self.assertNotIn('--accumulator-memmap-dir "$SCRATCH"', script)
+
+    def test_memory_flags_reach_the_script(self):
+        prepared = self._prepare(
+            write_sbatch=True,
+            extra_run_args=["--memory-budget 24G", "--retain-per-file no"],
+        )
+        script = prepared.sbatch_path.read_text(encoding="utf-8")
+        self.assertIn("--memory-budget 24G", script)
+        self.assertIn("--retain-per-file no", script)
+
     def test_chunk_rows_are_passed_through_to_the_script(self):
         prepared = self._prepare(write_sbatch=True, extra_run_args=["--shprop-chunk-rows 50000"])
         self.assertIn("--shprop-chunk-rows 50000", prepared.sbatch_path.read_text(encoding="utf-8"))
