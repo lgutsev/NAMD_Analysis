@@ -225,10 +225,43 @@ class PresetTests(_Prepared):
         self.assertIn("400 ions", message)
         self.assertIn("not rescaled or trimmed", message)
 
-    def test_an_unregistered_campaign_is_not_substituted(self):
+    def test_a_known_but_unresolved_campaign_is_not_substituted(self):
+        # B and C exist, but their provenance was never established. The error
+        # must say that, and must not hand back A's bands or A's partition.
+        for campaign in ("B", "C"):
+            with self.assertRaises(PresetError) as ctx:
+                load_preset("bcf_pcbm", campaign)
+            message = str(ctx.exception)
+            self.assertIn("known but unresolved", message)
+            self.assertIn("none of them transfer from A", message)
+            self.assertNotIn("976", message)
+
+    def test_an_entirely_unknown_campaign_is_a_different_error(self):
         with self.assertRaises(PresetError) as ctx:
-            load_preset("bcf_pcbm", "B")
-        self.assertIn("not transferable between campaigns", str(ctx.exception))
+            load_preset("bcf_pcbm", "Z")
+        message = str(ctx.exception)
+        self.assertIn("no campaign 'Z'", message)
+        self.assertIn("['A']", message)
+
+    def test_campaign_a_bands_are_the_confirmed_vasp_numbers(self):
+        preset = load_preset("bcf_pcbm", "A")
+        self.assertEqual(preset.band_numbers, [976, 977, 978, 979, 980, 981])
+        self.assertEqual(
+            len(preset.band_numbers), len(preset.population_columns)
+        )
+
+    def test_no_other_registered_campaign_carries_As_bands(self):
+        from namd_analysis.presets import PRESETS
+
+        for preset_name, campaigns in PRESETS.items():
+            for campaign_name, entry in campaigns.items():
+                if (preset_name, campaign_name) == ("bcf_pcbm", "A"):
+                    continue
+                self.assertNotEqual(
+                    entry.band_numbers,
+                    [976, 977, 978, 979, 980, 981],
+                    f"{preset_name}/{campaign_name} must not inherit A's basis",
+                )
 
     def test_without_a_preset_or_atom_groups_nothing_is_invented(self):
         with self.assertRaises(PrepareError) as ctx:

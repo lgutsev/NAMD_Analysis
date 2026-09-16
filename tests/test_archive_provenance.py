@@ -1,45 +1,82 @@
+"""Provenance for real archives: where the basis, origin and period come from.
+
+Production SHPROP files are plain numeric tables.  ``BMIN``/``BMAX`` are
+properties of the NAMD input and need not appear in one at all, and
+``NAMDTINI`` often survives only in the historical ``SHPROP.<start-frame>``
+filename.  Each quantity therefore has an ordered list of independent sources.
+
+These are unittest cases on purpose.  They were pytest-style functions using
+the ``tmp_path`` fixture, which ``python -m unittest discover`` -- the command
+CI runs -- collects as zero tests, so the entire provenance model was unverified
+in CI while CI reported green.
+
+Required precedence:
+
+* bands:   ``state_map.band_numbers`` > registered campaign > agreeing SHPROP BMIN/BMAX
+* origin:  SHPROP ``NAMDTINI`` metadata > validated ``SHPROP.<integer>`` suffix
+* period:  projection-manifest ``cycle_length`` > SHPROP ``NSW - 1``
+"""
+
 import json
+import tempfile
+import unittest
+from pathlib import Path
 
-from namd_analysis import archive_provenance
-from namd_analysis.populations import StateMap
+import numpy as np
+
+from namd_analysis.character import (
+    CharacterError,
+    plan_analysis,
+    resolve_band_numbers,
+    resolve_cycle_period,
+    resolve_namdtini,
+)
+from namd_analysis.io.hefei import shprop_structure
+from namd_analysis.populations import ConfigError, StateMap
+from namd_analysis.presets import bands_for_campaign_name
+
+A_BANDS = [976, 977, 978, 979, 980, 981]
 
 
-def _write_plain_shprop(path, rows=3):
-    lines = []
-    for step in range(1, rows + 1):
-        # time, energy, six complete populations; deliberately no header.
-        lines.append(
-            f"{step:.2f} -0.8 0.0 0.0 0.0 0.0 0.0 1.0\n"
-        )
-    path.write_text("".join(lines), encoding="utf-8")
-
-
-def _manifest(tmp_path, cycle_length=3):
-    frames = []
-    for frame in range(1, cycle_length + 1):
-        procar = tmp_path / f"PROCAR.{frame}"
-        procar.write_text("placeholder\n", encoding="utf-8")
-        frames.append({"frame": frame, "procar": str(procar)})
-    path = tmp_path / "manifest.json"
-    path.write_text(
-        json.dumps({"frames": frames, "cycle_length": cycle_length}),
-        encoding="utf-8",
-    )
+def write_plain_shprop(path, rows=4, header_lines=(), populations=None):
+    """A SHPROP table with whatever header lines are asked for -- possibly none."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if populations is None:
+        populations = np.tile(np.array([0.5, 0.1, 0.1, 0.1, 0.1, 0.1]), (rows, 1))
+    lines = list(header_lines)
+    for step in range(rows):
+        values = [float(step + 1), -0.8] + [float(v) for v in populations[step]]
+        lines.append(" ".join(f"{v:.10E}" for v in values))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
 
-def _state_map(name="FAPI_001_BCF_PCBM_A", band_numbers=None):
+def write_manifest(tmp, cycle_length=4, frames=None):
+    tmp = Path(tmp)
+    if frames is None:
+        frames = range(1, (cycle_length or 4) + 1)
+    frames = list(frames)
+    entries = []
+    for frame in frames:
+        procar = tmp / f"PROCAR.{frame}"
+        procar.write_text("placeholder\n", encoding="utf-8")
+        entries.append({"frame": frame, "procar": str(procar)})
+    path = tmp / "manifest.json"
+    payload = {"frames": entries}
+    if cycle_length is not None:
+        payload["cycle_length"] = cycle_length
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def state_map(name="FAPI_001_BCF_PCBM_A", band_numbers=None):
     payload = {
         "name": name,
         "time_column": 0,
         "time_unit": "fs",
         "population_columns": [2, 3, 4, 5, 6, 7],
-        "groups": {
-            "VBM": [2],
-            "BCF": [3],
-            "PCBM": [4, 5, 6],
-            "CBM": [7],
-        },
+        "groups": {"VBM": [2], "BCF": [3], "PCBM": [4, 5, 6], "CBM": [7]},
         "complete_population": True,
         "recombined_group": "VBM",
     }
@@ -48,62 +85,312 @@ def _state_map(name="FAPI_001_BCF_PCBM_A", band_numbers=None):
     return StateMap.from_dict(payload)
 
 
-def test_plain_real_archive_uses_registered_basis_and_filename_namdtini(tmp_path):
-    archive_provenance.install()
-    shprop = tmp_path / "SHPROP.37"
-    _write_plain_shprop(shprop)
-    manifest = _manifest(tmp_path)
+class _Temp(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
 
-    plan = archive_provenance.plan_analysis(
-        [shprop], _state_map(), manifest, "dish-cyclic"
-    )
-
-    assert plan.bands == [976, 977, 978, 979, 980, 981]
-    assert plan.alignments[0]["band_numbers_source"] == "preset_bcf_pcbm_A"
-    assert plan.alignments[0]["NAMDTINI"] == 37
-    assert plan.alignments[0]["NAMDTINI_source"] == "SHPROP_filename_suffix"
-    assert plan.alignments[0]["cycle_length_source"] == "projection_manifest"
-    assert plan.frames_by_file[0].tolist() == [1, 2, 3]
+    def tearDown(self):
+        self._tmp.cleanup()
 
 
-def test_explicit_state_map_band_numbers_override_campaign_inference(tmp_path):
-    archive_provenance.install()
-    shprop = tmp_path / "SHPROP.5"
-    _write_plain_shprop(shprop)
-    manifest = _manifest(tmp_path)
-    bands = [100, 101, 102, 103, 104, 105]
+class BandProvenanceTests(_Temp):
+    """bands: state_map.band_numbers > registered campaign > agreeing BMIN/BMAX."""
 
-    plan = archive_provenance.plan_analysis(
-        [shprop], _state_map(name="custom", band_numbers=bands), manifest, "dish-cyclic"
-    )
+    def _records(self, header_lines=(), names=("SHPROP.37",)):
+        return [
+            shprop_structure(write_plain_shprop(self.root / name, header_lines=header_lines))
+            for name in names
+        ]
 
-    assert plan.bands == bands
-    assert plan.alignments[0]["band_numbers_source"] == "state_map.band_numbers"
+    def test_explicit_band_numbers_win(self):
+        records = self._records(("# BMIN = 10", "# BMAX = 15"))
+        bands, source = resolve_band_numbers(state_map(band_numbers=A_BANDS), records)
+        self.assertEqual(bands, A_BANDS)
+        self.assertEqual(source, "state_map.band_numbers")
+
+    def test_registered_campaign_used_when_no_explicit_bands(self):
+        bands, source = resolve_band_numbers(state_map(), self._records())
+        self.assertEqual(bands, A_BANDS)
+        self.assertEqual(source, "preset_bcf_pcbm_A")
+
+    def test_explicit_bands_override_the_registered_campaign(self):
+        other = [100, 101, 102, 103, 104, 105]
+        bands, source = resolve_band_numbers(state_map(band_numbers=other), self._records())
+        self.assertEqual(bands, other)
+        self.assertEqual(source, "state_map.band_numbers")
+
+    def test_agreeing_bmin_bmax_used_when_nothing_higher_exists(self):
+        records = self._records(("# BMIN = 10", "# BMAX = 15"))
+        bands, source = resolve_band_numbers(state_map(name="unregistered"), records)
+        self.assertEqual(bands, [10, 11, 12, 13, 14, 15])
+        self.assertEqual(source, "SHPROP_BMIN_BMAX_metadata")
+
+    def test_no_source_at_all_is_refused_not_guessed(self):
+        with self.assertRaises(CharacterError) as ctx:
+            resolve_band_numbers(state_map(name="unregistered"), self._records())
+        message = str(ctx.exception)
+        self.assertIn("not recoverable", message)
+        self.assertIn("band_numbers", message)
+        self.assertIn("registered campaign preset", message)
+
+    def test_disagreeing_bmin_bmax_across_files_is_refused(self):
+        records = [
+            shprop_structure(
+                write_plain_shprop(self.root / "SHPROP.1", header_lines=("# BMIN = 10", "# BMAX = 15"))
+            ),
+            shprop_structure(
+                write_plain_shprop(self.root / "SHPROP.2", header_lines=("# BMIN = 20", "# BMAX = 25"))
+            ),
+        ]
+        with self.assertRaises(CharacterError) as ctx:
+            resolve_band_numbers(state_map(name="unregistered"), records)
+        self.assertIn("different optional BMIN/BMAX windows", str(ctx.exception))
+
+    def test_bmin_bmax_on_only_some_files_is_refused(self):
+        records = [
+            shprop_structure(
+                write_plain_shprop(self.root / "SHPROP.1", header_lines=("# BMIN = 10", "# BMAX = 15"))
+            ),
+            shprop_structure(write_plain_shprop(self.root / "SHPROP.2")),
+        ]
+        with self.assertRaises(CharacterError) as ctx:
+            resolve_band_numbers(state_map(name="unregistered"), records)
+        self.assertIn("carry no BMIN/BMAX metadata while others do", str(ctx.exception))
+
+    def test_inverted_window_is_refused(self):
+        records = self._records(("# BMIN = 15", "# BMAX = 10"))
+        with self.assertRaises(CharacterError) as ctx:
+            resolve_band_numbers(state_map(name="unregistered"), records)
+        self.assertIn("BMAX=10 < BMIN=15", str(ctx.exception))
+
+    def test_wrong_length_band_numbers_are_refused(self):
+        with self.assertRaises(ConfigError):
+            state_map(band_numbers=[976, 977])
+
+    def test_duplicate_band_numbers_are_refused(self):
+        with self.assertRaises(ConfigError):
+            state_map(band_numbers=[976, 976, 978, 979, 980, 981])
+
+    def test_non_positive_band_numbers_are_refused(self):
+        for bad in ([0, 977, 978, 979, 980, 981], [-1, 977, 978, 979, 980, 981]):
+            with self.assertRaises(ConfigError):
+                state_map(band_numbers=bad)
+
+    def test_non_integer_band_numbers_are_refused(self):
+        with self.assertRaises(ConfigError):
+            state_map(band_numbers=["976", 977, 978, 979, 980, 981])
+
+    def test_campaign_b_and_c_do_not_inherit_a_bands(self):
+        for name in ("FAPI_001_BCF_PCBM_B", "FAPI_001_BCF_PCBM_C"):
+            self.assertIsNone(bands_for_campaign_name(name))
 
 
-def test_filename_and_optional_namdtini_metadata_must_agree(tmp_path):
-    archive_provenance.install()
-    shprop = tmp_path / "SHPROP.37"
-    shprop.write_text(
-        "# NAMDTINI = 38\n"
-        "1.00 -0.8 0 0 0 0 0 1\n"
-        "2.00 -0.8 0 0 0 0 0 1\n",
-        encoding="utf-8",
-    )
-    record = archive_provenance.shprop_structure(shprop)
+class NamdtiniProvenanceTests(_Temp):
+    """origin: SHPROP NAMDTINI metadata > validated SHPROP.<integer> suffix."""
 
-    try:
-        archive_provenance.resolve_namdtini(record)
-    except ValueError as exc:
-        assert "provenance sources disagree" in str(exc)
-    else:
-        raise AssertionError("conflicting NAMDTINI provenance was accepted")
+    def _record(self, name, header_lines=()):
+        return shprop_structure(write_plain_shprop(self.root / name, header_lines=header_lines))
+
+    def test_filename_suffix_alone(self):
+        value, source = resolve_namdtini(self._record("SHPROP.37"))
+        self.assertEqual(value, 37)
+        self.assertEqual(source, "SHPROP_filename_suffix")
+
+    def test_every_real_test_file_name_resolves(self):
+        for start in (37, 171, 425, 848, 1625):
+            value, source = resolve_namdtini(self._record(f"SHPROP.{start}"))
+            self.assertEqual(value, start)
+            self.assertEqual(source, "SHPROP_filename_suffix")
+
+    def test_metadata_alone(self):
+        value, source = resolve_namdtini(
+            self._record("history.txt", header_lines=("# NAMDTINI = 42",))
+        )
+        self.assertEqual(value, 42)
+        self.assertEqual(source, "SHPROP_NAMDTINI_metadata")
+
+    def test_metadata_wins_over_a_matching_suffix_and_is_labelled_as_such(self):
+        # The label must say metadata, not filename: a report that misstates
+        # which source was used is worse than one that omits it.
+        value, source = resolve_namdtini(
+            self._record("SHPROP.37", header_lines=("# NAMDTINI = 37",))
+        )
+        self.assertEqual(value, 37)
+        self.assertEqual(source, "SHPROP_NAMDTINI_metadata")
+
+    def test_suffix_and_metadata_disagreement_is_refused(self):
+        with self.assertRaises(CharacterError) as ctx:
+            resolve_namdtini(self._record("SHPROP.37", header_lines=("# NAMDTINI = 99",)))
+        message = str(ctx.exception)
+        self.assertIn("NAMDTINI=99", message)
+        self.assertIn("filename suffix says 37", message)
+        self.assertIn("refused", message)
+
+    def test_malformed_suffix_with_no_metadata_is_refused(self):
+        for name in ("SHPROP.abc", "SHPROP", "SHPROP.", "SHPROP.12x", "shprop_37"):
+            with self.assertRaises(CharacterError) as ctx:
+                resolve_namdtini(self._record(name))
+            self.assertIn("never guessed", str(ctx.exception))
+
+    def test_zero_suffix_is_refused(self):
+        with self.assertRaises(CharacterError) as ctx:
+            resolve_namdtini(self._record("SHPROP.0"))
+        self.assertIn("one-based", str(ctx.exception))
+
+    def test_non_positive_metadata_is_refused(self):
+        with self.assertRaises(CharacterError) as ctx:
+            resolve_namdtini(self._record("history.txt", header_lines=("# NAMDTINI = 0",)))
+        self.assertIn("one-based", str(ctx.exception))
+
+    def test_case_insensitive_suffix_is_accepted(self):
+        value, source = resolve_namdtini(self._record("shprop.55"))
+        self.assertEqual(value, 55)
+        self.assertEqual(source, "SHPROP_filename_suffix")
 
 
-def test_state_map_roundtrip_keeps_explicit_band_numbers():
-    archive_provenance.install()
-    bands = [976, 977, 978, 979, 980, 981]
-    state_map = _state_map(name="custom", band_numbers=bands)
+class CyclePeriodProvenanceTests(_Temp):
+    """period: projection-manifest cycle_length > SHPROP NSW-1."""
 
-    assert state_map.band_numbers == bands
-    assert state_map.as_dict()["band_numbers"] == bands
+    def _record(self, header_lines=()):
+        return shprop_structure(
+            write_plain_shprop(self.root / "SHPROP.1", header_lines=header_lines)
+        )
+
+    def _manifest(self, cycle_length):
+        from namd_analysis.character import _load_projection_manifest
+
+        return _load_projection_manifest(write_manifest(self.root, cycle_length=cycle_length))
+
+    def test_manifest_cycle_length_wins(self):
+        period, source, header = resolve_cycle_period(
+            self._record(("# NSW = 2000",)), self._manifest(4), "dish-cyclic"
+        )
+        self.assertEqual(period, 4)
+        self.assertEqual(source, "projection_manifest")
+        self.assertEqual(header, 1999)
+
+    def test_nsw_minus_one_used_when_the_manifest_is_silent(self):
+        period, source, header = resolve_cycle_period(
+            self._record(("# NSW = 21",)), self._manifest(None), "dish-cyclic"
+        )
+        self.assertEqual(period, 20)
+        self.assertEqual(source, "SHPROP_NSW_minus_1_metadata")
+        self.assertEqual(header, 20)
+
+    def test_neither_source_is_refused(self):
+        with self.assertRaises(CharacterError) as ctx:
+            resolve_cycle_period(self._record(), self._manifest(None), "dish-cyclic")
+        message = str(ctx.exception)
+        self.assertIn("never inferred from how many frames happen to exist", message)
+
+    def test_linear_mode_needs_no_period(self):
+        period, source, header = resolve_cycle_period(
+            self._record(), self._manifest(None), "linear"
+        )
+        self.assertIsNone(period)
+        self.assertEqual(source, "not_applicable")
+
+
+class HeaderlessEndToEndTests(_Temp):
+    """A completely headerless archive must plan correctly, or refuse clearly."""
+
+    def _plan(self, names, header_lines=(), name="FAPI_001_BCF_PCBM_A", bands=None):
+        paths = [
+            write_plain_shprop(self.root / n, header_lines=header_lines) for n in names
+        ]
+        manifest = write_manifest(self.root, cycle_length=4)
+        return plan_analysis(paths, state_map(name=name, band_numbers=bands), manifest, "dish-cyclic")
+
+    def test_headerless_files_plan_from_filename_and_preset(self):
+        plan = self._plan(["SHPROP.37", "SHPROP.171"])
+        self.assertEqual(plan.bands, A_BANDS)
+        self.assertEqual([r["NAMDTINI"] for r in plan.alignments], [37, 171])
+        self.assertEqual(
+            [r["NAMDTINI_source"] for r in plan.alignments],
+            ["SHPROP_filename_suffix", "SHPROP_filename_suffix"],
+        )
+        self.assertEqual(
+            [r["band_numbers_source"] for r in plan.alignments],
+            ["preset_bcf_pcbm_A", "preset_bcf_pcbm_A"],
+        )
+        self.assertEqual(
+            [r["cycle_length_source"] for r in plan.alignments],
+            ["projection_manifest", "projection_manifest"],
+        )
+
+    def test_headerless_files_plan_from_filename_and_explicit_bands(self):
+        plan = self._plan(["SHPROP.37"], name="unregistered", bands=A_BANDS)
+        self.assertEqual(plan.bands, A_BANDS)
+        self.assertEqual(plan.alignments[0]["band_numbers_source"], "state_map.band_numbers")
+
+    def test_headerless_files_without_basis_provenance_are_refused(self):
+        with self.assertRaises(CharacterError) as ctx:
+            self._plan(["SHPROP.37"], name="unregistered")
+        self.assertIn("not recoverable", str(ctx.exception))
+
+    def test_headerless_file_with_an_unusable_name_is_refused(self):
+        with self.assertRaises(CharacterError) as ctx:
+            self._plan(["history.dat"])
+        self.assertIn("never guessed", str(ctx.exception))
+
+    def test_frames_match_the_documented_cyclic_mapping(self):
+        plan = self._plan(["SHPROP.37"])
+        # period 4, NAMDTINI 37, four rows: mod(t + 37 - 1, 4) with 0 -> 4.
+        expected = [((step + 36) % 4) or 4 for step in range(1, 5)]
+        self.assertEqual([int(f) for f in plan.frames_by_file[0]], expected)
+
+    def test_header_and_filename_agreement_is_accepted(self):
+        plan = self._plan(["SHPROP.37"], header_lines=("# NAMDTINI = 37",))
+        self.assertEqual(plan.alignments[0]["NAMDTINI"], 37)
+        self.assertEqual(
+            plan.alignments[0]["NAMDTINI_source"], "SHPROP_NAMDTINI_metadata"
+        )
+
+    def test_header_and_filename_disagreement_is_refused(self):
+        with self.assertRaises(CharacterError) as ctx:
+            self._plan(["SHPROP.37"], header_lines=("# NAMDTINI = 99",))
+        self.assertIn("disagree", str(ctx.exception))
+
+
+class InstalledShimTests(unittest.TestCase):
+    """The old install() hook must remain importable and harmless."""
+
+    def test_install_is_a_noop_and_resolvers_are_re_exported(self):
+        from namd_analysis import archive_provenance, character
+
+        archive_provenance.install()
+        self.assertIs(archive_provenance.resolve_namdtini, character.resolve_namdtini)
+        self.assertIs(
+            archive_provenance.resolve_band_numbers, character.resolve_band_numbers
+        )
+        self.assertIs(character.plan_analysis.__module__, character.__name__)
+
+    def test_the_provenance_model_does_not_depend_on_import_order(self):
+        # It used to: install() replaced character.preflight_report, but
+        # character_cli binds that name at its own import time, so importing
+        # character_cli first left the CLI with the unpatched function.
+        import subprocess
+        import sys
+
+        for order in (
+            "import namd_analysis.character_cli, namd_analysis.dispatch",
+            "import namd_analysis.dispatch, namd_analysis.character_cli",
+            "import namd_analysis.character",
+        ):
+            code = (
+                f"{order}\n"
+                "from namd_analysis import character\n"
+                "assert character.plan_analysis.__module__ == 'namd_analysis.character'\n"
+                "assert hasattr(character, 'resolve_band_numbers')\n"
+                "print('ok')\n"
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", code], capture_output=True, text=True
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("ok", result.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()

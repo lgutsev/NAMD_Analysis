@@ -15,7 +15,7 @@ grouping rather than guessing one from element symbols or from contiguity.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class PresetError(ValueError):
@@ -30,10 +30,17 @@ class CampaignPreset:
     campaign: str
     name: str
     description: str
-    #: Zero-based SHPROP columns, in basis order BMIN..BMAX.  The preparation
-    #: command still infers the column block from the table and refuses to
-    #: proceed if the two disagree.
+    #: Zero-based SHPROP columns, in basis order.  The preparation command
+    #: still infers the column block from the table and refuses to proceed if
+    #: the two disagree.
     population_columns: List[int]
+    #: Exact VASP band numbers, one per population column, in the same order.
+    #: This is campaign provenance: production SHPROP files are plain numeric
+    #: tables and need not carry BMIN/BMAX at all, so the basis cannot be
+    #: recovered from them. An empty list means the campaign is registered but
+    #: its basis has not been established yet, and preparation refuses rather
+    #: than borrowing another campaign's.
+    band_numbers: List[int]
     #: Nominal fixed-column groups, for comparison only.
     groups: Dict[str, List[int]]
     complete_population: bool
@@ -55,6 +62,7 @@ class CampaignPreset:
             "time_column": self.time_column,
             "time_unit": self.time_unit,
             "population_columns": list(self.population_columns),
+            "band_numbers": list(self.band_numbers),
             "groups": {name: list(cols) for name, cols in self.groups.items()},
             "complete_population": self.complete_population,
             "recombined_group": self.recombined_group,
@@ -90,6 +98,7 @@ _A = CampaignPreset(
     name="FAPI_001_BCF_PCBM_A",
     description="FAPI (001) slab with BCF and PCBM, six-state basis",
     population_columns=[2, 3, 4, 5, 6, 7],
+    band_numbers=[976, 977, 978, 979, 980, 981],
     groups={"VBM": [2], "BCF": [3], "PCBM": [4, 5, 6], "CBM": [7]},
     complete_population=True,
     recombined_group="VBM",
@@ -107,11 +116,46 @@ _A = CampaignPreset(
     notes=BCF_PCBM_NOTES,
 )
 
-#: Registered campaigns, keyed by ``(preset, campaign)``.  B and C exist as
-#: campaign labels elsewhere in this repository but their structures were built
-#: differently; adding them here requires the same confirmed atom partition
-#: that A has, not a copy of A's.
+#: Registered campaigns, keyed by ``(preset, campaign)``.
+#:
+#: B and C are campaign labels used elsewhere in this repository, but their
+#: structures were built differently: a different band order, a different atom
+#: partition, possibly a different cycle provenance.  None of that is
+#: recoverable from A, so they are deliberately absent until their own
+#: provenance is supplied.  :func:`load_preset` says so by name rather than
+#: falling back to A.
 PRESETS: Dict[str, Dict[str, CampaignPreset]] = {"bcf_pcbm": {"A": _A}}
+
+#: Campaigns we know exist but whose provenance has not been established.
+#: Naming them here turns "unknown campaign" into "known campaign, unresolved
+#: provenance", which is a different and more useful error.
+UNRESOLVED_CAMPAIGNS: Dict[str, Dict[str, str]] = {
+    "bcf_pcbm": {
+        "B": (
+            "campaign B was built from a different structure than A. Its band "
+            "order, atom partition and cycle provenance have not been supplied, "
+            "and none of them transfer from A"
+        ),
+        "C": (
+            "campaign C was built from a different structure than A. Its band "
+            "order, atom partition and cycle provenance have not been supplied, "
+            "and none of them transfer from A"
+        ),
+    }
+}
+
+
+def bands_for_campaign_name(name: str) -> Optional[Tuple[List[int], str]]:
+    """Exact VASP bands for a state map whose ``name`` matches a registered campaign.
+
+    Returns ``(bands, source)`` or ``None``.  A registered campaign with an
+    empty band list returns ``None``: registered is not the same as resolved.
+    """
+    for preset, campaigns in PRESETS.items():
+        for campaign, entry in campaigns.items():
+            if entry.name == name and entry.band_numbers:
+                return list(entry.band_numbers), f"preset_{preset}_{campaign}"
+    return None
 
 
 def preset_names() -> List[str]:
@@ -138,6 +182,13 @@ def load_preset(preset: str, campaign: Optional[str]) -> CampaignPreset:
             "one cannot stand in for another."
         )
     if campaign not in campaigns:
+        pending = UNRESOLVED_CAMPAIGNS.get(preset, {}).get(campaign)
+        if pending is not None:
+            raise PresetError(
+                f"preset {preset!r} campaign {campaign!r} is known but unresolved: "
+                f"{pending}. Supply its band order and atom partition before "
+                "preparing it."
+            )
         raise PresetError(
             f"preset {preset!r} has no campaign {campaign!r}; registered campaigns "
             f"are {sorted(campaigns)}. A campaign's state order and atom partition "

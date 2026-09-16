@@ -28,7 +28,11 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .character import _expand_atom_spec
+from .character import (
+    CharacterError,
+    _expand_atom_spec,
+    resolve_namdtini,
+)
 from .io.hefei import ShpropStructure, iter_shprop_chunks, shprop_structure
 from .io.procar import ProcarFormatError, procar_structure
 from .populations import CONSERVATION_ATOL
@@ -72,6 +76,12 @@ class ShpropSurvey:
     namdtini: List[int]
     nsw: List[Optional[int]]
     header_periods: List[int]
+    #: Exact VASP band numbers and where they came from.  The basis is
+    #: provenance, not something a SHPROP table reveals.
+    band_numbers: List[int] = field(default_factory=list)
+    band_numbers_source: str = "unresolved"
+    #: One provenance label per history, parallel to ``namdtini``.
+    namdtini_sources: List[str] = field(default_factory=list)
 
     @property
     def paths(self) -> List[Path]:
@@ -93,34 +103,24 @@ def _header_int(record: ShpropStructure, key: str) -> int:
     )
 
 
-def survey_shprop(paths: Sequence) -> ShpropSurvey:
+def survey_shprop(
+    paths: Sequence, preset: Optional[CampaignPreset] = None
+) -> ShpropSurvey:
     """Read headers and shapes for every history, refusing disagreement.
 
     No table is materialized: each file costs one streaming scan and a
     constant amount of memory, whatever its size.
+
+    ``preset`` supplies the exact VASP band numbers for a registered campaign.
+    They are needed because a production SHPROP is a plain numeric table with no
+    BMIN/BMAX at all, and the basis cannot be recovered from one; the same
+    precedence the analysis uses applies here, via
+    :func:`~namd_analysis.character.resolve_band_numbers`.
     """
     paths = [Path(path) for path in paths]
     if not paths:
         raise PrepareError("no SHPROP files were supplied")
     structures = [shprop_structure(path) for path in paths]
-
-    windows = {}
-    for record in structures:
-        bmin = _header_int(record, "BMIN")
-        bmax = _header_int(record, "BMAX")
-        if bmax < bmin:
-            raise PrepareError(
-                f"{record.path}: header has BMAX={bmax} < BMIN={bmin}"
-            )
-        windows.setdefault((bmin, bmax), []).append(record.path.name)
-    if len(windows) != 1:
-        parts = [f"{lo}:{hi} in {sorted(names)}" for (lo, hi), names in windows.items()]
-        raise PrepareError(
-            "SHPROP files declare different BMIN/BMAX windows: "
-            + "; ".join(parts)
-            + ". One configuration covers one basis; split the campaign by window."
-        )
-    (bmin, bmax) = next(iter(windows))
 
     widths: Dict[int, List[str]] = {}
     heights: Dict[int, List[str]] = {}
@@ -143,7 +143,19 @@ def survey_shprop(paths: Sequence) -> ShpropSurvey:
             "or truncation is performed."
         )
 
-    namdtini = [_header_int(record, "NAMDTINI") for record in structures]
+    bands = _survey_bands(structures, preset)
+    bmin, bmax = bands[0], bands[-1]
+
+    namdtini: List[int] = []
+    namdtini_sources: List[str] = []
+    for record in structures:
+        try:
+            start, source = resolve_namdtini(record)
+        except CharacterError as exc:
+            raise PrepareError(str(exc)) from exc
+        namdtini.append(start)
+        namdtini_sources.append(source)
+
     nsw: List[Optional[int]] = []
     for record in structures:
         raw = record.metadata.get("NSW")
@@ -156,13 +168,58 @@ def survey_shprop(paths: Sequence) -> ShpropSurvey:
         structures=structures,
         bmin=bmin,
         bmax=bmax,
-        n_states=bmax - bmin + 1,
+        n_states=len(bands),
         n_columns=next(iter(widths)),
         n_rows=next(iter(heights)),
         namdtini=namdtini,
         nsw=nsw,
         header_periods=periods,
+        band_numbers=bands,
+        band_numbers_source=_band_source(preset, structures),
+        namdtini_sources=namdtini_sources,
     )
+
+
+def _band_source(
+    preset: Optional[CampaignPreset], structures: Sequence[ShpropStructure]
+) -> str:
+    if preset is not None and preset.band_numbers:
+        return f"preset_{preset.preset}_{preset.campaign}"
+    return "SHPROP_BMIN_BMAX_metadata"
+
+
+def _survey_bands(
+    structures: Sequence[ShpropStructure], preset: Optional[CampaignPreset]
+) -> List[int]:
+    """Exact VASP bands for the survey, by the same precedence as the analysis."""
+    if preset is not None and preset.band_numbers:
+        return list(preset.band_numbers)
+    windows: Dict[Tuple[int, int], List[str]] = {}
+    for record in structures:
+        low = record.metadata.get("BMIN")
+        high = record.metadata.get("BMAX")
+        if not isinstance(low, int) or not isinstance(high, int):
+            raise PrepareError(
+                f"{record.path}: this SHPROP carries no integer BMIN/BMAX, and the "
+                "exact VASP band numbers are not recoverable from a plain numeric "
+                "table. Use a registered campaign preset (--preset/--campaign), or "
+                "supply a state map declaring 'band_numbers'."
+            )
+        if high < low:
+            raise PrepareError(
+                f"{record.path}: optional metadata has BMAX={high} < BMIN={low}"
+            )
+        windows.setdefault((low, high), []).append(record.path.name)
+    if len(windows) != 1:
+        parts = [f"{lo}:{hi} in {sorted(names)}" for (lo, hi), names in windows.items()]
+        raise PrepareError(
+            "SHPROP files carry different optional BMIN/BMAX windows: "
+            + "; ".join(parts)
+            + ". One configuration covers one basis; declare band_numbers explicitly "
+            "or split the campaign by window."
+        )
+    (low, high) = next(iter(windows))
+    return list(range(low, high + 1))
 
 
 @dataclass
@@ -868,7 +925,13 @@ def prepare_campaign(
     half-written configuration behind.
     """
     out = Path(out_dir)
-    survey = survey_shprop(shprop_paths)
+    campaign_preset: Optional[CampaignPreset] = None
+    if preset is not None:
+        try:
+            campaign_preset = load_preset(preset, campaign)
+        except PresetError as exc:
+            raise PrepareError(str(exc)) from exc
+    survey = survey_shprop(shprop_paths, preset=campaign_preset)
     columns, time_column, column_rationale = infer_columns(survey)
     discovery = discover_frames(projection_dir, procar_name=procar_name)
     procar = representative_procar(discovery)
@@ -876,13 +939,6 @@ def prepare_campaign(
 
     unresolved: List[str] = []
     warnings: List[str] = []
-
-    campaign_preset: Optional[CampaignPreset] = None
-    if preset is not None:
-        try:
-            campaign_preset = load_preset(preset, campaign)
-        except PresetError as exc:
-            raise PrepareError(str(exc)) from exc
 
     # --- state map -------------------------------------------------------
     if campaign_preset is not None:

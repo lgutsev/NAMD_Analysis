@@ -35,6 +35,33 @@ class ConfigError(ValueError):
     """Raised for an inconsistent or ambiguous state map."""
 
 
+def validate_band_numbers(values, nstates: int, source: str) -> List[int]:
+    """Check a declared VASP band list, or say exactly what is wrong with it.
+
+    Band numbers are provenance, not data: nothing downstream can detect a
+    wrong one, so every way of being wrong is rejected here rather than
+    normalized.
+    """
+    bands: List[int] = []
+    for value in values:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ConfigError(f"{source}: band numbers must be positive integers")
+        if isinstance(value, float) and not float(value).is_integer():
+            raise ConfigError(f"{source}: band numbers must be positive integers")
+        number = int(value)
+        if number <= 0:
+            raise ConfigError(f"{source}: band numbers must be positive integers")
+        bands.append(number)
+    if len(bands) != nstates:
+        raise ConfigError(
+            f"{source}: {len(bands)} band number(s) for {nstates} population "
+            "column(s); there must be exactly one band per column, in the same order"
+        )
+    if len(set(bands)) != len(bands):
+        raise ConfigError(f"{source}: band numbers contain duplicates")
+    return bands
+
+
 class InputMismatchError(ValueError):
     """Raised when SHPROP files cannot be averaged together as given."""
 
@@ -51,6 +78,11 @@ class StateMap:
     complete_population: bool = False
     recombined_group: Optional[str] = None
     notes: str = ""
+    #: Exact VASP band numbers, one per population column and in the same
+    #: order.  Production SHPROP files are plain numeric tables that need not
+    #: carry BMIN/BMAX, so this is the highest-precedence statement of which
+    #: bands the basis is, and the only one a user can make directly.
+    band_numbers: Optional[List[int]] = None
 
     @classmethod
     def from_dict(cls, payload: Dict[str, Any]) -> "StateMap":
@@ -75,6 +107,11 @@ class StateMap:
                 complete_population=bool(payload.get("complete_population", False)),
                 recombined_group=payload.get("recombined_group"),
                 notes=str(payload.get("notes", "")),
+                band_numbers=(
+                    list(payload["band_numbers"])
+                    if payload.get("band_numbers") is not None
+                    else None
+                ),
             )
         except KeyError as exc:
             raise ConfigError(f"configuration is missing required key {exc}") from exc
@@ -117,6 +154,10 @@ class StateMap:
             raise ConfigError("population columns must be nonempty and nonnegative")
         if self.complete_population and set(seen) != set(declared):
             raise ConfigError("complete_population requires exhaustive groups")
+        if self.band_numbers is not None:
+            validate_band_numbers(
+                self.band_numbers, len(declared), "state_map band_numbers"
+            )
         if self.recombined_group is not None:
             if self.recombined_group not in self.groups:
                 raise ConfigError(
@@ -140,6 +181,7 @@ class StateMap:
             "time_column": self.time_column,
             "time_unit": self.time_unit,
             "population_columns": list(self.population_columns),
+            "band_numbers": None if self.band_numbers is None else list(self.band_numbers),
             "groups": {name: list(cols) for name, cols in self.groups.items()},
             "complete_population": self.complete_population,
             "recombined_group": self.recombined_group,

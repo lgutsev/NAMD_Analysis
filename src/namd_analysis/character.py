@@ -20,6 +20,7 @@ no inferred frame alignment, and no implicit k-point/spin averaging.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -38,7 +39,14 @@ from .io.procar import (
     procar_structure,
     read_procar_ion_totals,
 )
-from .populations import CONSERVATION_ATOL, StateMap
+from .memory_budget import BudgetError, estimate_memory
+from .populations import (
+    CONSERVATION_ATOL,
+    ConfigError,
+    StateMap,
+    validate_band_numbers,
+)
+from .presets import bands_for_campaign_name
 from .streaming import (
     ConservationTally,
     OnlineEnsemble,
@@ -151,6 +159,8 @@ class ProjectionSeries:
     total_projection: np.ndarray  # raw sum over every PROCAR ion
     source_paths: List[Path]
     quality_threshold: float
+    #: What was actually read: declared, required, parsed, skipped, bytes.
+    parse_stats: Dict[str, Any] = field(default_factory=dict)
     cycle_length: Optional[int] = None
     #: Frame period actually used to align time points to frames, whether it
     #: came from the manifest or from ``NSW - 1``.  ``None`` for a linear
@@ -713,7 +723,17 @@ def load_projection_series(
     nions_expected: Optional[int] = None
 
     first_path: Optional[Path] = None
+    # Counters, so the report can state what was read rather than what was
+    # declared. A 1999-frame manifest whose histories visit twenty frames must
+    # be able to prove it parsed twenty files.
+    parsed_paths: List[Path] = []
+    bytes_read = 0
     for _frame, path in entries:
+        parsed_paths.append(path)
+        try:
+            bytes_read += path.stat().st_size
+        except OSError:
+            pass
         try:
             projection = read_procar_ion_totals(path, bands=required)
         except ProcarFormatError as exc:
@@ -796,6 +816,22 @@ def load_projection_series(
         total_projection=np.stack(total_rows, axis=0),
         source_paths=[path for _, path in entries],
         quality_threshold=atom_groups.min_projection_weight,
+        parse_stats={
+            "manifest_declared_frames": len(manifest.frames),
+            "frames_required": len(entries),
+            "frames_parsed": len(parsed_paths),
+            "frames_skipped": max(0, len(manifest.frames) - len(entries)),
+            "unique_files_parsed": len({p.resolve() for p in parsed_paths}),
+            "bytes_read": int(bytes_read),
+            "bands_requested": len(required),
+            "note": (
+                "each required frame is parsed exactly once, however many histories "
+                "visit it: the manifest is de-duplicated to the set of frames the "
+                "plan needs before any file is opened. Only the requested bands are "
+                "retained; other bands are walked so the file structure is still "
+                "checked, but their projections are never stored"
+            ),
+        },
         cycle_length=manifest.cycle_length,
         cycle_period=cycle_period,
         cycle_wrap_histories=cycle_wrap_histories,
@@ -945,6 +981,202 @@ class AnalysisPlan:
         }
 
 
+# --------------------------------------------------------------------------
+# Provenance: where the basis, the sampling origin and the period come from
+# --------------------------------------------------------------------------
+#
+# Production SHPROP files are plain numeric tables. BMIN/BMAX are properties of
+# the NAMD input, not guaranteed SHPROP fields, and NAMDTINI often survives only
+# in the historical ``SHPROP.<start-frame>`` filename. Each quantity therefore
+# has an ordered list of independent sources. Higher sources win; sources that
+# are both present and disagree are refused rather than reconciled; and no
+# source at all is refused rather than guessed.
+
+#: ``SHPROP.<positive integer>`` -- the legacy way a history records its start.
+_SHPROP_SUFFIX = re.compile(r"^SHPROP\.(\d+)$", re.IGNORECASE)
+
+
+def _optional_int(value: Any) -> Optional[int]:
+    """An integer, or ``None`` when the metadata key is absent or unusable."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return None
+
+
+def resolve_band_numbers(
+    state_map: StateMap, records: Sequence[ShpropStructure]
+) -> Tuple[List[int], str]:
+    """Exact VASP band numbers for the basis, and where they came from.
+
+    Precedence: ``state_map.band_numbers`` > registered campaign provenance >
+    optional SHPROP ``BMIN``/``BMAX`` metadata that every history agrees on.
+    """
+    nstates = len(state_map.population_columns)
+
+    def _checked(values: Sequence[Any], source: str, described: str) -> List[int]:
+        try:
+            return validate_band_numbers(values, nstates, source)
+        except ConfigError as exc:
+            raise CharacterError(
+                f"{described} but the state map declares {nstates} population "
+                f"columns ({list(state_map.population_columns)}). Character analysis "
+                "needs exactly one declared population column per basis state, in "
+                f"the same order. This is fixable in the state-map JSON. ({exc})"
+            ) from exc
+
+    if state_map.band_numbers is not None:
+        return (
+            _checked(
+                state_map.band_numbers,
+                "state_map band_numbers",
+                f"state_map band_numbers declares {len(list(state_map.band_numbers))} bands",
+            ),
+            "state_map.band_numbers",
+        )
+
+    registered = bands_for_campaign_name(state_map.name)
+    if registered is not None:
+        bands, source = registered
+        return (
+            _checked(
+                bands,
+                source,
+                f"campaign provenance {source} declares {len(bands)} bands "
+                f"({bands[0]}:{bands[-1]})",
+            ),
+            source,
+        )
+
+    windows: Dict[Tuple[int, int], List[str]] = {}
+    without: List[str] = []
+    for record in records:
+        low = _optional_int(record.metadata.get("BMIN"))
+        high = _optional_int(record.metadata.get("BMAX"))
+        if low is None or high is None:
+            without.append(record.path.name)
+            continue
+        if high < low:
+            raise CharacterError(
+                f"{record.path}: optional SHPROP metadata has BMAX={high} < "
+                f"BMIN={low}; the basis window must increase"
+            )
+        windows.setdefault((low, high), []).append(record.path.name)
+
+    if len(windows) > 1:
+        parts = []
+        for (low, high), names in sorted(windows.items(), key=lambda item: -len(item[1])):
+            sample = ", ".join(names[:5]) + ("..." if len(names) > 5 else "")
+            parts.append(f"{low}:{high} in {len(names)} file(s) ({sample})")
+        raise CharacterError(
+            f"SHPROP files carry {len(windows)} different optional BMIN/BMAX windows: "
+            + "; ".join(parts)
+            + ". They cannot all describe one basis. Declare band_numbers explicitly "
+            "in the state map, or split the campaign by window."
+        )
+    if windows and without:
+        sample = ", ".join(without[:5]) + ("..." if len(without) > 5 else "")
+        raise CharacterError(
+            f"{len(without)} SHPROP file(s) carry no BMIN/BMAX metadata while others "
+            f"do ({sample}). A basis taken from only some of the histories would be "
+            "an assumption about the rest; declare band_numbers explicitly in the "
+            "state map instead."
+        )
+    if windows:
+        (low, high) = next(iter(windows))
+        bands = list(range(low, high + 1))
+        return (
+            _checked(
+                bands,
+                "SHPROP BMIN/BMAX metadata",
+                f"SHPROP basis {low}:{high} has {len(bands)} states",
+            ),
+            "SHPROP_BMIN_BMAX_metadata",
+        )
+
+    raise CharacterError(
+        "the exact VASP band numbers are not recoverable from these SHPROP files. "
+        "BMIN/BMAX are properties of the NAMD input and need not appear in a SHPROP "
+        "table, so nothing here can infer them. Supply them one of three ways: "
+        "'band_numbers' in state_map.json (one per population column, in order), a "
+        "registered campaign preset whose provenance names them, or SHPROP files "
+        "whose optional metadata carries agreeing BMIN/BMAX."
+    )
+
+
+def resolve_namdtini(record: ShpropStructure) -> Tuple[int, str]:
+    """One history's sampling origin, and where it came from.
+
+    Precedence: optional SHPROP ``NAMDTINI`` metadata > a validated
+    ``SHPROP.<integer>`` filename suffix.  When both exist they must agree:
+    a disagreement means one of them describes a different run, and choosing
+    either would silently shift every frame assignment.
+    """
+    header = _optional_int(record.metadata.get("NAMDTINI"))
+    match = _SHPROP_SUFFIX.match(record.path.name)
+    suffix = int(match.group(1)) if match else None
+
+    if header is not None:
+        if header < 1:
+            raise CharacterError(
+                f"{record.path}: NAMDTINI is {header}, but it is a one-based MD frame "
+                "index and must be at least 1. A non-positive value shifts every "
+                "frame assignment without changing anything that looks wrong."
+            )
+        if suffix is not None and suffix != header:
+            raise CharacterError(
+                f"{record.path}: SHPROP metadata says NAMDTINI={header} but the "
+                f"filename suffix says {suffix}. Two independent provenance sources "
+                "disagree about where this history starts, so frame alignment is "
+                "refused rather than resolved in favour of either."
+            )
+        return header, "SHPROP_NAMDTINI_metadata"
+
+    if suffix is not None:
+        if suffix < 1:
+            raise CharacterError(
+                f"{record.path}: the filename suffix is {suffix}, but NAMDTINI is a "
+                "one-based MD frame index and must be at least 1."
+            )
+        return suffix, "SHPROP_filename_suffix"
+
+    raise CharacterError(
+        f"{record.path}: NAMDTINI is absent from the SHPROP metadata and the filename "
+        "is not of the form SHPROP.<positive integer>. The sampling origin decides "
+        "which PROCAR frame every time step uses and is never guessed; supply the "
+        "original history under its start-frame filename, or add the metadata."
+    )
+
+
+def resolve_cycle_period(
+    record: ShpropStructure, manifest: "ProjectionManifest", frame_mode: str
+) -> Tuple[Optional[int], str, Optional[int]]:
+    """The cyclic period, its source, and the header-derived period for comparison.
+
+    Precedence: explicit projection-manifest ``cycle_length`` > optional SHPROP
+    ``NSW - 1``.  The manifest wins because an archived header can describe a
+    different run length than the frames that were actually saved; the
+    disagreement is recorded, never averaged away.
+    """
+    raw_nsw = _optional_int(record.metadata.get("NSW"))
+    header_period = raw_nsw - 1 if raw_nsw is not None else None
+    if frame_mode != "dish-cyclic":
+        return None, "not_applicable", header_period
+    if manifest.cycle_length is not None:
+        return int(manifest.cycle_length), "projection_manifest", header_period
+    if header_period is not None and header_period > 0:
+        return header_period, "SHPROP_NSW_minus_1_metadata", header_period
+    raise CharacterError(
+        f"{record.path}: cyclic alignment needs a frame period. The projection "
+        "manifest declares no cycle_length and this SHPROP carries no usable NSW "
+        "metadata, and a period is never inferred from how many frames happen to "
+        "exist. Set cycle_length in projection_manifest.json."
+    )
+
+
 def plan_analysis(
     shprop_paths: Sequence,
     state_map: StateMap,
@@ -1000,41 +1232,10 @@ def plan_analysis(
             "population time must strictly increase with at least two samples"
         )
 
-    band_windows: List[Tuple[int, int]] = []
-    for record in records:
-        bmin = _int_metadata(record.metadata, "BMIN", record.path)
-        bmax = _int_metadata(record.metadata, "BMAX", record.path)
-        if bmax < bmin:
-            raise CharacterError(
-                f"{record.path}: SHPROP header has BMAX={bmax} < BMIN={bmin}; the "
-                "basis window must increase"
-            )
-        band_windows.append((bmin, bmax))
-    if len(set(band_windows)) != 1:
-        grouped: Dict[Tuple[int, int], List[str]] = {}
-        for record, window in zip(records, band_windows):
-            grouped.setdefault(window, []).append(record.path.name)
-        # Name the minority groups: with a thousand histories, listing them all
-        # buries the one file that actually differs.
-        parts = []
-        for window, names in sorted(grouped.items(), key=lambda item: -len(item[1])):
-            sample = ", ".join(names[:5]) + ("..." if len(names) > 5 else "")
-            parts.append(f"{window[0]}:{window[1]} in {len(names)} file(s) ({sample})")
-        raise CharacterError(
-            f"SHPROP files declare {len(grouped)} different BMIN/BMAX windows: "
-            + "; ".join(parts)
-            + ". One character analysis covers one basis; split the campaign by window."
-        )
-    bmin, bmax = band_windows[0]
-    bands = list(range(bmin, bmax + 1))
-    if len(bands) != len(state_map.population_columns):
-        raise CharacterError(
-            f"SHPROP basis {bmin}:{bmax} has {len(bands)} states but the state map "
-            f"declares {len(state_map.population_columns)} population columns "
-            f"({state_map.population_columns}). Character analysis needs exactly one "
-            "declared population column per basis state, ordered BMIN through BMAX. "
-            "This is fixable in the state-map JSON."
-        )
+    # The basis is provenance, not something a SHPROP table reveals. One
+    # resolver decides it and says which source won; see resolve_band_numbers.
+    bands, band_source = resolve_band_numbers(state_map, records)
+    bmin, bmax = bands[0], bands[-1]
     # Only now: a column index past the end of the table. Checked after the
     # basis-size comparison because a state map with the wrong number of states
     # usually also overruns, and "you declared 3 states for a 2-state basis" is
@@ -1052,24 +1253,46 @@ def plan_analysis(
     frames_by_file: List[np.ndarray] = []
     alignments: List[Dict[str, Any]] = []
     n_time: List[int] = []
+    periods_used: List[Optional[int]] = []
     for record in records:
         ntime = int(record.n_rows)
         n_time.append(ntime)
+        # Both the origin and the period come from resolvers that say which
+        # source they used, so the alignment audit records provenance rather
+        # than re-deriving it afterwards from whatever the filename looks like.
+        start, start_source = resolve_namdtini(record)
+        period, period_source, header_period = resolve_cycle_period(
+            record, manifest, frame_mode
+        )
+        periods_used.append(period)
         frames = aligned_frames(
-            record.metadata,
+            {"NAMDTINI": start, "NSW": record.metadata.get("NSW")},
             ntime,
             frame_mode,
             record.path,
-            cycle_length=manifest.cycle_length,
+            cycle_length=period,
         )
         frames_by_file.append(frames)
         alignments.append(
-            _alignment_record(record, frames, frame_mode, manifest, bmin, bmax, ntime)
+            _alignment_record(
+                record,
+                frames,
+                frame_mode,
+                manifest,
+                bands,
+                band_source,
+                ntime,
+                start=start,
+                start_source=start_source,
+                period=period,
+                period_source=period_source,
+                header_period=header_period,
+            )
         )
 
     required = sorted({int(frame) for frames in frames_by_file for frame in frames})
     if frame_mode == "dish-cyclic" and manifest.cycle_length is None:
-        periods = {record["header_cycle_length"] for record in alignments}
+        periods = set(periods_used)
         if len(periods) > 1:
             raise CharacterError(
                 "the SHPROP histories imply different cyclic periods from their "
@@ -1100,49 +1323,52 @@ def _alignment_record(
     frames: np.ndarray,
     frame_mode: str,
     manifest: ProjectionManifest,
-    bmin: int,
-    bmax: int,
+    bands: Sequence[int],
+    band_source: str,
     ntime: int,
+    start: int,
+    start_source: str,
+    period: Optional[int],
+    period_source: str,
+    header_period: Optional[int],
 ) -> Dict[str, Any]:
-    """Human-readable audit of how one SHPROP maps onto electronic frames."""
-    header_nsw = record.metadata.get("NSW")
-    header_period = None
-    if isinstance(header_nsw, (int, float)):
-        header_period = int(header_nsw) - 1
+    """Human-readable audit of how one SHPROP maps onto electronic frames.
+
+    Every summary here is computed on the integer array rather than on a
+    Python list built from it.  A six-million-row history costs about 46 bytes
+    per row as a list of boxed ints -- more than the array it summarizes -- and
+    preflight claims its cost does not grow with file size.
+    """
     cyclic = frame_mode == "dish-cyclic"
-    period_used = manifest.cycle_length if manifest.cycle_length is not None else header_period
-    values = [int(frame) for frame in frames]
+    values = np.asarray(frames)
     # A wrap is a step that does not simply increase by one.
-    wraps = sum(1 for a, b in zip(values, values[1:]) if b != a + 1)
+    wraps = int(np.count_nonzero(np.diff(values) != 1)) if values.size > 1 else 0
     return {
         "path": str(record.path.resolve()),
         "file": record.path.name,
-        "NAMDTINI": _int_metadata(record.metadata, "NAMDTINI", record.path),
-        "NSW": header_nsw,
+        "NAMDTINI": int(start),
+        "NAMDTINI_source": start_source,
+        "NSW": record.metadata.get("NSW"),
         "n_time_points": ntime,
         "header_cycle_length": header_period,
-        "cycle_length_used": period_used if cyclic else None,
-        "cycle_length_source": (
-            "projection_manifest"
-            if cyclic and manifest.cycle_length is not None
-            else "SHPROP_NSW_minus_1"
-            if cyclic
-            else "not_applicable"
-        ),
+        "cycle_length_used": int(period) if cyclic and period is not None else None,
+        "cycle_length_source": period_source,
         "header_cycle_mismatch": bool(
             cyclic
-            and manifest.cycle_length is not None
+            and period is not None
             and header_period is not None
-            and manifest.cycle_length != header_period
+            and period != header_period
         ),
-        "BMIN": bmin,
-        "BMAX": bmax,
+        "BMIN": int(bands[0]),
+        "BMAX": int(bands[-1]),
+        "band_numbers": [int(b) for b in bands],
+        "band_numbers_source": band_source,
         "frame_mode": frame_mode,
-        "first_projection_frame": values[0],
-        "last_projection_frame": values[-1],
-        "first_five_frames": values[:5],
-        "last_five_frames": values[-5:],
-        "unique_projection_frames_used": int(len(set(values))),
+        "first_projection_frame": int(values[0]),
+        "last_projection_frame": int(values[-1]),
+        "first_five_frames": [int(v) for v in values[:5]],
+        "last_five_frames": [int(v) for v in values[-5:]],
+        "unique_projection_frames_used": int(np.unique(values).size),
         "wrap_count": wraps,
     }
 
@@ -1153,6 +1379,9 @@ def preflight_report(
     projection_manifest,
     atom_groups: AtomGroupMap,
     frame_mode: str,
+    memory_budget: Optional[int] = None,
+    retain_per_file: str = "auto",
+    memmap_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Answer the cheap questions before the expensive analysis runs.
 
@@ -1195,6 +1424,7 @@ def preflight_report(
             "cycle_length_used": record["cycle_length_used"],
             "cycle_length_source": record["cycle_length_source"],
             "header_cycle_mismatch": record["header_cycle_mismatch"],
+            "NAMDTINI_source": record["NAMDTINI_source"],
             "first_five_frames": record["first_five_frames"],
             "last_five_frames": record["last_five_frames"],
             "unique_projection_frames_used": record["unique_projection_frames_used"],
@@ -1202,11 +1432,44 @@ def preflight_report(
         }
         for record in plan.alignments
     ]
+    first_alignment = plan.alignments[0] if plan.alignments else {}
     payload["band_window"] = {
         "BMIN": plan.bmin,
         "BMAX": plan.bmax,
         "basis_size": len(plan.bands),
+        "band_numbers": list(plan.bands),
+        "band_numbers_source": first_alignment.get("band_numbers_source"),
         "state_map_population_columns": list(state_map.population_columns),
+        "note": (
+            "exact VASP band numbers and the provenance they came from. They are "
+            "not inferred from a SHPROP table: a production SHPROP need not carry "
+            "BMIN/BMAX at all"
+        ),
+    }
+    payload["provenance"] = {
+        "band_numbers": {
+            "value": list(plan.bands),
+            "source": first_alignment.get("band_numbers_source"),
+        },
+        "NAMDTINI": [
+            {"file": r["file"], "value": r["NAMDTINI"], "source": r["NAMDTINI_source"]}
+            for r in plan.alignments
+        ],
+        "cycle_period": [
+            {
+                "file": r["file"],
+                "value": r["cycle_length_used"],
+                "source": r["cycle_length_source"],
+                "header_derived": r["header_cycle_length"],
+                "disagrees_with_header": r["header_cycle_mismatch"],
+            }
+            for r in plan.alignments
+        ],
+        "precedence": {
+            "band_numbers": "state_map.band_numbers > registered campaign > agreeing SHPROP BMIN/BMAX",
+            "NAMDTINI": "SHPROP metadata > validated SHPROP.<integer> filename suffix",
+            "cycle_period": "projection_manifest cycle_length > SHPROP NSW-1 metadata",
+        },
     }
     payload["distinct_namdtini"] = sorted({r["NAMDTINI"] for r in plan.alignments})
     payload["row_counts"] = sorted(set(plan.n_time))
@@ -1234,6 +1497,29 @@ def preflight_report(
             "row of every chunk"
         ),
     }
+
+    # What the full run would allocate, decided before any PROCAR is opened so
+    # that a campaign too large for the node fails here in seconds.
+    try:
+        memory = estimate_memory(
+            n_files=len(plan.shprop_paths),
+            n_time=plan.n_time[0],
+            n_states=len(plan.bands),
+            n_groups=len(atom_groups.names),
+            n_fixed_groups=len(state_map.groups),
+            n_frames=len(plan.required_frames),
+            n_bands=len(plan.bands),
+            n_columns=plan.shprop_structures[0].n_columns,
+            chunk_rows=chunk_rows,
+            budget=memory_budget,
+            retain_per_file=retain_per_file,
+            memmap_dir=memmap_dir,
+        )
+        payload["memory"] = memory.as_dict()
+        problems.extend(memory.problems)
+    except BudgetError as exc:
+        problems.append(str(exc))
+        payload["memory"] = {"error": str(exc)}
 
     explicit = plan.manifest.cycle_length
     header_periods = sorted(
