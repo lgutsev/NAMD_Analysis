@@ -2,8 +2,9 @@
 
 Small enough to run in a unit test, shaped like the archive the preparation
 command is meant to read: numbered zero-padded frame directories each holding
-a PROCAR, and SHPROP histories whose headers carry the basis window and the
-sampling origin.
+a PROCAR, and SHPROP histories whose optional headers may carry provenance.
+The campaign-A fixture uses the real VASP band labels 976..981 so tests exercise
+the same state-to-PROCAR mapping as the production archive.
 """
 
 from __future__ import annotations
@@ -98,6 +99,7 @@ A_PARTITION = {
     "PCBM": ["47-118", "269-282", "418-419"],
 }
 A_IONS = 446
+A_BANDS = tuple(range(976, 982))
 
 
 def build_campaign(
@@ -105,7 +107,7 @@ def build_campaign(
     frames: Iterable[int] = range(1, 21),
     padding: int = 4,
     n_ions: int = A_IONS,
-    bands: Sequence[int] = tuple(range(10, 16)),
+    bands: Sequence[int] = A_BANDS,
     namdtini: Sequence[int] = (1, 5),
     rows: int = 12,
     nsw: int = 21,
@@ -118,6 +120,7 @@ def build_campaign(
     projection = root / "FAPI_001_BCF_PCBM_A"
     shprop_dir = root / "NuTest"
     frame_paths: Dict[int, Path] = {}
+    frames = tuple(frames)
     for frame in frames:
         name = str(frame).zfill(padding)
         procar = projection / name / procar_name
