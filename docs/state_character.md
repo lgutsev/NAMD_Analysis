@@ -175,6 +175,39 @@ PROCAR's ion/band/k-point/spin structure, and whether the atom groups cover it.
 Problems are collected rather than raised, so one run lists everything that is
 wrong.  The command exits non-zero if anything would block the analysis.
 
+## How SHPROP files are read
+
+Preflight reads headers, row counts and each history's first and last row. No
+table is materialized, so its memory does not grow with file size -- on a
+47 MiB history the scan peaks at 0.2 MiB against 159 MiB for a whole-file read.
+That matters: a campaign of five ~889 MB histories exhausted memory during
+preflight before this.
+
+The analysis streams each history in row chunks and folds them into a running
+ensemble mean and variance (Welford), so no `(nfiles, nrows, ncolumns)` stack
+is ever built. The projection-weighted and fixed-column populations come from
+the same pass, so a history is read once.
+
+Chunking changes residency only. The mean, the between-file standard error and
+every validation -- time-grid identity, strict increase across chunk joins,
+population range, conservation -- are identical at any chunk size, and the
+cyclic wrap maps the same whether it falls inside a chunk or on a boundary.
+Tests pin all of that.
+
+| flag | effect |
+| --- | --- |
+| `--shprop-chunk-rows N` | rows held at once |
+| `--shprop-io-mode auto` | chunk size chosen from the largest history (default) |
+| `--shprop-io-mode stream` | always chunk |
+| `--shprop-io-mode memory` | one chunk per history, the whole table at once |
+| `--accumulator-memmap-dir DIR` | spill the running mean/variance to memory maps when large |
+
+There is one code path: `memory` is a chunk the size of the table, not a second
+implementation, so the two cannot drift apart.
+
+Per-history projected populations are retained only when they are small enough
+to be worth keeping; the mean and standard error never depend on them.
+
 ## Which PROCAR frames are parsed
 
 The required electronic frames are computed from the SHPROP metadata before any

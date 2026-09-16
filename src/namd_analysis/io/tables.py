@@ -15,12 +15,21 @@ class TableFormatError(ValueError):
     """Raised when a numeric table cannot be read without guessing."""
 
 
-def _clean(line: str) -> str:
+def clean_numeric_line(line: str) -> str:
+    """Strip comments and normalize Fortran ``D`` exponents on one line.
+
+    Shared with the streaming SHPROP reader so that a chunked read and a
+    whole-file read can never disagree about what a line contains.
+    """
     for marker in ("#", "!"):
         idx = line.find(marker)
         if idx >= 0:
             line = line[:idx]
     return _D_EXPONENT.sub("E", line).strip()
+
+
+#: Historical private spelling, kept so existing call sites read unchanged.
+_clean = clean_numeric_line
 
 
 def read_numeric_table(path, expect_columns: Optional[int] = None) -> np.ndarray:

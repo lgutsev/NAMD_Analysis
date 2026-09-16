@@ -20,20 +20,32 @@ no inferred frame alignment, and no implicit k-point/spin averaging.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .io.hefei import read_shprop_with_metadata
+from .io.hefei import (
+    DEFAULT_CHUNK_ROWS,
+    ShpropStructure,
+    iter_shprop_chunks,
+    shprop_structure,
+)
 from .io.procar import (
     ProcarFormatError,
     procar_band_numbers,
     procar_structure,
     read_procar_ion_totals,
 )
-from .populations import PopulationSet, StateMap, load_population_set
+from .populations import CONSERVATION_ATOL, StateMap
+from .streaming import (
+    ConservationTally,
+    OnlineEnsemble,
+    StreamingError,
+    TimeGridCheck,
+    chunk_plan,
+)
 
 
 class CharacterError(ValueError):
@@ -62,6 +74,12 @@ POPULATION_DEFINITION = (
 
 #: Short label for axes, column headers and one-line summaries.
 POPULATION_LABEL = "projection-weighted diagonal subsystem population"
+
+#: Above this, the per-history projected populations are not retained in the
+#: result.  The ensemble mean and standard error never depend on them -- they
+#: come from a running accumulator -- so dropping them costs a diagnostic
+#: array, not a number anyone reports.
+PER_FILE_MEMORY_BUDGET_BYTES = 256 * 1024 * 1024
 
 
 @dataclass
@@ -463,7 +481,11 @@ class CharacterPopulationResult:
 
     time_ns: np.ndarray
     group_names: List[str]
-    per_file: np.ndarray  # (nfiles, ntime, ngroups)
+    #: Per-history projected populations, ``(nfiles, ntime, ngroups)``.  It is
+    #: ``None`` when the campaign is large enough that retaining it would cost
+    #: more than :data:`PER_FILE_MEMORY_BUDGET_BYTES`; the mean and SEM are
+    #: accumulated online and do not depend on it.
+    per_file: Optional[np.ndarray]  # (nfiles, ntime, ngroups)
     mean: np.ndarray
     sem: Optional[np.ndarray]
     fixed_mean: Dict[str, np.ndarray]
@@ -471,6 +493,24 @@ class CharacterPopulationResult:
     file_alignment: List[Dict[str, Any]]
     conservation: Dict[str, float]
     population_definition: str = POPULATION_DEFINITION
+    #: How the SHPROP tables were read: chunk size, chunk count per history,
+    #: and whether per-history results were retained.
+    io: Dict[str, Any] = field(default_factory=dict)
+    #: Accumulators still owning memory-mapped spill files, if any.  ``mean``
+    #: and ``sem`` are views onto them, so a caller reads what it needs and
+    #: then calls :meth:`release`.
+    accumulators: List[Any] = field(default_factory=list, repr=False)
+
+    def release(self) -> None:
+        """Drop memory-mapped accumulators and delete their spill files.
+
+        Call it once every output has been written. ``mean`` and ``sem`` must
+        not be read afterwards when spill files were in use; nothing is
+        deleted when the accumulators were ordinary arrays.
+        """
+        for accumulator in self.accumulators:
+            accumulator.release()
+        self.accumulators = []
 
 
 def _load_json(path: Path, what: str) -> Any:
@@ -833,6 +873,10 @@ class AnalysisPlan:
     alignments: List[Dict[str, Any]]
     n_time: List[int]
     manifest_frames: List[int]
+    #: Header/shape records for each history, from the planning scan.  Kept so
+    #: that the analysis pass does not re-scan a multi-hundred-megabyte file
+    #: just to learn its column count.
+    shprop_structures: List[ShpropStructure] = field(default_factory=list)
 
     @property
     def manifest_frame_count(self) -> int:
@@ -911,7 +955,10 @@ def plan_analysis(
     paths = [Path(path) for path in shprop_paths]
     if not paths:
         raise CharacterError("no SHPROP files were supplied")
-    records = [read_shprop_with_metadata(path) for path in paths]
+    # Headers and shape only. An archived history is routinely hundreds of
+    # megabytes, and planning needs the band window, NAMDTINI and the row
+    # count -- not a single population value.
+    records = [shprop_structure(path) for path in paths]
 
     band_windows: List[Tuple[int, int]] = []
     for record in records:
@@ -956,7 +1003,7 @@ def plan_analysis(
     alignments: List[Dict[str, Any]] = []
     n_time: List[int] = []
     for record in records:
-        ntime = int(record.table.shape[0])
+        ntime = int(record.n_rows)
         n_time.append(ntime)
         frames = aligned_frames(
             record.metadata,
@@ -994,6 +1041,7 @@ def plan_analysis(
         alignments=alignments,
         n_time=n_time,
         manifest_frames=manifest_frames,
+        shprop_structures=records,
     )
 
 
@@ -1113,6 +1161,25 @@ def preflight_report(
     payload["distinct_namdtini"] = sorted({r["NAMDTINI"] for r in plan.alignments})
     payload["row_counts"] = sorted(set(plan.n_time))
     payload["frames"] = plan.consumption()
+    chunk_rows, io_plan = resolve_chunk_rows(plan.shprop_structures)
+    payload["shprop_io"] = {
+        **io_plan,
+        "total_bytes": sum(r.bytes_on_disk for r in plan.shprop_structures),
+        "per_file": [
+            {
+                "file": r.path.name,
+                "rows": r.n_rows,
+                "columns": r.n_columns,
+                "bytes": r.bytes_on_disk,
+            }
+            for r in plan.shprop_structures
+        ],
+        "preflight_note": (
+            "preflight read only headers, row counts and the first and last row of "
+            "each history; no SHPROP table was materialized, so its memory use does "
+            "not grow with file size"
+        ),
+    }
 
     explicit = plan.manifest.cycle_length
     header_periods = sorted(
@@ -1238,6 +1305,70 @@ def preflight_report(
     return payload
 
 
+#: A history smaller than this is read in one chunk under ``auto``: splitting
+#: it buys nothing and the whole table is a few megabytes.
+AUTO_SINGLE_CHUNK_BYTES = 64 * 1024 * 1024
+
+SHPROP_IO_MODES = ("auto", "stream", "memory")
+
+
+def resolve_chunk_rows(
+    structures: Sequence[ShpropStructure],
+    io_mode: str = "auto",
+    chunk_rows: Optional[int] = None,
+) -> Tuple[int, Dict[str, Any]]:
+    """Decide how many rows to read at a time, and say why.
+
+    There is only one code path.  ``memory`` is not a second implementation of
+    the analysis; it is a chunk large enough to hold the whole table at once,
+    which is what the old whole-file reader did.  Keeping it that way means the
+    streaming and in-memory answers are identical by construction rather than
+    by two implementations agreeing.
+    """
+    if io_mode not in SHPROP_IO_MODES:
+        raise CharacterError(
+            f"unknown --shprop-io-mode {io_mode!r}; choose one of {list(SHPROP_IO_MODES)}"
+        )
+    if chunk_rows is not None and chunk_rows < 1:
+        raise CharacterError("--shprop-chunk-rows must be at least 1")
+    rows = max((record.n_rows for record in structures), default=1)
+    largest = max((record.bytes_on_disk for record in structures), default=0)
+    if io_mode == "memory":
+        chosen = max(rows, 1)
+        reason = "whole table in one chunk, as requested"
+    elif chunk_rows is not None:
+        chosen = chunk_rows
+        reason = "explicit --shprop-chunk-rows"
+    elif io_mode == "stream":
+        chosen = DEFAULT_CHUNK_ROWS
+        reason = "default streaming chunk"
+    elif largest <= AUTO_SINGLE_CHUNK_BYTES:
+        chosen = max(rows, 1)
+        reason = (
+            f"largest history is {largest} bytes, at or under the "
+            f"{AUTO_SINGLE_CHUNK_BYTES}-byte single-chunk threshold"
+        )
+    else:
+        chosen = DEFAULT_CHUNK_ROWS
+        reason = (
+            f"largest history is {largest} bytes, above the "
+            f"{AUTO_SINGLE_CHUNK_BYTES}-byte single-chunk threshold"
+        )
+    return chosen, {
+        "requested_mode": io_mode,
+        "requested_chunk_rows": chunk_rows,
+        "chunk_rows": int(chosen),
+        "rows_per_history": int(rows),
+        "largest_history_bytes": int(largest),
+        "reason": reason,
+        "note": (
+            "chunking changes only how much of a history is resident at once; "
+            "the ensemble mean, standard error and every validation are "
+            "identical at any chunk size"
+        ),
+    }
+
+
 def character_populations(
     shprop_paths: Sequence,
     state_map: StateMap,
@@ -1245,6 +1376,9 @@ def character_populations(
     atom_groups: AtomGroupMap,
     frame_mode: str,
     plan: Optional[AnalysisPlan] = None,
+    chunk_rows: int = DEFAULT_CHUNK_ROWS,
+    memmap_dir: Optional[Path] = None,
+    keep_per_file: Optional[bool] = None,
 ) -> CharacterPopulationResult:
     """Projection-weight each original SHPROP history, then average.
 
@@ -1278,9 +1412,9 @@ def character_populations(
                 f"the supplied AnalysisPlan was built for frame mode "
                 f"{plan.frame_mode!r} but {frame_mode!r} was requested"
             )
-    population: PopulationSet = load_population_set(paths, state_map)
-    records = [read_shprop_with_metadata(path) for path in paths]
     bands = plan.bands
+    if chunk_rows < 1:
+        raise CharacterError("shprop_chunk_rows must be at least 1")
 
     projection = load_projection_series(
         projection_manifest,
@@ -1294,27 +1428,131 @@ def character_populations(
     frame_lookup = projection.frame_index()
     band_lookup = projection.band_index()
     projection_band_indices = np.asarray([band_lookup[band] for band in bands], dtype=int)
+    selected = projection.weights[:, projection_band_indices, :]
 
-    projected_files: List[np.ndarray] = []
+    group_names = projection.group_names
+    fixed_names = list(state_map.groups)
+    if len({path.resolve() for path in paths}) != len(paths):
+        raise CharacterError("duplicate population files")
+    if len(set(plan.n_time)) != 1:
+        counts: Dict[int, List[str]] = {}
+        for path, rows in zip(paths, plan.n_time):
+            counts.setdefault(rows, []).append(path.name)
+        parts = [
+            f"{rows} rows in {len(names)} file(s) ({', '.join(names[:5])}"
+            + ("..." if len(names) > 5 else "")
+            + ")"
+            for rows, names in sorted(counts.items(), key=lambda item: -len(item[1]))
+        ]
+        raise CharacterError(
+            "SHPROP histories have different row counts: "
+            + "; ".join(parts)
+            + ". No interpolation or truncation is performed."
+        )
+    ntime = plan.n_time[0]
+    if ntime < 2:
+        raise CharacterError(
+            "population time must strictly increase with at least two samples"
+        )
+
+    needed_column = max([state_map.time_column] + list(state_map.population_columns))
+    for record in plan.shprop_structures:
+        if needed_column >= record.n_columns:
+            raise CharacterError(
+                f"{record.path}: configuration references column {needed_column} "
+                f"but the file has {record.n_columns} columns"
+            )
+
+    projected_acc = OnlineEnsemble(
+        ntime, len(group_names), memmap_dir=memmap_dir, name="projected"
+    )
+    fixed_acc = OnlineEnsemble(ntime, len(fixed_names), memmap_dir=memmap_dir, name="fixed")
+    grid = TimeGridCheck(reference=np.empty(ntime, dtype=float))
+    tally = ConservationTally(atol=CONSERVATION_ATOL)
+    columns = np.asarray(state_map.population_columns, dtype=int)
+    fixed_columns = [np.asarray(state_map.groups[name], dtype=int) for name in fixed_names]
+
+    keep = keep_per_file
+    if keep is None:
+        keep = len(paths) * ntime * len(group_names) * 8 <= PER_FILE_MEMORY_BUDGET_BYTES
+    per_file = (
+        np.empty((len(paths), ntime, len(group_names)), dtype=float) if keep else None
+    )
+
     alignments: List[Dict[str, Any]] = list(plan.alignments)
-    for record, frames in zip(records, plan.frames_by_file):
-        frame_indices = np.asarray([frame_lookup[int(frame)] for frame in frames], dtype=int)
-        weights = projection.weights[frame_indices][:, projection_band_indices, :]
-        pops = record.table[:, state_map.population_columns]
-        # Diagonal contraction: SHPROP supplies only rho_ii and PROCAR only
-        # <i|P_g|i>, so no coherence term exists in the inputs to contract.
-        projected = np.einsum("ts,tsg->tg", pops, weights)
-        projected_files.append(projected)
+    for file_index, (path, frames) in enumerate(zip(paths, plan.frames_by_file)):
+        projected_acc.begin_file()
+        fixed_acc.begin_file()
+        grid.begin_file()
+        rows_seen = 0
+        for offset, chunk in iter_shprop_chunks(path, chunk_rows):
+            rows = chunk.shape[0]
+            rows_seen += rows
+            if rows_seen > ntime:
+                raise CharacterError(
+                    f"{path}: more rows than the {ntime} the planning pass counted; "
+                    "the file changed under the analysis"
+                )
+            times = chunk[:, state_map.time_column]
+            if file_index == 0:
+                grid.reference[offset : offset + rows] = times
+            try:
+                grid.observe(path, offset, times)
+            except StreamingError as exc:
+                raise CharacterError(str(exc)) from exc
 
-    per_file = np.stack(projected_files, axis=0)
-    mean = per_file.mean(axis=0)
-    sem = None
-    if len(paths) > 1:
-        sem = per_file.std(axis=0, ddof=1) / np.sqrt(len(paths))
+            pops = chunk[:, columns]
+            tally.observe(pops)
+            if not tally.in_unit_range():
+                raise CharacterError(
+                    "population columns outside [0,1]; verify state map "
+                    f"({path}, rows {offset}..{offset + rows - 1})"
+                )
+            if state_map.complete_population and not tally.conserved():
+                raise CharacterError(
+                    "complete populations must sum to one in every file "
+                    f"({path}, rows {offset}..{offset + rows - 1}: totals reach "
+                    f"[{tally.total_min:.8g}, {tally.total_max:.8g}])"
+                )
 
-    fixed_mean: Dict[str, np.ndarray] = {}
-    for name, columns in state_map.groups.items():
-        fixed_mean[name] = population.mean[:, columns].sum(axis=1)
+            # Frames for exactly these rows. The alignment is resolved once for
+            # the whole history, so a chunk is a slice of it and the cyclic
+            # mapping cannot drift at a chunk boundary.
+            frame_slice = frames[offset : offset + rows]
+            frame_indices = np.asarray(
+                [frame_lookup[int(frame)] for frame in frame_slice], dtype=int
+            )
+            weights = selected[frame_indices]
+            # Diagonal contraction: SHPROP supplies only rho_ii and PROCAR only
+            # <i|P_g|i>, so no coherence term exists in the inputs to contract.
+            projected = np.einsum("ts,tsg->tg", pops, weights)
+            projected_acc.update(offset, projected)
+            if per_file is not None:
+                per_file[file_index, offset : offset + rows, :] = projected
+
+            fixed_chunk = np.stack(
+                [chunk[:, group].sum(axis=1) for group in fixed_columns], axis=1
+            )
+            fixed_acc.update(offset, fixed_chunk)
+        if rows_seen != ntime:
+            raise CharacterError(
+                f"{path}: {rows_seen} rows streamed but planning counted {ntime}; "
+                "the file changed under the analysis"
+            )
+        try:
+            grid.finish_file(path)
+            projected_acc.finish_file()
+            fixed_acc.finish_file()
+        except StreamingError as exc:
+            raise CharacterError(str(exc)) from exc
+
+    mean = projected_acc.mean_array()
+    sem = projected_acc.sem()
+    fixed_mean_array = fixed_acc.mean_array()
+    fixed_mean: Dict[str, np.ndarray] = {
+        name: fixed_mean_array[:, index] for index, name in enumerate(fixed_names)
+    }
+    time_ns = grid.reference / state_map.to_ns
 
     total = mean.sum(axis=1)
     conservation = {
@@ -1333,9 +1571,28 @@ def character_populations(
             "groups capture the projection; this is not repaired automatically"
         )
 
+    io_summary = {
+        "mode": "streaming",
+        "shprop_chunk_rows": int(chunk_rows),
+        "chunks_per_history": len(chunk_plan(ntime, chunk_rows)),
+        "per_file_retained": bool(per_file is not None),
+        "accumulator_memmap_dir": str(memmap_dir) if memmap_dir else None,
+        "accumulator_spill_files": [
+            str(path)
+            for accumulator in (projected_acc, fixed_acc)
+            for path in accumulator.spill_files
+        ],
+        "note": (
+            "each history is read once, in row chunks, and folded into a running "
+            "ensemble mean and variance; no (nfiles, nrows, ncolumns) stack is "
+            "built. The projected and fixed-column populations come from the same "
+            "pass, so a history is never read twice"
+        ),
+    }
+
     return CharacterPopulationResult(
-        time_ns=population.time_ns,
-        group_names=projection.group_names,
+        time_ns=time_ns,
+        group_names=group_names,
         per_file=per_file,
         mean=mean,
         sem=sem,
@@ -1343,6 +1600,8 @@ def character_populations(
         projection=projection,
         file_alignment=alignments,
         conservation=conservation,
+        io=io_summary,
+        accumulators=[projected_acc, fixed_acc],
     )
 
 

@@ -17,6 +17,7 @@ from .character import (
     DISCREPANCY_HEADER,
     POPULATION_DEFINITION,
     POPULATION_LABEL,
+    SHPROP_IO_MODES,
     AtomGroupMap,
     CharacterError,
     character_populations,
@@ -25,6 +26,7 @@ from .character import (
     plan_analysis,
     preflight_report,
     projection_table_rows,
+    resolve_chunk_rows,
 )
 from .observables import LEGEND, OBSERVED
 from .populations import StateMap
@@ -141,6 +143,32 @@ def build_parser(prog: str = "namd-analysis character-populations") -> argparse.
         ),
     )
     parser.add_argument(
+        "--shprop-chunk-rows",
+        type=int,
+        default=None,
+        help=(
+            "rows of a SHPROP table to hold at once (default: chosen from file size). "
+            "Chunking changes only residency, never the result"
+        ),
+    )
+    parser.add_argument(
+        "--shprop-io-mode",
+        choices=SHPROP_IO_MODES,
+        default="auto",
+        help=(
+            "auto picks a chunk size from the largest history; stream always chunks; "
+            "memory reads each whole table in one chunk"
+        ),
+    )
+    parser.add_argument(
+        "--accumulator-memmap-dir",
+        default=None,
+        help=(
+            "spill the running ensemble mean/variance to memory-mapped files in this "
+            "directory when they are large; without it they stay in RAM"
+        ),
+    )
+    parser.add_argument(
         "--out",
         default=None,
         help="new output directory (optional with --preflight, which can print only)",
@@ -206,6 +234,14 @@ def _run_preflight(args, paths, state_map, atom_groups) -> int:
     if report.get("distinct_namdtini") is not None:
         print(f"  distinct NAMDTINI: {report['distinct_namdtini']}")
         print(f"  SHPROP row counts: {report['row_counts']}")
+    io_block = report.get("shprop_io")
+    if io_block:
+        megabytes = io_block["total_bytes"] / (1024 * 1024)
+        print(
+            f"  SHPROP input: {len(io_block['per_file'])} file(s), {megabytes:.1f} MiB total, "
+            f"{io_block['rows_per_history']} rows each; analysis would read "
+            f"{io_block['chunk_rows']} row(s) at a time ({io_block['reason']})"
+        )
     cycle = report.get("cycle")
     if cycle:
         print(
@@ -267,6 +303,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return _run_preflight(args, paths, state_map, atom_groups)
 
         plan = plan_analysis(paths, state_map, args.projection_manifest, args.frame_mode)
+        chunk_rows, io_plan = resolve_chunk_rows(
+            plan.shprop_structures, args.shprop_io_mode, args.shprop_chunk_rows
+        )
         result = character_populations(
             paths,
             state_map,
@@ -274,6 +313,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             atom_groups,
             args.frame_mode,
             plan=plan,
+            chunk_rows=chunk_rows,
+            memmap_dir=Path(args.accumulator_memmap_dir)
+            if args.accumulator_memmap_dir
+            else None,
         )
         swaps, swap_summary = character_swap_rows(
             result.projection, dominance_threshold=args.dominance_threshold
@@ -423,6 +466,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "min_projection_weight": atom_groups.min_projection_weight,
         },
         "frame_consumption": plan.consumption(),
+        "shprop_io": {**io_plan, **result.io},
         "projection_frames": [int(v) for v in result.projection.frames],
         "projection_bands": [int(v) for v in result.projection.bands],
         "projection_quality": quality,
@@ -472,6 +516,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     print(f"reporting the {POPULATION_LABEL} (coherences are not in the inputs)")
     print(
+        f"SHPROP read in {result.io['chunks_per_history']} chunk(s) of "
+        f"{result.io['shprop_chunk_rows']} row(s) per history "
+        f"(mode {io_plan['requested_mode']}); no whole-campaign stack was built"
+    )
+    print(
         f"groups: {', '.join(result.group_names)}; dominant-character swaps: "
         f"{swap_summary['dominant_character_swaps']} "
         f"({swap_summary['adjacent_swaps']} adjacent, "
@@ -502,4 +551,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "the explicit manifest period was used and the mismatch was recorded"
         )
     print(f"written to {out}")
+    # Every output is on disk; the running accumulators can go, taking any
+    # memory-mapped spill files with them.
+    result.release()
     return 0
