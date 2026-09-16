@@ -175,6 +175,14 @@ PROCAR's ion/band/k-point/spin structure, and whether the atom groups cover it.
 Problems are collected rather than raised, so one run lists everything that is
 wrong.  The command exits non-zero if anything would block the analysis.
 
+What preflight checks is **structure**: the column count, the row count, ragged
+rows, the band window, the frame mapping, the manifest, the atom coverage.  It
+does **not** check every value, because that would mean reading every table.  A
+history whose populations leave `[0,1]` or stop summing to one somewhere in the
+middle passes preflight and is then refused by the analysis, which validates
+every row of every chunk.  The `shprop_io.preflight_note` in the report says so
+rather than leaving the limit implicit.
+
 ## How SHPROP files are read
 
 Preflight reads headers, row counts and each history's first and last row. No

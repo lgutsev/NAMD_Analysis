@@ -355,6 +355,121 @@ class ValidationAcrossChunksTests(_Campaign):
         self.assertIn("duplicate", str(ctx.exception))
 
 
+class ValidationOrderingTests(_Campaign):
+    """Cheap checks must fail before the expensive ones run.
+
+    A campaign can declare two thousand PROCARs. Reporting a duplicate path or a
+    stray column only after parsing them all wastes the whole run to say
+    something knowable in milliseconds.
+    """
+
+    def _count_procars(self, call):
+        import namd_analysis.character as module
+
+        opened = []
+        original = module.read_procar_ion_totals
+
+        def spy(path, bands=None):
+            opened.append(path)
+            return original(path, bands)
+
+        module.read_procar_ion_totals = spy
+        try:
+            with self.assertRaises(CharacterError) as ctx:
+                call()
+        finally:
+            module.read_procar_ion_totals = original
+        return len(opened), str(ctx.exception)
+
+    def test_duplicate_paths_fail_before_any_procar_is_parsed(self):
+        parsed, message = self._count_procars(
+            lambda: character_populations(
+                [self.campaign["shprop"][0], self.campaign["shprop"][0]],
+                self.state_map, self.campaign["manifest"], self.atom_groups, "dish-cyclic",
+            )
+        )
+        self.assertEqual(parsed, 0)
+        self.assertIn("duplicate", message)
+
+    def test_a_short_column_configuration_fails_before_any_procar_is_parsed(self):
+        wide = StateMap.from_dict(
+            {
+                "name": "too-wide",
+                "time_column": 0,
+                "population_columns": [2, 9],
+                "groups": {"BCF": [2], "PCBM": [9]},
+            }
+        )
+        parsed, message = self._count_procars(
+            lambda: character_populations(
+                self.campaign["shprop"], wide, self.campaign["manifest"],
+                self.atom_groups, "dish-cyclic",
+            )
+        )
+        self.assertEqual(parsed, 0)
+        self.assertIn("column 9", message)
+
+    def _widen_second_history(self):
+        """Give one history an extra trailing column, same rows and time grid."""
+        path = self.campaign["shprop"][1]
+        lines = path.read_text(encoding="utf-8").splitlines()
+        widened = [
+            line if line.lstrip().startswith("#") else line + " 9.9" for line in lines
+        ]
+        path.write_text("\n".join(widened) + "\n", encoding="utf-8")
+
+    def test_differing_column_counts_are_refused(self):
+        # load_population_set compared full shapes, so a campaign mixing SHPROP
+        # widths was an error. The streaming path must not be laxer.
+        self._widen_second_history()
+        parsed, message = self._count_procars(
+            lambda: character_populations(
+                self.campaign["shprop"], self.state_map, self.campaign["manifest"],
+                self.atom_groups, "dish-cyclic",
+            )
+        )
+        self.assertEqual(parsed, 0)
+        self.assertIn("different column counts", message)
+        self.assertIn("No interpolation or truncation", message)
+
+    def test_an_inconsistent_state_map_is_refused_on_this_path_too(self):
+        # StateMap.from_dict validates, but an object built directly does not,
+        # and load_population_set used to be what caught that here.
+        broken = StateMap(
+            name="overlapping",
+            time_column=0,
+            time_unit="fs",
+            population_columns=[2, 3],
+            groups={"A": [2], "B": [3], "C": [2]},
+        )
+        parsed, message = self._count_procars(
+            lambda: character_populations(
+                self.campaign["shprop"], broken, self.campaign["manifest"],
+                self.atom_groups, "dish-cyclic",
+            )
+        )
+        self.assertEqual(parsed, 0)
+        self.assertIn("disjoint", message)
+
+    def test_preflight_catches_the_same_structural_problems(self):
+        self._widen_second_history()
+        report = preflight_report(
+            self.campaign["shprop"], self.state_map, self.campaign["manifest"],
+            self.atom_groups, "dish-cyclic",
+        )
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("column counts" in p for p in report["problems"]))
+
+    def test_preflight_says_it_does_not_validate_every_value(self):
+        report = preflight_report(
+            self.campaign["shprop"], self.state_map, self.campaign["manifest"],
+            self.atom_groups, "dish-cyclic",
+        )
+        note = report["shprop_io"]["preflight_note"]
+        self.assertIn("NOT every value", note)
+        self.assertIn("refused by the analysis", note)
+
+
 class PerFileRetentionTests(_Campaign):
     def test_small_campaigns_keep_per_file_results(self):
         self.assertIsNotNone(self._run().per_file)

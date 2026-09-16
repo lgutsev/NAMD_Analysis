@@ -955,10 +955,50 @@ def plan_analysis(
     paths = [Path(path) for path in shprop_paths]
     if not paths:
         raise CharacterError("no SHPROP files were supplied")
+    # The state map is a declaration, and an inconsistent one would mislabel
+    # every number downstream. load_population_set used to validate it on this
+    # path; the streaming rewrite no longer goes through that function, so the
+    # check is made here rather than lost.
+    try:
+        state_map.validate()
+    except ValueError as exc:
+        raise CharacterError(str(exc)) from exc
+    if len({path.resolve() for path in paths}) != len(paths):
+        raise CharacterError("duplicate population files")
     # Headers and shape only. An archived history is routinely hundreds of
     # megabytes, and planning needs the band window, NAMDTINI and the row
     # count -- not a single population value.
     records = [shprop_structure(path) for path in paths]
+
+    # Every check below is cheap and happens before a single PROCAR is opened.
+    # A campaign can declare two thousand projection files; failing on a
+    # duplicate path or a stray column after parsing them all would waste the
+    # whole run to report something knowable in milliseconds.
+    widths: Dict[int, List[str]] = {}
+    heights: Dict[int, List[str]] = {}
+    for record in records:
+        widths.setdefault(record.n_columns, []).append(record.path.name)
+        heights.setdefault(record.n_rows, []).append(record.path.name)
+    for label, grouped, unit in (
+        ("column counts", widths, "column"),
+        ("row counts", heights, "row"),
+    ):
+        if len(grouped) == 1:
+            continue
+        parts = []
+        for size, names in sorted(grouped.items(), key=lambda item: -len(item[1])):
+            sample = ", ".join(names[:5]) + ("..." if len(names) > 5 else "")
+            parts.append(f"{size} {unit}(s) in {len(names)} file(s) ({sample})")
+        raise CharacterError(
+            f"SHPROP files have different {label}: "
+            + "; ".join(parts)
+            + ". No interpolation or truncation is performed."
+        )
+    ncolumns = next(iter(widths))
+    if next(iter(heights)) < 2:
+        raise CharacterError(
+            "population time must strictly increase with at least two samples"
+        )
 
     band_windows: List[Tuple[int, int]] = []
     for record in records:
@@ -994,6 +1034,16 @@ def plan_analysis(
             f"({state_map.population_columns}). Character analysis needs exactly one "
             "declared population column per basis state, ordered BMIN through BMAX. "
             "This is fixable in the state-map JSON."
+        )
+    # Only now: a column index past the end of the table. Checked after the
+    # basis-size comparison because a state map with the wrong number of states
+    # usually also overruns, and "you declared 3 states for a 2-state basis" is
+    # the fixable statement, not "column 4 of 4".
+    needed_column = max([state_map.time_column] + list(state_map.population_columns))
+    if needed_column >= ncolumns:
+        raise CharacterError(
+            f"configuration references column {needed_column} but the SHPROP files "
+            f"have {ncolumns} columns"
         )
 
     manifest = _load_projection_manifest(projection_manifest)
@@ -1177,7 +1227,11 @@ def preflight_report(
         "preflight_note": (
             "preflight read only headers, row counts and the first and last row of "
             "each history; no SHPROP table was materialized, so its memory use does "
-            "not grow with file size"
+            "not grow with file size. It therefore checks structure -- column "
+            "count, row count, ragged rows -- but NOT every value: a history whose "
+            "populations leave [0,1] or stop summing to one somewhere in the middle "
+            "passes preflight and is refused by the analysis, which validates every "
+            "row of every chunk"
         ),
     }
 
@@ -1432,36 +1486,7 @@ def character_populations(
 
     group_names = projection.group_names
     fixed_names = list(state_map.groups)
-    if len({path.resolve() for path in paths}) != len(paths):
-        raise CharacterError("duplicate population files")
-    if len(set(plan.n_time)) != 1:
-        counts: Dict[int, List[str]] = {}
-        for path, rows in zip(paths, plan.n_time):
-            counts.setdefault(rows, []).append(path.name)
-        parts = [
-            f"{rows} rows in {len(names)} file(s) ({', '.join(names[:5])}"
-            + ("..." if len(names) > 5 else "")
-            + ")"
-            for rows, names in sorted(counts.items(), key=lambda item: -len(item[1]))
-        ]
-        raise CharacterError(
-            "SHPROP histories have different row counts: "
-            + "; ".join(parts)
-            + ". No interpolation or truncation is performed."
-        )
     ntime = plan.n_time[0]
-    if ntime < 2:
-        raise CharacterError(
-            "population time must strictly increase with at least two samples"
-        )
-
-    needed_column = max([state_map.time_column] + list(state_map.population_columns))
-    for record in plan.shprop_structures:
-        if needed_column >= record.n_columns:
-            raise CharacterError(
-                f"{record.path}: configuration references column {needed_column} "
-                f"but the file has {record.n_columns} columns"
-            )
 
     projected_acc = OnlineEnsemble(
         ntime, len(group_names), memmap_dir=memmap_dir, name="projected"
