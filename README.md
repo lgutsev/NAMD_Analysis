@@ -592,6 +592,14 @@ staying on one adiabatic state through an avoided crossing changes the fragment
 identity, while hopping between two can preserve it. Why, with the two-state
 model behind it: [docs/adiabatic_vs_diabatic.md](docs/adiabatic_vs_diabatic.md).
 
+For counting donor→acceptor transfer events against the arbitrary population
+thresholds used in the surface-hopping literature — swept, never single, and
+consuming only the occupation-driven component — see `namd_analysis.transfer`
+and [docs/transfer_mechanism.md](docs/transfer_mechanism.md), which also sets
+out which mechanistic claims the analysis supports and which it forbids.
+Manuscript-ready text is in
+[docs/manuscript_wording.md](docs/manuscript_wording.md).
+
 Add `--shprop` (with `--state-map`, `--frame-mode` and, for a cyclic run,
 `--projection-manifest`) to attach each history's **own** projection-weighted
 fragment population to its events:
