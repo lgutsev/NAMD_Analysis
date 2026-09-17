@@ -1,0 +1,29 @@
+{
+  "perovskite": {
+    "whole_pass_net_mean": 1.3192084749150408e-05,
+    "episode_net_mean": -0.0015643481979645865,
+    "rest_of_cycle_net_mean": 0.0015775402827137366,
+    "episode_share_of_whole": -118.58233385480132,
+    "whole_pass_occupation_mean": -0.0001396719640019896,
+    "episode_occupation_mean": -1.3779326815754988e-06,
+    "occupation_share_whole_pass": 10.587558119726657
+  },
+  "BCF": {
+    "whole_pass_net_mean": 0.00015590645612641779,
+    "episode_net_mean": 0.0018246522135751005,
+    "rest_of_cycle_net_mean": -0.0016687457574486831,
+    "episode_share_of_whole": 11.703506441680446,
+    "whole_pass_occupation_mean": 0.00012358385670161855,
+    "episode_occupation_mean": 2.3754284689712668e-05,
+    "occupation_share_whole_pass": 0.7926795321510596
+  },
+  "PCBM": {
+    "whole_pass_net_mean": -0.0001690985408754842,
+    "episode_net_mean": -0.0002603040156104474,
+    "rest_of_cycle_net_mean": 9.120547473496318e-05,
+    "episode_share_of_whole": 1.5393628724574413,
+    "whole_pass_occupation_mean": 1.60881073003735e-05,
+    "episode_occupation_mean": -2.237635200813715e-05,
+    "occupation_share_whole_pass": 0.09514042650563134
+  }
+}

@@ -1,0 +1,111 @@
+{
+  "979": {
+    "band": 979,
+    "pair": [
+      977,
+      978
+    ],
+    "window": [
+      1315,
+      1335
+    ],
+    "energetic": {
+      "min_separation_from_pair_ev": 0.004008888077099204,
+      "median_separation_from_pair_ev": 0.04674398577706862,
+      "pair_min_gap_ev": 0.01359577962461156,
+      "comes_closer_than_the_pair_does": true,
+      "frame_of_closest_approach": 1330
+    },
+    "character": {
+      "dominant_fragments_seen": [
+        "PCBM"
+      ],
+      "mean_weight": {
+        "perovskite": 0.0,
+        "BCF": 0.0,
+        "PCBM": 1.0
+      },
+      "BCF_range": 0.0,
+      "PCBM_range": 0.0,
+      "changes_dominant_fragment": false,
+      "exchanges_between_donor_and_acceptor": false
+    },
+    "occupation": null,
+    "verdict": "energetically_involved_only",
+    "why": "band 979 comes closer to the pair than the pair does to itself, so a two-state treatment is not justified. But its own character stays on ['PCBM'] and never moves between BCF and PCBM: it redistributes population *within* its own fragment and cannot by itself carry fragment transfer",
+    "occupation_note": "no SHPROP occupation was supplied, so whether this state actually carries population over the window is unknown. Energetic proximity and character are not occupation"
+  },
+  "976": {
+    "band": 976,
+    "pair": [
+      977,
+      978
+    ],
+    "window": [
+      1315,
+      1335
+    ],
+    "energetic": {
+      "min_separation_from_pair_ev": 1.103739760862243,
+      "median_separation_from_pair_ev": 1.2439432713247325,
+      "pair_min_gap_ev": 0.01359577962461156,
+      "comes_closer_than_the_pair_does": false,
+      "frame_of_closest_approach": 1315
+    },
+    "character": {
+      "dominant_fragments_seen": [
+        "PCBM",
+        "perovskite"
+      ],
+      "mean_weight": {
+        "perovskite": 0.8095238095238095,
+        "BCF": 0.0,
+        "PCBM": 0.19047619047619047
+      },
+      "BCF_range": 0.0,
+      "PCBM_range": 1.0,
+      "changes_dominant_fragment": true,
+      "exchanges_between_donor_and_acceptor": false
+    },
+    "occupation": null,
+    "verdict": "not_involved",
+    "why": "band 976 neither approaches the pair more closely than the pair does itself, nor changes its dominant fragment",
+    "occupation_note": "no SHPROP occupation was supplied, so whether this state actually carries population over the window is unknown. Energetic proximity and character are not occupation"
+  },
+  "980": {
+    "band": 980,
+    "pair": [
+      977,
+      978
+    ],
+    "window": [
+      1315,
+      1335
+    ],
+    "energetic": {
+      "min_separation_from_pair_ev": 0.24222025042368367,
+      "median_separation_from_pair_ev": 0.30744226756928805,
+      "pair_min_gap_ev": 0.01359577962461156,
+      "comes_closer_than_the_pair_does": false,
+      "frame_of_closest_approach": 1331
+    },
+    "character": {
+      "dominant_fragments_seen": [
+        "PCBM"
+      ],
+      "mean_weight": {
+        "perovskite": 0.0,
+        "BCF": 0.0,
+        "PCBM": 1.0
+      },
+      "BCF_range": 0.0,
+      "PCBM_range": 0.0,
+      "changes_dominant_fragment": false,
+      "exchanges_between_donor_and_acceptor": false
+    },
+    "occupation": null,
+    "verdict": "not_involved",
+    "why": "band 980 neither approaches the pair more closely than the pair does itself, nor changes its dominant fragment",
+    "occupation_note": "no SHPROP occupation was supplied, so whether this state actually carries population over the window is unknown. Energetic proximity and character are not occupation"
+  }
+}

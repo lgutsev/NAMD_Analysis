@@ -1,0 +1,33 @@
+{
+  "ran": true,
+  "band_i": 977,
+  "band_j": 978,
+  "n_samples": 1999,
+  "scores": {
+    "-8": 0.07931461593183102,
+    "-7": 0.11218999326149376,
+    "-6": 0.14864159141391947,
+    "-5": 0.1828370301595862,
+    "-4": 0.18004616930707487,
+    "-3": 0.18205649979135652,
+    "-2": 0.20102480824278782,
+    "-1": 0.2366604164958808,
+    "0": 0.2646274734839114,
+    "1": 0.22573235178666176,
+    "2": 0.18433286828395623,
+    "3": 0.15898561656978782,
+    "4": 0.14649522622210115,
+    "5": 0.1314644793031561,
+    "6": 0.10168615127724458,
+    "7": 0.07569577749483629,
+    "8": 0.05928360346003851
+  },
+  "best_offset": 0,
+  "score_at_best": 0.2646274734839114,
+  "score_at_zero": 0.2646274734839114,
+  "second_best_offset": -1,
+  "margin_over_second": 0.02796705698803062,
+  "aligned": true,
+  "unique": true,
+  "note": "mixing against -log(gap), scanned over integer frame offsets. A maximum at offset 0 means the PROCAR-derived character and the EIGTXT energies index the same frames. The margin over the next-best offset says how uniquely; a small margin is not a failure, but it is not a confirmation either"
+}

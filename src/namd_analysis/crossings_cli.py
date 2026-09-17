@@ -213,6 +213,26 @@ def build_parser(prog: str = "namd-analysis character-crossings") -> argparse.Ar
             "window is encoded in this repository. Required to compare windows"
         ),
     )
+    parser.add_argument(
+        "--manifold-window", default=None,
+        help=(
+            "FIRST:LAST frame of a crossing region to report as a multistate "
+            "manifold rather than a two-state crossing: every state, every "
+            "pairwise gap, both weight conventions and the couplings"
+        ),
+    )
+    parser.add_argument(
+        "--manifold-bands", default=None,
+        help="comma-separated bands for --manifold-window (default: every band present)",
+    )
+    parser.add_argument(
+        "--transfer-pair", default=None,
+        help=(
+            "DONOR_BAND:ACCEPTOR_BAND whose exchange is the transfer pathway "
+            "under test, e.g. 977:978. Every other band in the manifold is "
+            "then assessed for whether it participates in that pathway"
+        ),
+    )
     parser.add_argument("--out", required=True, help="new output directory")
     parser.add_argument("--overwrite", action="store_true")
     return parser

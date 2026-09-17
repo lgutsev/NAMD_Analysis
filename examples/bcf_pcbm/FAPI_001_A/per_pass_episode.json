@@ -1,0 +1,38 @@
+{
+  "n_passes": 5002,
+  "per_pass": {
+    "perovskite": {
+      "net_mean": -0.0015646609425063625,
+      "net_std": 7.206152386215902e-05,
+      "net_median": -0.0015640535372848947,
+      "occ_mean": -1.3782081579212756e-06,
+      "char_mean": -0.0015632827343484413,
+      "net_abs_max": 0.004003824091778206,
+      "passes_with_net_gain": 0,
+      "passes_with_net_loss": 5002,
+      "occupation_share_of_mean": 0.0008808350234099816
+    },
+    "BCF": {
+      "net_mean": 0.0018250169981040053,
+      "net_std": 0.00454973366030107,
+      "net_median": 0.0017958427200273901,
+      "occ_mean": 2.375903364706767e-05,
+      "char_mean": 0.0018012579644569376,
+      "net_abs_max": 0.0690543778278402,
+      "passes_with_net_gain": 4956,
+      "passes_with_net_loss": 46,
+      "occupation_share_of_mean": 0.01301852731878702
+    },
+    "PCBM": {
+      "net_mean": -0.00026035605559757526,
+      "net_std": 0.004555800719046547,
+      "net_median": -0.0002455445544555987,
+      "occ_mean": -2.2380825489146375e-05,
+      "char_mean": -0.00023797523010842892,
+      "net_abs_max": 0.07069108910891106,
+      "passes_with_net_gain": 81,
+      "passes_with_net_loss": 4921,
+      "occupation_share_of_mean": 0.0859623773212318
+    }
+  }
+}

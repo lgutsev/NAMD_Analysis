@@ -35,6 +35,9 @@ __all__ = [
     "isolation_check",
     "raw_weight_check",
     "fixed_vs_dynamic_late",
+    "manifold_table",
+    "band_participation",
+    "alignment_scan",
 ]
 
 #: An episode is called dominated by one term when it carries at least this
@@ -556,3 +559,291 @@ def fixed_vs_dynamic_late(
         "neither is subtracted from the other"
     )
     return out
+
+
+# ---------------------------------------------------------------------------
+# Multistate crossing manifold
+# ---------------------------------------------------------------------------
+#
+# A region where three or more states approach each other is not a sequence of
+# independent two-state avoided crossings, and describing it as one discards
+# the thing that makes it interesting.  These report the whole manifold: every
+# state, every pairwise gap, both weight conventions, and the couplings, so a
+# reader can see which states are actually in play.
+
+
+def manifold_table(
+    character,
+    couplings,
+    bands: Sequence[int],
+    first_frame: int,
+    last_frame: int,
+    occupations: Optional[Dict[int, np.ndarray]] = None,
+) -> Tuple[List[str], List[List[Any]]]:
+    """Every state, gap, weight and coupling over a crossing region.
+
+    ``occupations`` maps band number to a per-frame SHPROP occupation, when the
+    histories are available.  Without it those columns are empty rather than
+    filled with a stand-in.
+    """
+    bands = [int(b) for b in bands]
+    band_at = character.band_index()
+    frame_at = character.frame_index()
+    state_of = {int(b): k for k, b in enumerate(character.bands)}
+    row_of = (
+        {int(f): r for r, f in enumerate(couplings.frames)} if couplings is not None else {}
+    )
+    missing = [b for b in bands if b not in band_at]
+    if missing:
+        raise EpisodeError(f"bands {missing} are not in the character table")
+
+    pairs = [(a, b) for i, a in enumerate(bands) for b in bands[i + 1:]]
+    header = ["frame"]
+    header += [f"E_{b}_eV" for b in bands]
+    header += [f"gap_{a}_{b}_eV" for a, b in pairs]
+    header += [f"abs_nac_{a}_{b}_eV" for a, b in pairs]
+    for b in bands:
+        header += [f"{b}_{g}" for g in character.groups]
+    for b in bands:
+        header += [f"{b}_raw_{g}" for g in character.groups]
+    header += [f"{b}_captured" for b in bands]
+    header += [f"{b}_dominant" for b in bands]
+    if occupations is not None:
+        header += [f"P_{b}" for b in bands]
+
+    def energy(row, state):
+        ok = (
+            row is not None and state is not None and couplings is not None
+            and state < couplings.energies.shape[1]
+        )
+        return float(couplings.energies[row, state]) if ok else ""
+
+    rows: List[List[Any]] = []
+    for frame in range(int(first_frame), int(last_frame) + 1):
+        if frame not in frame_at:
+            continue
+        k = frame_at[frame]
+        r = row_of.get(frame)
+        row: List[Any] = [frame]
+        for b in bands:
+            row.append(energy(r, state_of.get(b)))
+        for a, b in pairs:
+            ea, eb = energy(r, state_of.get(a)), energy(r, state_of.get(b))
+            row.append(abs(ea - eb) if ea != "" and eb != "" else "")
+        for a, b in pairs:
+            sa, sb = state_of.get(a), state_of.get(b)
+            ok = (
+                r is not None and couplings is not None and couplings.nac is not None
+                and None not in (sa, sb) and max(sa, sb) < couplings.nac.shape[1]
+            )
+            row.append(float(abs(couplings.nac[r, sa, sb])) if ok else "")
+        for b in bands:
+            row += [float(v) for v in character.weights[k, band_at[b]]]
+        for b in bands:
+            cap = (
+                float(character.captured[k, band_at[b]])
+                if character.captured is not None else float("nan")
+            )
+            row += [float(v) * cap for v in character.weights[k, band_at[b]]]
+        for b in bands:
+            row.append(
+                float(character.captured[k, band_at[b]])
+                if character.captured is not None else ""
+            )
+        for b in bands:
+            row.append(_dominant(character, k, band_at[b]))
+        if occupations is not None:
+            for b in bands:
+                series = occupations.get(int(b))
+                row.append(float(series[k]) if series is not None else "")
+        rows.append(row)
+    return header, rows
+
+
+def band_participation(
+    character,
+    couplings,
+    band: int,
+    pair: Tuple[int, int],
+    first_frame: int,
+    last_frame: int,
+    donor: str = "BCF",
+    acceptor: str = "PCBM",
+    occupation: Optional[np.ndarray] = None,
+) -> Dict[str, Any]:
+    """Does ``band`` materially participate in the ``pair``'s transfer pathway?
+
+    Participation needs two things at once, and the distinction matters: a
+    state can be energetically in the thick of a manifold and still be
+    irrelevant to *fragment* transfer, if its own character never moves between
+    the two fragments in question.  Both are reported.
+    """
+    band_at = character.band_index()
+    frame_at = character.frame_index()
+    state_of = {int(b): k for k, b in enumerate(character.bands)}
+    frames = [f for f in range(int(first_frame), int(last_frame) + 1) if f in frame_at]
+    if not frames:
+        raise EpisodeError("no frames in the requested window")
+    rows = [frame_at[f] for f in frames]
+
+    gi, gj = character.groups.index(donor), character.groups.index(acceptor)
+    w = character.weights[rows, band_at[int(band)]]
+    dominant = [_dominant(character, k, band_at[int(band)]) for k in rows]
+
+    energetic: Dict[str, Any] = {}
+    if couplings is not None:
+        crow = {int(f): r for r, f in enumerate(couplings.frames)}
+        cr = [crow[f] for f in frames if f in crow]
+        s = state_of.get(int(band))
+        sa, sb = state_of.get(int(pair[0])), state_of.get(int(pair[1]))
+        if cr and None not in (s, sa, sb):
+            sep = np.minimum(
+                np.abs(couplings.energies[cr, s] - couplings.energies[cr, sa]),
+                np.abs(couplings.energies[cr, s] - couplings.energies[cr, sb]),
+            )
+            pair_gap = np.abs(couplings.energies[cr, sa] - couplings.energies[cr, sb])
+            energetic = {
+                "min_separation_from_pair_ev": float(sep.min()),
+                "median_separation_from_pair_ev": float(np.median(sep)),
+                "pair_min_gap_ev": float(pair_gap.min()),
+                "comes_closer_than_the_pair_does": bool(sep.min() < pair_gap.min()),
+                "frame_of_closest_approach": int(frames[int(np.argmin(sep))]),
+            }
+
+    changes_fragment = bool(len(set(dominant)) > 1)
+    between_the_two = bool(set(dominant) <= {donor, acceptor} and changes_fragment)
+
+    out: Dict[str, Any] = {
+        "band": int(band),
+        "pair": [int(pair[0]), int(pair[1])],
+        "window": [int(first_frame), int(last_frame)],
+        "energetic": energetic,
+        "character": {
+            "dominant_fragments_seen": sorted(set(dominant)),
+            "mean_weight": {
+                g: float(w[:, n].mean()) for n, g in enumerate(character.groups)
+            },
+            f"{donor}_range": float(w[:, gi].max() - w[:, gi].min()),
+            f"{acceptor}_range": float(w[:, gj].max() - w[:, gj].min()),
+            "changes_dominant_fragment": changes_fragment,
+            "exchanges_between_donor_and_acceptor": between_the_two,
+        },
+        "occupation": (
+            {
+                "mean": float(np.mean(occupation)),
+                "max": float(np.max(occupation)),
+                "net_change": float(occupation[-1] - occupation[0]),
+            }
+            if occupation is not None else None
+        ),
+    }
+
+    near = bool(energetic.get("comes_closer_than_the_pair_does", False))
+    if between_the_two:
+        out["verdict"] = "participates_in_fragment_transfer"
+        out["why"] = (
+            f"band {band} itself exchanges dominance between {donor} and "
+            f"{acceptor} over this window, so it is part of the transfer pathway"
+        )
+    elif near:
+        out["verdict"] = "energetically_involved_only"
+        out["why"] = (
+            f"band {band} comes closer to the pair than the pair does to itself, "
+            f"so a two-state treatment is not justified. But its own character "
+            f"stays on {sorted(set(dominant))} and never moves between {donor} "
+            f"and {acceptor}: it redistributes population *within* its own "
+            "fragment and cannot by itself carry fragment transfer"
+        )
+    else:
+        out["verdict"] = "not_involved"
+        out["why"] = (
+            f"band {band} neither approaches the pair more closely than the pair "
+            "does itself, nor changes its dominant fragment"
+        )
+    if out["occupation"] is None:
+        out["occupation_note"] = (
+            "no SHPROP occupation was supplied, so whether this state actually "
+            "carries population over the window is unknown. Energetic proximity "
+            "and character are not occupation"
+        )
+    return out
+
+
+def alignment_scan(
+    character,
+    couplings,
+    band_i: int,
+    band_j: int,
+    donor: str = "BCF",
+    acceptor: str = "PCBM",
+    offsets: Sequence[int] = tuple(range(-8, 9)),
+) -> Dict[str, Any]:
+    """Confirm the PROCAR and EIGTXT frame axes are the same axis.
+
+    At an avoided crossing, character mixing is maximal where the gap is
+    minimal.  If the two files share a frame axis, the association between
+    mixing and gap closure is strongest at offset zero and weaker either side;
+    if they are shifted, the maximum sits elsewhere.
+
+    The test is meaningful only on a pair carrying *different* fragments whose
+    mixing actually varies, so it reports whether it could run at all rather
+    than returning a number from a degenerate comparison.
+    """
+    band_at = character.band_index()
+    state_of = {int(b): k for k, b in enumerate(character.bands)}
+    si, sj = state_of.get(int(band_i)), state_of.get(int(band_j))
+    if si is None or sj is None:
+        raise EpisodeError("both bands must be in the character table")
+    gi, gj = character.groups.index(donor), character.groups.index(acceptor)
+
+    w = character.weights[:, band_at[int(band_i)]]
+    mixing = np.minimum(w[:, gi], w[:, gj])
+    if float(mixing.std()) <= 1e-12:
+        return {
+            "ran": False,
+            "reason": (
+                f"band {band_i} shows no variation in {donor}/{acceptor} mixing, "
+                "so gap closure has nothing to correlate against"
+            ),
+        }
+    gap = np.abs(couplings.energies[:, si] - couplings.energies[:, sj])
+    n = int(min(mixing.size, gap.size))
+
+    scores: Dict[int, float] = {}
+    for shift in offsets:
+        lo, hi = max(0, -shift), n - max(0, shift)
+        if hi - lo < 16:
+            continue
+        a = mixing[lo:hi]
+        b = gap[lo + shift: hi + shift]
+        if a.std() <= 1e-12 or b.std() <= 1e-12:
+            continue
+        scores[int(shift)] = float(np.corrcoef(a, -np.log(b + 1e-12))[0, 1])
+    if not scores:
+        return {"ran": False, "reason": "no offset had enough overlapping samples"}
+
+    order = sorted(scores, key=lambda k: -scores[k])
+    best = order[0]
+    second = order[1] if len(order) > 1 else None
+    margin = scores[best] - scores[second] if second is not None else float("inf")
+    return {
+        "ran": True,
+        "band_i": int(band_i),
+        "band_j": int(band_j),
+        "n_samples": n,
+        "scores": scores,
+        "best_offset": int(best),
+        "score_at_best": scores[best],
+        "score_at_zero": scores.get(0),
+        "second_best_offset": second,
+        "margin_over_second": float(margin),
+        "aligned": bool(best == 0),
+        "unique": bool(best == 0 and margin > 0),
+        "note": (
+            "mixing against -log(gap), scanned over integer frame offsets. A "
+            "maximum at offset 0 means the PROCAR-derived character and the "
+            "EIGTXT energies index the same frames. The margin over the "
+            "next-best offset says how uniquely; a small margin is not a "
+            "failure, but it is not a confirmation either"
+        ),
+    }
