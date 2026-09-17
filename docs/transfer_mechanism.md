@@ -183,6 +183,26 @@ data.
 `DEPHTIME` independently supports a strongly interacting pair: BCF↔PCBM (977–978)
 dephases in **5.95 fs**, against 86–151 fs for the PCBM–PCBM pairs.
 
+### The frame axes were verified, not assumed
+
+`EIGTXT`/`NATXT` were written months before the PROCAR character run. They are
+the same campaign, and the shared frame axis is checkable rather than taken on
+trust: at an avoided crossing, mixing is maximal where the gap is minimal, so
+character (from PROCARs) and gap (from `EIGTXT`) must co-vary *only* at the
+correct offset.
+
+Correlating band 977's BCF/PCBM mixing against `−log(gap)` over all 1999 frames
+and scanning the offset gives a maximum at **exactly offset 0** (r = +0.265,
+n = 1999; next best −1 at +0.237). Locally, maximum mixing and minimum gap both
+fall on frame **1328**. Only the 977–978 pair can run this test — 978/979/980
+are all PCBM-dominated, and 976–977 and 980–981 have no mixing variance — but
+that is the pair the mechanism rests on.
+
+A naive version of this check, using the gap at all 154 dominance-swap frames,
+is **confounded** and should not be used: most swaps sit on band 981, whose only
+neighbour gap (980–981) has median 0.62 eV, which inflates every offset alike
+and produces a flat, uninformative scan.
+
 Campaign-wide, **28 of the 154 dominance swaps connect BCF and PCBM directly**
 (16 BCF→PCBM, 12 PCBM→BCF). The 16:12 asymmetry is far too small to carry a
 directional claim.
