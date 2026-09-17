@@ -154,17 +154,55 @@ Frame/band samples with BCF **and** PCBM both above 0.10 of captured weight:
 projection is least determined (1633 of its 1999 frames below the capture
 threshold; see issue #4).
 
-So **"persistent BCF/PCBM mixing" is not supported by Campaign A.** Mixing is
-rare and is concentrated on the least reliable band. What *is* supported:
+So **"persistent BCF/PCBM mixing" is not supported by Campaign A.** *Static*
+mixed character — both fragments simultaneously on one state, in the mean — is
+rare and sits on the least reliable band.
 
-- Bands 977 and 978 show near-perfect **anticorrelation** of BCF and PCBM
-  character along the trajectory (−0.9997 and −1.0000, ranges 0.98 and 0.99):
-  textbook avoided-crossing character exchange, at a small number of frames.
-- **28 of 154 dominance swaps connect BCF and PCBM directly** — 16 BCF→PCBM and
-  12 PCBM→BCF. The 16:12 asymmetry is too small to carry a directional claim.
+**The character exchange is a different quantity, and it is clean.** Running
+`character-crossings` on the real `EIGTXT`/`NATXT` resolves the BCF–PCBM
+avoided crossing completely, on bands **977 and 978**, whose capture (0.50–0.53)
+is at the campaign median and therefore *not* subject to the band-981 caveat:
 
-The defensible statement is therefore **episodic, well-resolved BCF/PCBM
-character exchange**, not persistent mixing. Wording that survives review is in
+| frame | 977: perov / BCF / PCBM | 978: perov / BCF / PCBM | gap (eV) | \|NAC\| (eV) |
+| --- | --- | --- | --- | --- |
+| 1321 | 0.000 / **1.000** / 0.000 | 0.000 / 0.006 / **0.994** | 0.04710 | 0.1476 |
+| 1322 | 0.000 / 0.977 / 0.023 | 0.000 / 0.031 / 0.969 | 0.02847 | **0.6000** |
+| **1323** | 0.000 / 0.091 / **0.909** | 0.000 / **0.905** / 0.095 | 0.01752 | 0.2963 |
+| 1325 | 0.000 / 0.016 / 0.984 | 0.000 / 0.994 / 0.006 | 0.03869 | 0.0546 |
+| 1327 | 0.000 / 0.091 / 0.909 | 0.000 / 0.917 / 0.083 | 0.01957 | **0.6000** |
+| **1328** | 0.000 / **0.773** / 0.227 | 0.000 / 0.240 / **0.760** | **0.01360** | **0.6000** |
+| 1330 | 0.000 / **1.000** / 0.000 | 0.000 / 0.006 / **0.994** | 0.06268 | 0.0436 |
+
+The two states exchange character at frame 1323, remain exchanged for four
+frames, and exchange back at 1328 where the gap reaches its minimum of
+**13.6 meV**. Character is pure (>0.99) on either side. This is a single,
+well-resolved passage in and out of an avoided crossing — exactly the two-state
+model in [adiabatic_vs_diabatic.md](adiabatic_vs_diabatic.md), found in real
+data.
+
+`DEPHTIME` independently supports a strongly interacting pair: BCF↔PCBM (977–978)
+dephases in **5.95 fs**, against 86–151 fs for the PCBM–PCBM pairs.
+
+Campaign-wide, **28 of the 154 dominance swaps connect BCF and PCBM directly**
+(16 BCF→PCBM, 12 PCBM→BCF). The 16:12 asymmetry is far too small to carry a
+directional claim.
+
+### Two caveats that must travel with this
+
+- **The coupling at the crossing is clamped.** `|NAC|` is exactly **0.6000 eV**
+  at frames 1322, 1327 and 1328 — including the gap minimum. Campaign-wide,
+  **328 samples share that magnitude exactly**, at 91.2% of ħ/dt (0.658 eV at
+  1 fs). A value repeated exactly did not come out of the dynamics: it is an
+  imposed safety ceiling. **The coupling strength at the crossing cannot be
+  quoted as a measured value**, and no claim may rest on its magnitude. The gap
+  and the character are unaffected.
+- **The crossing is re-encountered, not repeated.** Each history is 10,000,000
+  steps over a 1999-frame cycle — about **5000 passes** of this same crossing.
+  That is the recycled MD trajectory, not 5000 independent crossing events, and
+  must not be described as though it were.
+
+The defensible statement is therefore **a well-resolved BCF/PCBM avoided
+crossing that the trajectory revisits**, not persistent mixing. Wording is in
 [manuscript_wording.md](manuscript_wording.md).
 
 ## Running it

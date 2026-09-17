@@ -19,9 +19,9 @@ Keep the main-text revision minimal. The detailed analysis belongs in the SI.
 
 ### 1a. Supported by Campaign A now
 
-> Frame-resolved state-character analysis shows that the adiabatic states
-> undergo episodic, well-resolved exchange of BCF and PCBM character along the
-> trajectory, consistent with avoided-crossing behaviour and indicating that the
+> Frame-resolved state-character analysis resolves an avoided crossing between
+> the BCF- and PCBM-localized states, at which the two states exchange fragment
+> character across a minimum adiabatic gap of ~14 meV, indicating that the
 > BCF-associated intermediate retains electronic access to the PCBM manifold
 > (Supplementary Note S*x*, Fig. S*x*). This extended residence time provides
 > repeated opportunities for population to enter the PCBM manifold, after which
@@ -66,11 +66,22 @@ Replace the first sentence with:
 > average was taken, because histories initiated at different frames occupy
 > different geometries at the same trajectory step.
 >
-> The analysis shows that the instantaneous adiabatic states exchange BCF and
-> PCBM character along the trajectory. The exchange is episodic rather than
-> continuous, and at the frames where it occurs the BCF and PCBM contributions
-> to a given state are strongly anticorrelated, as expected for passage through
-> an avoided crossing.
+> The analysis resolves an avoided crossing between the BCF- and PCBM-localized
+> states of the basis. Away from it each state is essentially pure (>0.99 of the
+> captured weight on a single fragment); approaching it the adiabatic gap closes
+> to a minimum of 13.6 meV, the two states mix, and their fragment character is
+> exchanged, before separating again to pure character on the far side. The
+> exchange is therefore episodic and well resolved rather than continuous, and
+> the anticorrelated variation of the BCF and PCBM contributions across these
+> frames is that expected for passage through an avoided crossing. The
+> independently computed decoherence times are consistent with a strongly
+> interacting pair: the BCF/PCBM pair dephases on a ~6 fs timescale, against
+> 86–151 fs for pairs of PCBM-localized states.
+>
+> Because the nuclear trajectory is cycled during the nonadiabatic dynamics,
+> each trajectory samples this crossing repeatedly; this reflects re-encounter
+> of the same nuclear configuration rather than a corresponding number of
+> independent crossing events.
 >
 > A change in fragment population does not by itself indicate that charge has
 > moved, because P_g responds both to redistribution of population among states
@@ -102,17 +113,26 @@ Replace the first sentence with:
 
 ### Caveat paragraph — include it
 
+> Nonadiabatic couplings in this dataset are subject to an imposed upper bound:
+> a single magnitude (0.600 eV, 91% of ħ/Δt for the 1 fs electronic timestep)
+> recurs exactly across 328 samples, including at the frames of closest
+> approach. Coupling magnitudes at the crossing are therefore reported as
+> bounded rather than measured, and no conclusion here rests on their size; the
+> adiabatic gaps and the fragment character are unaffected.
+
 > The ion-projected weights capture approximately half of the PAW-sphere weight
 > of each state (campaign median 0.511), the remainder lying outside the
 > declared atomic spheres; the reported character is the normalized
 > distribution of the captured fraction. This affects the highest state of the
-> basis most strongly, and mixed BCF/PCBM character is concentrated on that
-> state. Conclusions here are therefore drawn from the character *exchange*
-> between states, which is robust to the normalization, rather than from the
-> absolute mixed-character fraction of any single state.
+> basis most strongly, and static mixed BCF/PCBM character is concentrated on
+> that state. The conclusions drawn here rest instead on the character
+> *exchange* between the BCF- and PCBM-localized states, which occurs on states
+> whose captured fraction is at the campaign median and is therefore robust to
+> the normalization.
 
-**Do not omit this.** Without it the mixing claim rests on the least
-well-determined state in the basis.
+**Do not omit this.** It is also what lets the claim stand: the exchange sits
+on the well-captured states, so the caveat bounds the weaker observation
+without touching the one the mechanism actually uses.
 
 ---
 
