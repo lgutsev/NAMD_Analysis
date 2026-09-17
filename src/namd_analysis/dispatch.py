@@ -11,7 +11,7 @@ from __future__ import annotations
 import sys
 from typing import Optional, Sequence
 
-from . import character_cli, cli, prepare_cli
+from . import character_cli, cli, prepare_cli, regimes_cli
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -26,6 +26,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args and args[0] == "character-sbatch":
         # Preparation with the batch script as the point of the exercise.
         return prepare_cli.main([*args[1:], "--write-sbatch"])
+    if args and args[0] in ("regime-analysis", "early-late-analysis"):
+        return regimes_cli.main(args[1:])
     if args in (["--help"], ["-h"]):
         parser = cli.build_parser()
         text = parser.format_help().rstrip()
@@ -39,6 +41,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "atom_groups.json, projection_manifest.json and an audit of how every "
             "value was decided (alias: character-init)\n"
             "  character-sbatch       character-prepare with --write-sbatch\n"
+            "  regime-analysis        characterize an early and a late window "
+            "separately, then compare one global kinetic model against "
+            "early-plus-late (alias: early-late-analysis)\n"
             "\nRun 'namd-analysis character-populations --help' for their options.\n"
         )
         print(text)
