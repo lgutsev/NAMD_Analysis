@@ -15,6 +15,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .character import POPULATION_DEFINITION
+from .memory_budget import human
+
+
+def _human(value: Optional[int]) -> Optional[str]:
+    """Bytes as a size, or None when the report did not record one."""
+    return None if value is None else human(int(value))
 
 
 def _table(header: List[str], rows: List[List[Any]]) -> List[str]:
@@ -118,7 +124,8 @@ def render(payload: Dict[str, Any]) -> str:
             ["quantity", "value"],
             [
                 ["estimated resident arrays", memory.get("estimated_resident_human")],
-                ["assumed overhead", memory.get("estimated_total_human")],
+                ["assumed overhead", _human(memory.get("assumed_overhead_bytes"))],
+                ["estimated total", memory.get("estimated_total_human")],
                 ["budget", memory.get("budget_human")],
                 ["SHPROP chunk rows", io_block.get("chunk_rows")],
                 ["chunks per history", io_block.get("chunks_per_history")],
