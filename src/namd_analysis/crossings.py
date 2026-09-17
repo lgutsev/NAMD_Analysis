@@ -107,6 +107,10 @@ class CharacterSeries:
     bands: np.ndarray
     groups: List[str]
     weights: np.ndarray  # (nframe, nband, ngroup)
+    #: ``sum_g W_ig`` before normalization, when the table carries it.
+    #: ``w_ig * captured`` recovers the raw PAW-sphere weight, which is
+    #: what a normalization-artifact check needs.
+    captured: Optional[np.ndarray] = None  # (nframe, nband)
 
     def frame_index(self) -> Dict[int, int]:
         return {int(f): i for i, f in enumerate(self.frames)}
@@ -124,6 +128,7 @@ def read_projection_character(path) -> CharacterSeries:
     """
     path = Path(path)
     rows: Dict[Tuple[int, int], Dict[str, float]] = {}
+    captured_rows: Dict[Tuple[int, int], float] = {}
     groups: List[str] = []
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -141,6 +146,8 @@ def read_projection_character(path) -> CharacterSeries:
             if group not in groups:
                 groups.append(group)
             rows.setdefault((frame, band), {})[group] = float(record["normalized_weight"])
+            if record.get("captured_projection") not in (None, ""):
+                captured_rows[(frame, band)] = float(record["captured_projection"])
     if not rows:
         raise CrossingError(f"{path}: no rows")
 
@@ -159,11 +166,18 @@ def read_projection_character(path) -> CharacterSeries:
             f"{path}: {missing_count} (frame, band, group) cell(s) are absent. "
             "The table must be rectangular; nothing here fills a gap."
         )
+    captured = None
+    if len(captured_rows) == len(rows):
+        captured = np.empty((len(frames), len(bands)), dtype=float)
+        for (frame, band), value in captured_rows.items():
+            captured[frame_at[frame], band_at[band]] = value
+
     return CharacterSeries(
         frames=np.asarray(frames, dtype=int),
         bands=np.asarray(bands, dtype=int),
         groups=groups,
         weights=weights,
+        captured=captured,
     )
 
 
@@ -306,8 +320,8 @@ class CrossingEvent:
     #: at fixed character, and character moving at fixed occupation. Only a
     #: single history carries the per-band populations this needs, so both are
     #: ``None`` on the ensemble path. See :class:`HistoryPopulation`.
-    population_driven_change: Optional[float] = None
-    character_driven_change: Optional[float] = None
+    occupation_redistribution: Optional[float] = None
+    character_evolution: Optional[float] = None
 
     def as_row(self) -> List[Any]:
         return [
@@ -317,7 +331,7 @@ class CrossingEvent:
             self.dominant_j_before, self.dominant_j_after,
             self.small_gap, self.strong_nac, self.character_swap,
             self.fragment_population_change,
-            self.population_driven_change, self.character_driven_change,
+            self.occupation_redistribution, self.character_evolution,
             self.classification,
         ]
 
@@ -329,7 +343,7 @@ EVENT_HEADER = [
     "dominant_j_before", "dominant_j_after",
     "small_gap", "strong_nac", "character_swap",
     "fragment_population_change",
-    "population_driven_change", "character_driven_change",
+    "occupation_redistribution", "character_evolution",
     "classification",
 ]
 
@@ -402,7 +416,7 @@ def _classify(
     population_change: Optional[float],
     population_tolerance: float,
     direction_agrees: Optional[bool] = None,
-    population_driven_change: Optional[float] = None,
+    occupation_redistribution: Optional[float] = None,
 ) -> Tuple[str, str]:
     """Name what happened, and refuse to name what the data do not show.
 
@@ -436,8 +450,8 @@ def _classify(
     elif (
         character_swap
         and moved
-        and population_driven_change is not None
-        and abs(population_driven_change) <= population_tolerance
+        and occupation_redistribution is not None
+        and abs(occupation_redistribution) <= population_tolerance
     ):
         # The total moved, but every bit of it was the weights moving.
         label = "character_swap_without_fragment_transfer"
@@ -691,13 +705,13 @@ class HistoryPopulation:
     second is the character moving under fixed occupation.  **A band-index swap
     produces the second mechanically**, which is why the total on its own
     cannot say whether charge moved -- and why the direction test runs on
-    ``population_driven`` alone.  Row 0 has no previous step and is zero in
+    ``occupation_redistribution`` alone.  Row 0 has no previous step and is zero in
     both.
     """
 
     total: np.ndarray  # (ntime, ngroup)
-    population_driven: np.ndarray  # (ntime, ngroup)
-    character_driven: np.ndarray  # (ntime, ngroup)
+    occupation_redistribution: np.ndarray  # (ntime, ngroup)
+    character_evolution: np.ndarray  # (ntime, ngroup)
     time_raw: np.ndarray  # (ntime,), the file's own time column
 
 
@@ -794,11 +808,15 @@ def history_fragment_population(
         else:
             shifted_pops = np.concatenate([previous_pops[None, :], pops[:-1]])
             shifted_weights = np.concatenate([previous_weights[None, :, :], weights[:-1]])
+        # Symmetric midpoint split. An endpoint-biased form is equally exact
+        # in the sum but assigns up to ~0.5 of a population differently between
+        # the two terms, so the symmetric one is used: neither endpoint is
+        # privileged.
         driven_pop[offset : offset + rows] = np.einsum(
-            "ts,tsg->tg", pops - shifted_pops, weights
+            "ts,tsg->tg", pops - shifted_pops, 0.5 * (weights + shifted_weights)
         )
         driven_char[offset : offset + rows] = np.einsum(
-            "ts,tsg->tg", shifted_pops, weights - shifted_weights
+            "ts,tsg->tg", 0.5 * (pops + shifted_pops), weights - shifted_weights
         )
         previous_pops = pops[-1].copy()
         previous_weights = weights[-1].copy()
@@ -809,8 +827,8 @@ def history_fragment_population(
         )
     return HistoryPopulation(
         total=out,
-        population_driven=driven_pop,
-        character_driven=driven_char,
+        occupation_redistribution=driven_pop,
+        character_evolution=driven_char,
         time_raw=times,
     )
 
@@ -906,18 +924,18 @@ def detect_history_events(
                     _swap_moves(
                         dom_i_before, dom_i_after, dom_j_before, dom_j_after
                     ),
-                    dict(zip(character.groups, split.population_driven[step])),
+                    dict(zip(character.groups, split.occupation_redistribution[step])),
                     population_tolerance,
                 ),
-                float(np.max(np.abs(split.population_driven[step]))),
+                float(np.max(np.abs(split.occupation_redistribution[step]))),
             )
             events.append(
                 CrossingEvent(
-                    population_driven_change=float(
-                        np.max(np.abs(split.population_driven[step]))
+                    occupation_redistribution=float(
+                        np.max(np.abs(split.occupation_redistribution[step]))
                     ),
-                    character_driven_change=float(
-                        np.max(np.abs(split.character_driven[step]))
+                    character_evolution=float(
+                        np.max(np.abs(split.character_evolution[step]))
                     ),
                     frame=after_frame,
                     band_i=bi,

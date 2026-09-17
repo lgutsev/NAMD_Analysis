@@ -202,11 +202,11 @@ class TransferAnalysis:
 
 
 def occupation_driven_trajectory(
-    initial: Sequence[float], population_driven: np.ndarray
+    initial: Sequence[float], occupation_redistribution: np.ndarray
 ) -> np.ndarray:
     """Accumulate per-step occupation-driven changes into a trajectory.
 
-    ``population_driven`` is ``(ntime, ngroup)`` with row 0 zero, as
+    ``occupation_redistribution`` is ``(ntime, ngroup)`` with row 0 zero, as
     :func:`~namd_analysis.crossings.history_fragment_population` returns it.
     The result is the population each fragment *would* have had if its
     character had been frozen at the start: occupation redistribution with the
@@ -215,9 +215,9 @@ def occupation_driven_trajectory(
     It is not the observable fragment population, and is not claimed to be.  It
     is the part of the observable that a transfer direction may be read from.
     """
-    driven = np.asarray(population_driven, dtype=float)
+    driven = np.asarray(occupation_redistribution, dtype=float)
     if driven.ndim != 2:
-        raise TransferError("population_driven must be (ntime, ngroup)")
+        raise TransferError("occupation_redistribution must be (ntime, ngroup)")
     start = np.asarray(initial, dtype=float)
     if start.shape != (driven.shape[1],):
         raise TransferError(

@@ -1,0 +1,25 @@
+{
+  "band_i": 977,
+  "band_j": 978,
+  "window": [
+    1315,
+    1335
+  ],
+  "pair_min_gap_ev": 0.01359577962461156,
+  "pair_median_gap_ev": 0.08273702851404319,
+  "neighbours": {
+    "976": {
+      "min_separation_ev": 1.103739760862243,
+      "median_separation_ev": 1.2439432713247325,
+      "ratio_to_pair_min_gap": 81.18252805923791
+    },
+    "979": {
+      "min_separation_ev": 0.004008888077099204,
+      "median_separation_ev": 0.04674398577706862,
+      "ratio_to_pair_min_gap": 0.2948626844349679
+    }
+  },
+  "closest_neighbour_separation_ev": 0.004008888077099204,
+  "isolation_ratio": 0.2948626844349679,
+  "note": "isolation_ratio is the closest approach of any neighbouring state to the pair, divided by the pair's own minimum gap. A large ratio means the pair is far closer to each other than to anything else over this window, which is what a two-state reading assumes. It is reported rather than thresholded"
+}

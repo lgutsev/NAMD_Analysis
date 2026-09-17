@@ -196,8 +196,8 @@ class SwapDirectionTests(_Crossing):
             self.assertIn("only a total population was available", event.note)
             self.assertIn("moves when the *weights* move", event.note)
             # The split is not available on this path, and is not guessed.
-            self.assertIsNone(event.population_driven_change)
-            self.assertIsNone(event.character_driven_change)
+            self.assertIsNone(event.occupation_redistribution)
+            self.assertIsNone(event.character_evolution)
 
     def test_the_helper_tests_the_population_driven_delta(self):
         from namd_analysis.crossings import _direction_agrees, _swap_moves
@@ -688,13 +688,13 @@ class PerHistoryTests(_Crossing):
         # dP = dP_pop + dP_char, to floating-point exactness.
         np.testing.assert_allclose(
             np.diff(split.total, axis=0),
-            (split.population_driven + split.character_driven)[1:],
+            (split.occupation_redistribution + split.character_evolution)[1:],
             rtol=0,
             atol=1e-12,
         )
         # The first row has no previous step and is not invented.
-        np.testing.assert_array_equal(split.population_driven[0], 0.0)
-        np.testing.assert_array_equal(split.character_driven[0], 0.0)
+        np.testing.assert_array_equal(split.occupation_redistribution[0], 0.0)
+        np.testing.assert_array_equal(split.character_evolution[0], 0.0)
 
     def test_the_split_does_not_depend_on_where_the_chunks_fall(self):
         from namd_analysis.crossings import history_fragment_population
@@ -711,7 +711,7 @@ class PerHistoryTests(_Crossing):
                 self.histories[0], state_map, character, [976, 977], frames,
                 chunk_rows=chunk_rows,
             )
-            for name in ("total", "population_driven", "character_driven"):
+            for name in ("total", "occupation_redistribution", "character_evolution"):
                 np.testing.assert_allclose(
                     getattr(part, name), getattr(whole, name), rtol=0, atol=1e-12,
                     err_msg=f"{name} changed at chunk_rows={chunk_rows}",
@@ -735,10 +735,10 @@ class PerHistoryTests(_Crossing):
         split = history_fragment_population(
             path, StateMap.from_json(self.state_map_path), character, [976, 977], frames
         )
-        self.assertLess(float(np.max(np.abs(split.population_driven))), 1e-12)
-        self.assertGreater(float(np.max(np.abs(split.character_driven))), 0.1)
+        self.assertLess(float(np.max(np.abs(split.occupation_redistribution))), 1e-12)
+        self.assertGreater(float(np.max(np.abs(split.character_evolution))), 0.1)
 
-    def test_a_purely_character_driven_change_is_not_called_transfer(self):
+    def test_a_purely_character_evolution_is_not_called_transfer(self):
         # Same history: the total fragment population moves a long way, but
         # only because the weights moved. No occupation went anywhere, so no
         # swap here may be called transfer.
@@ -758,8 +758,8 @@ class PerHistoryTests(_Crossing):
             rows = [r for r in csv.DictReader(handle) if r["character_swap"] == "True"]
         self.assertTrue(rows)
         for row in rows:
-            self.assertLess(abs(float(row["population_driven_change"])), 1e-9)
-            self.assertGreater(abs(float(row["character_driven_change"])), 0.1)
+            self.assertLess(abs(float(row["occupation_redistribution"])), 1e-9)
+            self.assertGreater(abs(float(row["character_evolution"])), 0.1)
             self.assertEqual(
                 row["classification"], "character_swap_without_fragment_transfer"
             )

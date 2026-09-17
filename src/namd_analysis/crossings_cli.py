@@ -399,11 +399,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "dP_g = sum_i [P_i(t) - P_i(t-1)] w_ig[f(t)] + "
                 "sum_i P_i(t-1) [w_ig[f(t)] - w_ig[f(t-1)]]"
             ),
-            "population_driven_change": (
+            "occupation_redistribution": (
                 "occupation moving between states at fixed character -- the part "
                 "that can mean charge transfer"
             ),
-            "character_driven_change": (
+            "character_evolution": (
                 "the character moving under fixed occupation -- what a band-index "
                 "swap produces on its own, with no charge going anywhere"
             ),
