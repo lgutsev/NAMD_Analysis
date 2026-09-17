@@ -302,6 +302,12 @@ class CrossingEvent:
     fragment_population_change: Optional[float]
     classification: str
     note: str
+    #: The exact split of ``fragment_population_change`` into occupation moving
+    #: at fixed character, and character moving at fixed occupation. Only a
+    #: single history carries the per-band populations this needs, so both are
+    #: ``None`` on the ensemble path. See :class:`HistoryPopulation`.
+    population_driven_change: Optional[float] = None
+    character_driven_change: Optional[float] = None
 
     def as_row(self) -> List[Any]:
         return [
@@ -310,7 +316,9 @@ class CrossingEvent:
             self.dominant_i_before, self.dominant_i_after,
             self.dominant_j_before, self.dominant_j_after,
             self.small_gap, self.strong_nac, self.character_swap,
-            self.fragment_population_change, self.classification,
+            self.fragment_population_change,
+            self.population_driven_change, self.character_driven_change,
+            self.classification,
         ]
 
 
@@ -320,8 +328,71 @@ EVENT_HEADER = [
     "dominant_i_before", "dominant_i_after",
     "dominant_j_before", "dominant_j_after",
     "small_gap", "strong_nac", "character_swap",
-    "fragment_population_change", "classification",
+    "fragment_population_change",
+    "population_driven_change", "character_driven_change",
+    "classification",
 ]
+
+
+def _swap_moves(
+    dom_i_before: str, dom_i_after: str, dom_j_before: str, dom_j_after: str
+) -> List[Tuple[str, str]]:
+    """The ``(from, to)`` fragment moves a dominance swap implies."""
+    moves = []
+    if dom_i_before != dom_i_after:
+        moves.append((dom_i_before, dom_i_after))
+    if dom_j_before != dom_j_after:
+        moves.append((dom_j_before, dom_j_after))
+    return moves
+
+
+CONFOUND_NOTE = (
+    "a change in total fragment population cannot say whether charge moved: "
+    "P_g = sum_i P_i w_ig moves when the *weights* move, so a band-index swap "
+    "shifts it mechanically, at fixed occupation. Only the population-driven "
+    "part of the change can be tested against the swap direction, and that "
+    "needs the per-band populations, which only a single SHPROP history has"
+)
+
+
+def _direction_agrees(
+    moves: Sequence[Tuple[str, str]],
+    delta: Optional[Dict[str, float]],
+    tolerance: float,
+) -> Optional[bool]:
+    """Did *occupation* move the way the dominance swap did?
+
+    ``delta`` must be the **population-driven** part of the change,
+    ``sum_i [P_i(t) - P_i(t-1)] w_ig[f(t)]``, not the total.  The total is
+    confounded: see :data:`CONFOUND_NOTE`.
+
+    Agreement means the fragment the dominance moved *to* gained occupation
+    while the one it left lost it.  A magnitude alone cannot say this -- a
+    population can move at the same step as a swap and have nothing to do with
+    it, and calling that transfer would read co-occurrence as cause.
+
+    ``None`` where the question is not well posed, and the caller must not read
+    that as either answer:
+
+    * no population-driven change was supplied (the caller has only a total);
+    * the character changed without any band's dominant fragment moving, so
+      there is no swap direction at all;
+    * the swap names **no single direction** -- the usual two-state avoided
+      crossing, where one band goes BCF->PCBM while the other goes PCBM->BCF.
+      The pair exchanged character, so occupation moving either way would
+      "agree" with one of the two bands.  That case cannot be decided, and is
+      reported as undecided rather than resolved in favour of transfer.
+    """
+    if delta is None or not moves:
+        return None
+    sources = {source for source, _ in moves}
+    targets = {target for _, target in moves}
+    if len(targets) != 1 or (sources & targets):
+        return None
+    target = next(iter(targets))
+    if delta.get(target, 0.0) <= tolerance:
+        return False
+    return all(delta.get(source, 0.0) < -tolerance for source in sources)
 
 
 def _classify(
@@ -330,6 +401,8 @@ def _classify(
     character_swap: bool,
     population_change: Optional[float],
     population_tolerance: float,
+    direction_agrees: Optional[bool] = None,
+    population_driven_change: Optional[float] = None,
 ) -> Tuple[str, str]:
     """Name what happened, and refuse to name what the data do not show.
 
@@ -360,12 +433,48 @@ def _classify(
             "label now points at a different orbital; no charge moved between "
             "fragments. This is NOT a charge-transfer event"
         )
+    elif (
+        character_swap
+        and moved
+        and population_driven_change is not None
+        and abs(population_driven_change) <= population_tolerance
+    ):
+        # The total moved, but every bit of it was the weights moving.
+        label = "character_swap_without_fragment_transfer"
+        note = (
+            "the dominant fragment of a band index changed and the total "
+            "fragment population moved with it, but the occupation did not: "
+            "the whole change is character-driven, sum_i P_i dw_ig at fixed "
+            "P_i. The band label now points at a different orbital; no charge "
+            "moved between fragments. This is NOT a charge-transfer event"
+        )
+    elif character_swap and moved and direction_agrees is False:
+        label = "character_swap_with_unrelated_population_change"
+        note = (
+            "the character changed and the fragment population moved, but NOT "
+            "in the direction the dominance swap implies: the fragment the "
+            "dominance moved to did not gain what the one it left lost. The two "
+            "co-occurred at this step, which is not evidence of transfer "
+            "between the fragments the swap names"
+        )
+    elif character_swap and moved and direction_agrees is None:
+        label = "character_swap_with_undetermined_direction"
+        note = (
+            "the character changed and the fragment population moved, but the "
+            "direction could not be tested: either no band's dominant fragment "
+            "moved, or the two bands exchanged character so movement either "
+            "way would match one of them, or only a total population was "
+            "available -- " + CONFOUND_NOTE + ". This is co-occurrence; it is "
+            "not by itself transfer"
+        )
     elif character_swap and moved:
         label = "character_swap_with_fragment_population_change"
         note = (
             "the band's dominant fragment changed AND the fragment population "
-            "moved in the corresponding direction. This is the combination that "
-            "supports calling it transfer -- the character alone would not"
+            "moved in the corresponding direction -- the fragment the dominance "
+            "moved to gained population, and the one it left lost it. This is "
+            "the combination that supports calling it transfer; the character "
+            "alone would not"
         )
     elif moved and not character_swap:
         label = "fragment_population_change_without_character_swap"
@@ -462,6 +571,7 @@ def detect_events(
                 continue
 
             change = None
+            before = after = None
             if fragment_population is not None:
                 before = fragment_population.get(previous)
                 after = fragment_population.get(frame)
@@ -473,6 +583,11 @@ def detect_events(
                         )
                     )
 
+            # A caller of detect_events supplies only a *total* fragment
+            # population, which cannot be split into its population-driven and
+            # character-driven parts, so no direction is claimed here. The
+            # per-history path, which has the per-band populations, does the
+            # real test.
             label, note = _classify(
                 small_gap, strong_nac, swap or exchanged, change, population_tolerance
             )
@@ -564,6 +679,29 @@ def sensitivity(
 
 
 @dataclass
+class HistoryPopulation:
+    """One history's fragment population, and what moved it.
+
+    Each step's change splits exactly, ``dP_g = dP_g^pop + dP_g^char`` with
+
+        dP_g^pop  = sum_i [P_i(t) - P_i(t-1)] w_ig[f(t)]
+        dP_g^char = sum_i P_i(t-1) [w_ig[f(t)] - w_ig[f(t-1)]]
+
+    The first is occupation moving between states at fixed character; the
+    second is the character moving under fixed occupation.  **A band-index swap
+    produces the second mechanically**, which is why the total on its own
+    cannot say whether charge moved -- and why the direction test runs on
+    ``population_driven`` alone.  Row 0 has no previous step and is zero in
+    both.
+    """
+
+    total: np.ndarray  # (ntime, ngroup)
+    population_driven: np.ndarray  # (ntime, ngroup)
+    character_driven: np.ndarray  # (ntime, ngroup)
+    time_raw: np.ndarray  # (ntime,), the file's own time column
+
+
+@dataclass
 class HistoryEvents:
     """Events found along one history, with the window each fell in."""
 
@@ -593,17 +731,19 @@ def history_fragment_population(
     bands: Sequence[int],
     frames: np.ndarray,
     chunk_rows: int = 100_000,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> "HistoryPopulation":
     """``P_g(t) = sum_i P_i(t) w_ig[f(t)]`` for one history, streamed.
 
     The same diagonal contraction ``character-populations`` performs, but kept
     per history rather than averaged, because an event has to be classified on
     the history that produced it.
 
-    Returns the population and this history's **own** time column, read from
-    the file.  The time axis is not reconstructed from the first and last rows:
-    that would assume a uniform grid, and an event would then be assigned to a
-    window on the strength of the assumption rather than the data.
+    Also returns the exact split of each step's change into its
+    population-driven and character-driven parts (see
+    :class:`HistoryPopulation`), and this history's **own** time column, read
+    from the file.  The time axis is not reconstructed from the first and last
+    rows: that would assume a uniform grid, and an event would then be assigned
+    to a window on the strength of the assumption rather than the data.
     """
     from .io.hefei import iter_shprop_chunks
 
@@ -619,7 +759,10 @@ def history_fragment_population(
     columns = np.asarray(state_map.population_columns, dtype=int)
 
     out = np.empty((frames.size, len(character.groups)), dtype=float)
+    driven_pop = np.zeros_like(out)
+    driven_char = np.zeros_like(out)
     times = np.empty(frames.size, dtype=float)
+    previous_pops = previous_weights = None
     rows_seen = 0
     for offset, chunk in iter_shprop_chunks(Path(shprop_path), chunk_rows):
         rows = chunk.shape[0]
@@ -636,16 +779,40 @@ def history_fragment_population(
                 f"{unknown[:10]} that the character table does not cover"
             )
         indices = np.asarray([frame_at[int(f)] for f in slice_frames], dtype=int)
-        out[offset : offset + rows] = np.einsum(
-            "ts,tsg->tg", chunk[:, columns], selected[indices]
-        )
+        pops = chunk[:, columns]
+        weights = selected[indices]
+        out[offset : offset + rows] = np.einsum("ts,tsg->tg", pops, weights)
         times[offset : offset + rows] = chunk[:, state_map.time_column]
+
+        # Split each step's change exactly. The first row of the file has no
+        # previous step, so it is compared with itself and both parts are zero;
+        # at a chunk join the carried-over row makes the split identical to
+        # what a single-chunk read would give.
+        if previous_pops is None:
+            shifted_pops = np.concatenate([pops[:1], pops[:-1]])
+            shifted_weights = np.concatenate([weights[:1], weights[:-1]])
+        else:
+            shifted_pops = np.concatenate([previous_pops[None, :], pops[:-1]])
+            shifted_weights = np.concatenate([previous_weights[None, :, :], weights[:-1]])
+        driven_pop[offset : offset + rows] = np.einsum(
+            "ts,tsg->tg", pops - shifted_pops, weights
+        )
+        driven_char[offset : offset + rows] = np.einsum(
+            "ts,tsg->tg", shifted_pops, weights - shifted_weights
+        )
+        previous_pops = pops[-1].copy()
+        previous_weights = weights[-1].copy()
         rows_seen += rows
     if rows_seen != frames.size:
         raise CrossingError(
             f"{shprop_path}: {rows_seen} rows against {frames.size} resolved frames"
         )
-    return out, times
+    return HistoryPopulation(
+        total=out,
+        population_driven=driven_pop,
+        character_driven=driven_char,
+        time_raw=times,
+    )
 
 
 def detect_history_events(
@@ -674,10 +841,11 @@ def detect_history_events(
     """
     thresholds = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
     bands = [int(b) for b in character.bands]
-    population, time_raw = history_fragment_population(
+    split = history_fragment_population(
         shprop_path, state_map, character, bands, frames, chunk_rows=chunk_rows
     )
-    time_ns = time_raw / state_map.to_ns
+    population = split.total
+    time_ns = split.time_raw / state_map.to_ns
 
     band_at = character.band_index()
     frame_at = character.frame_index()
@@ -729,10 +897,28 @@ def detect_history_events(
             if not (swap or exchanged or small_gap or strong_nac):
                 continue
             label, note = _classify(
-                small_gap, strong_nac, swap or exchanged, change, population_tolerance
+                small_gap,
+                strong_nac,
+                swap or exchanged,
+                change,
+                population_tolerance,
+                _direction_agrees(
+                    _swap_moves(
+                        dom_i_before, dom_i_after, dom_j_before, dom_j_after
+                    ),
+                    dict(zip(character.groups, split.population_driven[step])),
+                    population_tolerance,
+                ),
+                float(np.max(np.abs(split.population_driven[step]))),
             )
             events.append(
                 CrossingEvent(
+                    population_driven_change=float(
+                        np.max(np.abs(split.population_driven[step]))
+                    ),
+                    character_driven_change=float(
+                        np.max(np.abs(split.character_driven[step]))
+                    ),
                     frame=after_frame,
                     band_i=bi,
                     band_j=bj,

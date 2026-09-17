@@ -85,10 +85,13 @@ So:
 
 `character-crossings` enforces this. An event is only classified as
 `character_swap_with_fragment_population_change` when the fragment population
-actually moved in the corresponding direction. Where the character exchanged
-and the population did not follow, the classification is
-`character_swap_without_fragment_transfer` and the summary says outright that
-these are not charge-transfer events.
+actually moved in the corresponding direction — see
+[below](#did-the-charge-move-the-way-the-character-did) for what that test is
+and when it cannot be run. Where the character exchanged and the population did
+not follow, the classification is `character_swap_without_fragment_transfer`
+and the summary says outright that these are not charge-transfer events. Where
+it moved the *other* way, it is
+`character_swap_with_unrelated_population_change`.
 
 ## Adiabatic states vs physical fragments: two different maps
 
@@ -127,6 +130,64 @@ somewhere — that a band index stopped naming the orbital the map says it names
 It is **not** a flux, a transfer rate, or an extraction. Both series are
 diagonal in the adiabatic basis, so the difference is about labelling alone and
 says nothing about the coherences neither one contains.
+
+## Did the charge move the way the character did?
+
+A population that moves at the same step as a swap has not thereby moved
+*because* of it. **Nothing is called transfer unless the fragment the dominance
+moved to gained the occupation the one it left lost.**
+
+### The total cannot answer this
+
+`P_g = Σ_i P_i w_ig` moves when the **weights** move. A band-index swap changes
+`w_ig` by construction, so it shifts `P_g` mechanically *at fixed occupation* —
+no charge has to go anywhere. Testing the total against the swap direction
+would therefore confirm "transfer" at very nearly every swap, which is the
+opposite of what this module is for.
+
+So each step's change is split first, exactly:
+
+```
+ΔP_g   =   ΔP_g^pop                    +   ΔP_g^char
+       =   Σ_i [P_i(t) − P_i(t−1)] w_ig[f(t)]
+                                       +   Σ_i P_i(t−1) [w_ig[f(t)] − w_ig[f(t−1)]]
+```
+
+`ΔP_g^pop` is occupation moving between states at fixed character — the part
+that can mean charge transfer. `ΔP_g^char` is the character moving under fixed
+occupation — the part a swap produces on its own. Both are written to
+`per_history_events.csv` as `population_driven_change` and
+`character_driven_change`, and **the direction test runs on `ΔP_g^pop` alone.**
+
+This needs the per-band populations `P_i(t)`, which only a single SHPROP
+history carries. `detect_events`, given a pre-contracted total, therefore never
+claims a direction — it reports `character_swap_with_undetermined_direction`
+and says why.
+
+| outcome | label |
+| --- | --- |
+| occupation moved the way the swap did | `character_swap_with_fragment_population_change` |
+| it moved, but not that way | `character_swap_with_unrelated_population_change` |
+| occupation did not move at all — the whole change was `ΔP^char` | `character_swap_without_fragment_transfer` |
+| the direction could not be tested | `character_swap_with_undetermined_direction` |
+
+The third row is the case the split exists to catch: the *total* fragment
+population can move a long way at a swap while `ΔP^pop` is zero, because the
+weights moved and the occupation did not. Before the split that looked
+identical to transfer.
+
+The last row is an honest verdict, not a fallback. It covers three cases: only
+a total was available; the character changed without any band's dominant
+fragment moving, so there is no direction; or the swap names **no single
+direction** — a *simultaneous* symmetric exchange, one band going BCF→PCBM
+while the other goes PCBM→BCF, where occupation moving either way would match
+one of the two. That is undecidable, and is reported as undecided rather than
+resolved in favour of transfer.
+
+When the two flips land a frame apart, each names a single direction and each
+is tested on its own. One steady occupation ramp then agrees with one flip and
+contradicts the other — which is the point: reporting both as transfer would
+count one exchange twice.
 
 ## Couplings near ħ/dt
 

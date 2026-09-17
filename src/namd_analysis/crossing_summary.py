@@ -101,7 +101,8 @@ def _per_history_section(payload: Dict[str, Any]) -> List[str]:
         )
         out += [
             f"**{comparison['early_total']}** early against "
-            f"**{comparison['late_total']}** late. " + comparison["note"] + ".",
+            f"**{comparison['late_total']}** late. "
+            + comparison["note"][:1].upper() + comparison["note"][1:] + ".",
             "",
         ]
     elif aggregate.get("totals_by_window"):
@@ -119,9 +120,19 @@ def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
     swaps = [e for e in events if e.character_swap]
     small_gap_swaps = [e for e in swaps if e.small_gap]
     strong_nac_swaps = [e for e in swaps if e.strong_nac]
+    # Only a swap whose population moved *the way the swap did* supports a
+    # transfer reading.  A magnitude alone is co-occurrence.
     moved = [
         e for e in swaps
-        if e.fragment_population_change is not None and e.fragment_population_change > 0
+        if e.classification == "character_swap_with_fragment_population_change"
+    ]
+    unrelated = [
+        e for e in swaps
+        if e.classification == "character_swap_with_unrelated_population_change"
+    ]
+    undetermined = [
+        e for e in swaps
+        if e.classification == "character_swap_with_undetermined_direction"
     ]
 
     out: List[str] = [
@@ -157,7 +168,9 @@ def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
             ["dominant-character exchanges", len(swaps)],
             ["…that coincide with a small gap", len(small_gap_swaps)],
             ["…that coincide with a strong NAC", len(strong_nac_swaps)],
-            ["…where the fragment population also moved", len(moved)],
+            ["…where the population moved the same way the swap did", len(moved)],
+            ["…where it moved, but not that way", len(unrelated)],
+            ["…where it moved and the swap named no single direction", len(undetermined)],
         ],
     )
     out += ["By classification:", ""]
@@ -166,7 +179,7 @@ def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
         [[name, count] for name, count in counts.most_common()],
     )
 
-    if swaps and not moved:
+    if swaps and not moved and not (unrelated or undetermined):
         out += [
             "**No character exchange in this run was accompanied by a change in "
             "projection-weighted fragment population.** The band labels moved; the "
@@ -174,15 +187,40 @@ def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
             "not be described as such.",
             "",
         ]
+    elif swaps and not moved:
+        out += [
+            "**No character exchange in this run was accompanied by a fragment "
+            "population change in the direction the swap implies.** Population "
+            "did move at some of these steps, but not in a way that supports "
+            "calling any of them transfer. None may be described as a "
+            "charge-transfer event.",
+            "",
+        ]
     elif moved:
         out += [
             f"**{len(moved)} character exchange(s) were accompanied by a fragment "
-            "population change in the corresponding direction.** Those are the ones "
-            "that support a transfer reading; the remaining "
-            f"{len(swaps) - len(moved)} are relabelling of which orbital a band "
-            "index points at.",
+            "population change in the corresponding direction** — the fragment the "
+            "dominance moved to gained what the one it left lost. Those are the "
+            f"ones that support a transfer reading; the remaining "
+            f"{len(swaps) - len(moved)} are not.",
             "",
         ]
+        if unrelated:
+            out += [
+                f"**{len(unrelated)}** had the population move at the same step "
+                "but *not* in the direction the swap implies. That is "
+                "co-occurrence, and it must not be reported as transfer.",
+                "",
+            ]
+        if undetermined:
+            out += [
+                f"**{len(undetermined)}** had the population move where the swap "
+                "named no single direction — the two bands exchanged character, "
+                "so movement either way would match one of them. From a total "
+                "fragment population that cannot be decided, and it is left "
+                "undecided rather than counted as transfer.",
+                "",
+            ]
 
     out += _per_history_section(payload)
 

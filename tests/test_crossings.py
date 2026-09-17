@@ -169,6 +169,73 @@ class PopulationHopWithStableCharacterTests(_Crossing):
             self.assertEqual(event.dominant_j_before, event.dominant_j_after)
 
 
+class SwapDirectionTests(_Crossing):
+    """A population that moves at the same step is not yet transfer."""
+
+    def test_a_total_population_cannot_decide_a_direction(self):
+        # detect_events receives only a total fragment population. That total
+        # moves when the *weights* move, so a swap shifts it mechanically at
+        # fixed occupation; no direction may be claimed from it.
+        moving = np.array([[0.9, 0.1]] * 20 + [[0.1, 0.9]] * 21)
+        stable = np.tile([[0.05, 0.95]], (self.nframes, 1))
+        character = self._series({976: moving, 977: stable})
+        ramp = np.linspace(0.9, 0.1, self.nframes)
+        population = {
+            int(f): {"BCF": ramp[i], "PCBM": 1.0 - ramp[i]}
+            for i, f in enumerate(self.frames)
+        }
+        events = detect_events(
+            character, self._couplings(), [(976, 977)], fragment_population=population
+        )
+        moved = [e for e in events if e.character_swap and e.fragment_population_change]
+        self.assertTrue(moved)
+        for event in moved:
+            self.assertEqual(
+                event.classification, "character_swap_with_undetermined_direction"
+            )
+            self.assertIn("only a total population was available", event.note)
+            self.assertIn("moves when the *weights* move", event.note)
+            # The split is not available on this path, and is not guessed.
+            self.assertIsNone(event.population_driven_change)
+            self.assertIsNone(event.character_driven_change)
+
+    def test_the_helper_tests_the_population_driven_delta(self):
+        from namd_analysis.crossings import _direction_agrees, _swap_moves
+
+        # One band moves BCF -> PCBM, the other stands still: a single direction.
+        moves = _swap_moves("BCF", "PCBM", "PCBM", "PCBM")
+        self.assertIs(
+            _direction_agrees(moves, {"BCF": -0.4, "PCBM": 0.4}, 1e-3), True
+        )
+        self.assertIs(
+            _direction_agrees(moves, {"BCF": 0.4, "PCBM": -0.4}, 1e-3), False
+        )
+        # Occupation did not move at all: the swap was character-driven only.
+        self.assertIs(
+            _direction_agrees(moves, {"BCF": 0.0, "PCBM": 0.0}, 1e-3), False
+        )
+
+    def test_the_helper_leaves_an_undecidable_question_open(self):
+        from namd_analysis.crossings import _direction_agrees, _swap_moves
+
+        delta = {"BCF": -0.4, "PCBM": 0.4}
+        # Both bands swap, oppositely: either direction would match one of
+        # them, so this is undecidable -- None, and emphatically not False.
+        both = _swap_moves("BCF", "PCBM", "PCBM", "BCF")
+        self.assertIsNone(_direction_agrees(both, delta, 1e-3))
+        # No band moved its dominant fragment: no direction to test.
+        self.assertIsNone(_direction_agrees([], delta, 1e-3))
+        # No population-driven delta supplied: the caller has only a total.
+        self.assertIsNone(_direction_agrees(both, None, 1e-3))
+
+    def test_the_confound_is_stated_where_it_applies(self):
+        from namd_analysis.crossings import CONFOUND_NOTE
+
+        self.assertIn("sum_i P_i w_ig", CONFOUND_NOTE)
+        self.assertIn("at fixed occupation", CONFOUND_NOTE)
+        self.assertIn("per-band populations", CONFOUND_NOTE)
+
+
 class SimultaneousEventTests(_Crossing):
     """Small gap, enhanced NAC and character exchange at the same frame."""
 
@@ -337,11 +404,15 @@ class PerHistoryTests(_Crossing):
         self.nframes = 8
         self.frames = np.arange(1, self.nframes + 1)
         self.energies, self.nac, self.weights = avoided_crossing(self.nframes)
-        swapped = np.column_stack([self.weights[:, 1], self.weights[:, 0]])
+        # 976 flips BCF -> PCBM halfway round the cycle; 977 stays PCBM. Only
+        # one band's dominance moves, so the swap names a single direction and
+        # the population can actually be tested against it.
+        moving = np.array([[0.9, 0.1]] * 4 + [[0.1, 0.9]] * 4)
+        stable = np.tile([[0.05, 0.95]], (self.nframes, 1))
         self.character_path = write_character(
             self.root / "projection_character.csv",
             self.frames,
-            {976: self.weights, 977: swapped},
+            {976: moving, 977: stable},
         )
         self.eig, self.nat = write_couplings(self.root, self.energies, self.nac)
         self.state_map_path = write_state_map(self.root)
@@ -439,14 +510,28 @@ class PerHistoryTests(_Crossing):
         self.assertGreater(totals["character_swap_with_fragment_population_change"], 0)
 
     def test_two_histories_moving_oppositely_do_not_cancel(self):
-        # Averaged first, a rise and a matching fall leave a flat population
-        # and no transfer at all.  Classified first, both are counted.
+        # Averaged first, a rise and a matching fall leave a flat population,
+        # no population change at all, and therefore no transfer anywhere.
         rising = write_history(self.root, "SHPROP.1", self.nframes + 1, 24, 0.0, 1.0)
         falling = write_history(self.root, "SHPROP.5", self.nframes + 1, 24, 1.0, 0.0)
         _, report = self._run(histories=[rising, falling])
-        moved = "character_swap_with_fragment_population_change"
-        for record in report["per_history"]["per_history"]:
-            self.assertGreater(record["by_classification"].get(moved, 0), 0)
+        by_name = {
+            r["file"]: r["by_classification"]
+            for r in report["per_history"]["per_history"]
+        }
+        agrees = "character_swap_with_fragment_population_change"
+        disagrees = "character_swap_with_unrelated_population_change"
+        # 976's dominance moves to PCBM at one step of the cycle and back to
+        # BCF at the wrap. The rising history's *occupation* follows the first
+        # and contradicts the second; the falling history is the mirror image.
+        # Either way both labels must appear, and each history must differ from
+        # the other -- which an average taken first could not show.
+        self.assertGreater(by_name["SHPROP.1"].get(agrees, 0), 0)
+        self.assertGreater(by_name["SHPROP.1"].get(disagrees, 0), 0)
+        self.assertGreater(by_name["SHPROP.5"].get(agrees, 0), 0)
+        self.assertGreater(by_name["SHPROP.5"].get(disagrees, 0), 0)
+        # The mean of the two is flat, so an average taken first would have
+        # shown neither.
         mean = 0.5 * (np.linspace(0.0, 1.0, 24) + np.linspace(1.0, 0.0, 24))
         self.assertLess(float(np.max(np.abs(np.diff(mean)))), 1.0e-12)
 
@@ -542,13 +627,14 @@ class PerHistoryTests(_Crossing):
 
         character = read_projection_character(self.character_path)
         frames = np.array([1, 2, 3] * 8)
-        population, times = history_fragment_population(
+        split = history_fragment_population(
             self.histories[0],
             StateMap.from_json(self.state_map_path),
             character,
             [976, 977],
             frames,
         )
+        population, times = split.total, split.time_raw
         raw = np.loadtxt(self.histories[0])
         band_at = character.band_index()
         frame_at = character.frame_index()
@@ -577,14 +663,108 @@ class PerHistoryTests(_Crossing):
         path.write_text("\n".join(text) + "\n", encoding="utf-8")
 
         character = read_projection_character(self.character_path)
-        _, times = history_fragment_population(
+        split = history_fragment_population(
             path,
             StateMap.from_json(self.state_map_path),
             character,
             [976, 977],
             np.array([1, 2, 3] * 8),
         )
-        self.assertAlmostEqual(float(times[1]), 15000.0, places=6)
+        self.assertAlmostEqual(float(split.time_raw[1]), 15000.0, places=6)
+
+    def test_the_change_splits_exactly_into_population_and_character_parts(self):
+        from namd_analysis.crossings import history_fragment_population
+        from namd_analysis.populations import StateMap
+
+        character = read_projection_character(self.character_path)
+        frames = np.array([((t) % self.nframes) + 1 for t in range(24)])
+        split = history_fragment_population(
+            self.histories[0],
+            StateMap.from_json(self.state_map_path),
+            character,
+            [976, 977],
+            frames,
+        )
+        # dP = dP_pop + dP_char, to floating-point exactness.
+        np.testing.assert_allclose(
+            np.diff(split.total, axis=0),
+            (split.population_driven + split.character_driven)[1:],
+            rtol=0,
+            atol=1e-12,
+        )
+        # The first row has no previous step and is not invented.
+        np.testing.assert_array_equal(split.population_driven[0], 0.0)
+        np.testing.assert_array_equal(split.character_driven[0], 0.0)
+
+    def test_the_split_does_not_depend_on_where_the_chunks_fall(self):
+        from namd_analysis.crossings import history_fragment_population
+        from namd_analysis.populations import StateMap
+
+        character = read_projection_character(self.character_path)
+        state_map = StateMap.from_json(self.state_map_path)
+        frames = np.array([((t) % self.nframes) + 1 for t in range(24)])
+        whole = history_fragment_population(
+            self.histories[0], state_map, character, [976, 977], frames
+        )
+        for chunk_rows in (1, 2, 5, 7, 23, 24):
+            part = history_fragment_population(
+                self.histories[0], state_map, character, [976, 977], frames,
+                chunk_rows=chunk_rows,
+            )
+            for name in ("total", "population_driven", "character_driven"):
+                np.testing.assert_allclose(
+                    getattr(part, name), getattr(whole, name), rtol=0, atol=1e-12,
+                    err_msg=f"{name} changed at chunk_rows={chunk_rows}",
+                )
+
+    def test_a_character_driven_shift_is_not_reported_as_occupation_moving(self):
+        from namd_analysis.crossings import history_fragment_population
+        from namd_analysis.populations import StateMap
+
+        # A history whose per-band populations never move. Every change in the
+        # fragment population is then character-driven by construction.
+        path = self.root / "SHPROP.9"
+        with path.open("w", encoding="utf-8") as handle:
+            print(f"# NSW = {self.nframes + 1}", file=handle)
+            for index in range(24):
+                values = [(index + 1) * 10000.0, -0.8, 0.5, 0.5]
+                print(" ".join(f"{v:.10E}" for v in values), file=handle)
+
+        character = read_projection_character(self.character_path)
+        frames = np.array([((t) % self.nframes) + 1 for t in range(24)])
+        split = history_fragment_population(
+            path, StateMap.from_json(self.state_map_path), character, [976, 977], frames
+        )
+        self.assertLess(float(np.max(np.abs(split.population_driven))), 1e-12)
+        self.assertGreater(float(np.max(np.abs(split.character_driven))), 0.1)
+
+    def test_a_purely_character_driven_change_is_not_called_transfer(self):
+        # Same history: the total fragment population moves a long way, but
+        # only because the weights moved. No occupation went anywhere, so no
+        # swap here may be called transfer.
+        path = self.root / "SHPROP.9"
+        with path.open("w", encoding="utf-8") as handle:
+            print(f"# NSW = {self.nframes + 1}", file=handle)
+            for index in range(24):
+                values = [(index + 1) * 10000.0, -0.8, 0.5, 0.5]
+                print(" ".join(f"{v:.10E}" for v in values), file=handle)
+
+        out, report = self._run(histories=[path])
+        counts = report["per_history"]["totals_by_classification"]
+        self.assertGreater(counts.get("character_swap_without_fragment_transfer", 0), 0)
+        self.assertNotIn("character_swap_with_fragment_population_change", counts)
+        self.assertNotIn("character_swap_with_unrelated_population_change", counts)
+        with (out / "per_history_events.csv").open("r", encoding="utf-8") as handle:
+            rows = [r for r in csv.DictReader(handle) if r["character_swap"] == "True"]
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertLess(abs(float(row["population_driven_change"])), 1e-9)
+            self.assertGreater(abs(float(row["character_driven_change"])), 0.1)
+            self.assertEqual(
+                row["classification"], "character_swap_without_fragment_transfer"
+            )
+            # The total did move -- it is the occupation that did not.
+            self.assertGreater(abs(float(row["fragment_population_change"])), 0.1)
 
 
 class CrossingCliTests(_Crossing):

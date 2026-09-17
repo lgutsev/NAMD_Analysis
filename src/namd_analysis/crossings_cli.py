@@ -394,6 +394,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             ),
             "shprop_alignment": args.shprop_alignment,
         },
+        "population_change_decomposition": {
+            "identity": (
+                "dP_g = sum_i [P_i(t) - P_i(t-1)] w_ig[f(t)] + "
+                "sum_i P_i(t-1) [w_ig[f(t)] - w_ig[f(t-1)]]"
+            ),
+            "population_driven_change": (
+                "occupation moving between states at fixed character -- the part "
+                "that can mean charge transfer"
+            ),
+            "character_driven_change": (
+                "the character moving under fixed occupation -- what a band-index "
+                "swap produces on its own, with no charge going anywhere"
+            ),
+            "note": (
+                "P_g = sum_i P_i w_ig moves when the weights move, so a swap "
+                "shifts the total mechanically. Only the population-driven part "
+                "is tested against the swap direction, and it needs the per-band "
+                "populations that only a single SHPROP history carries. Without "
+                "--shprop, no direction is claimed"
+            ),
+            "available": bool(args.shprop),
+        },
         "thresholds": {
             "values": thresholds,
             "note": (
