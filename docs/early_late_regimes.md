@@ -101,6 +101,40 @@ Early and late are drawn on **independent axes**, so a nanosecond scale cannot
 compress a hundred picoseconds into the first pixel. `regime_fits.png` overlays
 the fitted curves on the observations, per regime.
 
+## Memory
+
+Histories are **streamed and averaged with a running mean**, so residency is
+`O(nrows × ncols)` — **flat in the number of histories**. A campaign of one
+hundred costs the same accumulator as a campaign of five.
+
+The whole-file loader this replaced held every table at once *and* paid a
+transient of about 6.5× one array while parsing, because SHPROP text is
+materialized as Python lists before the array exists. Measured:
+
+| histories × rows | whole-file | streamed |
+| --- | --- | --- |
+| 5 × 10M | 6.3 GiB | **1.19 GiB** |
+| 100 × 10M | 62.9 GiB | **1.19 GiB** |
+
+`--shprop-chunk-rows` sets the read granularity (default 100000).
+`--accumulator-memmap-dir` spills the running mean and variance to
+memory-mapped files instead of RAM.
+
+Chunking changes residency only. A test asserts the streamed `mean`, `sem`,
+`time_ns`, `total_population` and conservation block are identical to the
+whole-file result to 1e-12 at chunk sizes from 1 row to larger than the file,
+and that every refusal is preserved: differing shapes, a differing time grid,
+populations outside `[0,1]`, unconserved complete populations, and duplicate
+files are all still errors rather than something to interpolate or renormalize.
+
+### The one thing that cannot be streamed
+
+`--bootstrap` resamples **whole histories**, so it needs each history's own
+series. That is `O(nfiles × nrows × ncols)` by construction — 63 GiB for a
+hundred 10M-row histories — and it is the only quantity retained. It is kept
+**only when `--bootstrap` is given**, so a large campaign cannot allocate it by
+accident. Without the flag the stack is never built.
+
 ## Exit behaviour
 
 The command fails rather than guessing: an empty window, a window with fewer

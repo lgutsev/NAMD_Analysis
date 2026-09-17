@@ -18,7 +18,12 @@ import numpy as np
 
 from .kinetics import KineticsError, parse_edges
 from .observables import LEGEND
-from .populations import ConfigError, StateMap, group_series, load_population_set
+from .populations import (
+    ConfigError,
+    StateMap,
+    group_series,
+    load_population_set_streaming,
+)
 from .provenance import environment, fingerprint
 from .regimes import (
     DEFAULT_EARLY_WINDOW_NS,
@@ -117,6 +122,21 @@ def build_parser(prog: str = "namd-analysis regime-analysis") -> argparse.Argume
     )
     parser.add_argument("--bootstrap-seed", type=int, default=0)
     parser.add_argument(
+        "--shprop-chunk-rows", type=int, default=100_000,
+        help=(
+            "rows read from each history at a time (default 100000). Histories "
+            "are streamed and averaged with a running mean, so residency is "
+            "flat in the number of histories"
+        ),
+    )
+    parser.add_argument(
+        "--accumulator-memmap-dir", default=None,
+        help=(
+            "spill the running mean/variance to memory-mapped files in this "
+            "directory instead of holding them in RAM"
+        ),
+    )
+    parser.add_argument(
         "--acceptor", default="PCBM", help="group named in the reviewer questions"
     )
     parser.add_argument("--donor", default="BCF")
@@ -205,7 +225,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         paths = _expand(args.files)
         state_map = StateMap.from_json(args.config)
-        population = load_population_set(paths, state_map)
+        # --bootstrap resamples whole histories, so it needs every history's
+        # own series: that is the one quantity which is O(nfiles x nrows x
+        # ncols) by construction and cannot be streamed away. It is retained
+        # only when asked for, so a campaign of hundreds does not allocate it
+        # by accident.
+        population = load_population_set_streaming(
+            paths,
+            state_map,
+            chunk_rows=args.shprop_chunk_rows,
+            memmap_dir=Path(args.accumulator_memmap_dir)
+            if args.accumulator_memmap_dir
+            else None,
+            retain_stack=bool(args.bootstrap),
+        )
         series = [(g.name, g.values) for g in group_series(population, state_map)]
         groups = [name for name, _ in series]
         observed = np.column_stack([values for _, values in series])

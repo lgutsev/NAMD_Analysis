@@ -369,3 +369,155 @@ def survival(population: PopulationSet, state_map: StateMap) -> Optional[np.ndar
         return None
     columns = state_map.groups[state_map.recombined_group]
     return 1.0 - population.mean[:, columns].sum(axis=1)
+
+
+def load_population_set_streaming(
+    paths: Sequence,
+    state_map: StateMap,
+    chunk_rows: int = 100_000,
+    memmap_dir: Optional[Path] = None,
+    retain_stack: bool = False,
+) -> PopulationSet:
+    """:func:`load_population_set`, without holding every history at once.
+
+    The whole-file loader reads all SHPROP tables and stacks them, so its
+    residency is ``O(nfiles x nrows x ncols)`` *and* it pays a transient of
+    about 6.5x one array while parsing, because the text is materialized as
+    Python lists before the array exists.  Five 10M-row histories need ~6.3 GiB
+    that way; a campaign of hundreds cannot be loaded at all.
+
+    This walks each history in row chunks and accumulates a Welford mean and
+    variance across files, so residency is ``O(nrows x ncols)`` -- **flat in
+    the number of histories**.  The result is the same ``PopulationSet``.
+
+    Every check the whole-file path makes is preserved, not relaxed: identical
+    shapes, one shared and strictly increasing time grid, populations inside
+    ``[0, 1]``, and complete populations summing to one **per history**.  None
+    of them is weakened for large inputs, and nothing is interpolated,
+    truncated or resampled.
+
+    ``stack`` is ``None`` unless ``retain_stack``, because it is the quantity
+    that cannot scale: it is ``O(nfiles x nrows x ncols)`` by definition, and a
+    bootstrap over hundreds of long histories has to be declared rather than
+    allocated by accident.
+    """
+    from .io.hefei import iter_shprop_chunks, shprop_structure
+    from .streaming import (
+        ConservationTally,
+        OnlineEnsemble,
+        StreamingError,
+        TimeGridCheck,
+    )
+
+    paths = [Path(p) for p in paths]
+    if not paths:
+        raise InputMismatchError("no SHPROP files were given")
+    state_map.validate()
+    if len({p.resolve() for p in paths}) != len(paths):
+        raise InputMismatchError("duplicate population files")
+
+    structures = [shprop_structure(path) for path in paths]
+    shapes = {(s.n_rows, s.n_columns) for s in structures}
+    if len(shapes) != 1:
+        grouped: Dict[Any, List[str]] = {}
+        for path, structure in zip(paths, structures):
+            grouped.setdefault((structure.n_rows, structure.n_columns), []).append(path.name)
+        parts = []
+        for shape, names in sorted(grouped.items(), key=lambda item: -len(item[1])):
+            sample = ", ".join(names[:5]) + ("..." if len(names) > 5 else "")
+            parts.append(f"{shape} in {len(names)} file(s) ({sample})")
+        raise InputMismatchError(
+            "SHPROP files have different shapes: "
+            + "; ".join(parts)
+            + ". No interpolation or truncation is performed."
+        )
+
+    nrows, ncols = shapes.pop()
+    needed = max([state_map.time_column] + state_map.population_columns)
+    if needed >= ncols:
+        raise InputMismatchError(
+            f"configuration references column {needed} but the files have {ncols} columns"
+        )
+    if nrows < 2:
+        raise InputMismatchError(
+            "population time must strictly increase with at least two samples"
+        )
+
+    columns = np.asarray(state_map.population_columns, dtype=int)
+    ensemble = OnlineEnsemble(
+        ntime=nrows, nvalues=ncols, memmap_dir=memmap_dir, name="population"
+    )
+    # The first history establishes the grid as it streams. Comparing it
+    # against itself is a tautology, but it puts the first history through the
+    # same strict-increase checks as every other one.
+    reference = np.empty(nrows, dtype=float)
+    grid = TimeGridCheck(reference=reference)
+    stack_rows: Optional[List[np.ndarray]] = [] if retain_stack else None
+
+    try:
+        for index, path in enumerate(paths):
+            ensemble.begin_file()
+            grid.begin_file()
+            tally = ConservationTally(atol=CONSERVATION_ATOL)
+            per_file: Optional[np.ndarray] = (
+                np.empty((nrows, ncols), dtype=float) if retain_stack else None
+            )
+            seen = 0
+            for offset, chunk in iter_shprop_chunks(path, chunk_rows):
+                times = chunk[:, state_map.time_column]
+                if index == 0:
+                    reference[offset : offset + times.size] = times
+                grid.observe(path, offset, times)
+                tally.observe(chunk[:, columns])
+                ensemble.update(offset, chunk)
+                if per_file is not None:
+                    per_file[offset : offset + chunk.shape[0]] = chunk
+                seen += chunk.shape[0]
+            if seen != nrows:
+                raise InputMismatchError(
+                    f"{path.name}: read {seen} rows against the {nrows} its structure declared"
+                )
+            grid.finish_file(path)
+            ensemble.finish_file()
+
+            if not tally.in_unit_range():
+                raise InputMismatchError(
+                    "population columns outside [0,1]; verify state map"
+                )
+            if state_map.complete_population and not tally.conserved():
+                raise InputMismatchError(
+                    "complete populations must sum to one in every file"
+                )
+            if stack_rows is not None and per_file is not None:
+                stack_rows.append(per_file)
+
+        mean = np.array(ensemble.mean_array(), copy=True)
+        sem = ensemble.sem()
+        if sem is not None:
+            sem = np.array(sem, copy=True)
+    except StreamingError as exc:
+        # One vocabulary for one failure: a caller switching loaders must not
+        # have to catch a second exception type for the same bad input.
+        raise InputMismatchError(str(exc)) from exc
+    finally:
+        ensemble.release()
+
+    time_ns = reference / state_map.to_ns
+
+    total = mean[:, columns].sum(axis=1)
+    conservation = {
+        "min": float(np.min(total)),
+        "max": float(np.max(total)),
+        "mean": float(np.mean(total)),
+        "max_abs_deviation_from_one": float(np.max(np.abs(total - 1.0))),
+    }
+    return PopulationSet(
+        paths=paths,
+        time_ns=time_ns,
+        mean=mean,
+        sem=sem,
+        n_files=len(paths),
+        total_population=total,
+        conservation=conservation,
+        stack=np.stack(stack_rows, axis=0) if stack_rows else None,
+    )
