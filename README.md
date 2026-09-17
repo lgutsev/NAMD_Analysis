@@ -592,6 +592,22 @@ staying on one adiabatic state through an avoided crossing changes the fragment
 identity, while hopping between two can preserve it. Why, with the two-state
 model behind it: [docs/adiabatic_vs_diabatic.md](docs/adiabatic_vs_diabatic.md).
 
+Add `--shprop` (with `--state-map`, `--frame-mode` and, for a cyclic run,
+`--projection-manifest`) to attach each history's **own** projection-weighted
+fragment population to its events:
+
+```bash
+namd-analysis character-crossings   --projection-character results/character/projection_character.csv   --eigtxt /path/to/EIGTXT --natxt /path/to/NATXT --dt-fs 1   --shprop '/path/to/SHPROP.*' --state-map state_map.json   --projection-manifest projection_manifest.json --frame-mode dish-cyclic   --late-window 0.1:10 --out results/crossings
+```
+
+Each history is walked on its own resolved frame mapping and classified
+**before** anything is summed. Histories starting at different `NAMDTINI` visit
+different frames at the same row, so no population is ever correlated by row
+number across histories, and none is averaged before classification — two
+histories exchanging character in opposite directions would cancel to nothing.
+`--early-window` defaults to `0:0.1` ns; **`--late-window` is required and never
+defaulted**, so without it no early-vs-late comparison is produced.
+
 Theory and conventions: [docs/state_character.md](docs/state_character.md).
 Generating the configuration: [docs/campaign_preparation.md](docs/campaign_preparation.md). A worked campaign: [examples/bcf_pcbm/FAPI_001_A](examples/bcf_pcbm/FAPI_001_A).
 

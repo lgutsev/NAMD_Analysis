@@ -293,6 +293,280 @@ class FrameSynchronizationTests(_Crossing):
         self.assertIn("projection_character.csv", str(ctx.exception))
 
 
+def write_history(root, name, nsw, rows, ramp_from=0.0, ramp_to=1.0, step_fs=10000.0):
+    """A SHPROP history whose fragment population ramps BCF -> PCBM."""
+    path = Path(root) / name
+    ramp = np.linspace(ramp_from, ramp_to, rows)
+    with path.open("w", encoding="utf-8") as handle:
+        print(f"# NSW = {nsw}", file=handle)
+        for index in range(rows):
+            values = [(index + 1) * step_fs, -0.8, 1.0 - ramp[index], ramp[index]]
+            print(" ".join(f"{v:.10E}" for v in values), file=handle)
+    return path
+
+
+def write_state_map(root):
+    path = Path(root) / "state_map.json"
+    path.write_text(
+        json.dumps(
+            {
+                "name": "synthetic",
+                "time_column": 0,
+                "time_unit": "fs",
+                "population_columns": [2, 3],
+                "groups": {"BCF": [2], "PCBM": [3]},
+                "complete_population": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+class PerHistoryTests(_Crossing):
+    """Histories that start at a different NAMDTINI are never merged first.
+
+    Under a cyclic mapping a history revisits a frame many times, at a
+    different population each time, and two histories occupy different frames
+    at the same row.  So there is no ensemble "population at frame f" to
+    classify against, and each history is walked on its own trajectory.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.nframes = 8
+        self.frames = np.arange(1, self.nframes + 1)
+        self.energies, self.nac, self.weights = avoided_crossing(self.nframes)
+        swapped = np.column_stack([self.weights[:, 1], self.weights[:, 0]])
+        self.character_path = write_character(
+            self.root / "projection_character.csv",
+            self.frames,
+            {976: self.weights, 977: swapped},
+        )
+        self.eig, self.nat = write_couplings(self.root, self.energies, self.nac)
+        self.state_map_path = write_state_map(self.root)
+        self.manifest = self.root / "manifest.json"
+        for frame in self.frames:
+            # Only the cycle length is read here, but the manifest still
+            # insists every PROCAR it names exists.
+            (self.root / f"PROCAR.{int(frame)}").write_text("", encoding="utf-8")
+        self.manifest.write_text(
+            json.dumps(
+                {
+                    "frames": [
+                        {"frame": int(f), "procar": f"PROCAR.{int(f)}"}
+                        for f in self.frames
+                    ],
+                    "cycle_length": self.nframes,
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.histories = [
+            write_history(self.root, "SHPROP.1", self.nframes + 1, 24),
+            write_history(self.root, "SHPROP.5", self.nframes + 1, 24),
+        ]
+        self.runs = 0
+
+    def _run(self, extra=(), histories=None):
+        self.runs += 1
+        out = self.root / f"out{self.runs}"
+        paths = [str(p) for p in (histories if histories is not None else self.histories)]
+        code = dispatch_main(
+            [
+                "character-crossings",
+                "--projection-character", str(self.character_path),
+                "--eigtxt", str(self.eig),
+                "--natxt", str(self.nat),
+                "--dt-fs", "1.0",
+                "--shprop", *paths,
+                "--state-map", str(self.state_map_path),
+                "--projection-manifest", str(self.manifest),
+                "--frame-mode", "dish-cyclic",
+                "--out", str(out),
+                *extra,
+            ]
+        )
+        self.assertEqual(code, 0)
+        return out, json.loads((out / "report.json").read_text(encoding="utf-8"))
+
+    def test_each_history_uses_its_own_resolved_frame_mapping(self):
+        _, report = self._run()
+        per = report["per_history"]
+        self.assertEqual(per["distinct_namdtini"], [1, 5])
+        by_name = {r["file"]: r for r in per["per_history"]}
+        # NAMDTINI 1 opens on frame 1, NAMDTINI 5 on frame 5.  Were the two
+        # sharing a mapping -- or correlated by row -- these would agree.
+        self.assertEqual(by_name["SHPROP.1"]["first_frame"], 1)
+        self.assertEqual(by_name["SHPROP.5"]["first_frame"], 5)
+        self.assertNotEqual(
+            by_name["SHPROP.1"]["last_frame"], by_name["SHPROP.5"]["last_frame"]
+        )
+
+    def test_a_history_wraps_the_cycle_from_its_own_start(self):
+        from namd_analysis.character import aligned_frames
+
+        frames = aligned_frames(
+            {"NAMDTINI": 5, "NSW": self.nframes + 1},
+            24,
+            "dish-cyclic",
+            self.histories[1],
+            cycle_length=self.nframes,
+        )
+        # 5,6,7,8,1,2,...  The wrap is what makes one shared mapping wrong.
+        self.assertEqual([int(f) for f in frames[:5]], [5, 6, 7, 8, 1])
+        self.assertEqual(int(frames[-1]), 4)
+
+    def test_classification_happens_per_history_and_only_then_aggregates(self):
+        _, report = self._run()
+        per = report["per_history"]
+        summed = {}
+        for record in per["per_history"]:
+            for label, count in record["by_classification"].items():
+                summed[label] = summed.get(label, 0) + count
+        self.assertEqual(per["totals_by_classification"], summed)
+        self.assertTrue(all(r["n_events"] for r in per["per_history"]))
+        self.assertIn("nothing was averaged before classification", per["note"])
+        self.assertIn("correlated by row number", per["note"])
+        self.assertIn("opposite directions", per["why_not_averaged"])
+
+    def test_a_per_history_population_is_what_allows_the_transfer_label(self):
+        # With no per-history population nothing could be called transfer.  A
+        # swap that coincides with a population change now gets the label.
+        _, report = self._run()
+        totals = report["per_history"]["totals_by_classification"]
+        self.assertIn("character_swap_with_fragment_population_change", totals)
+        self.assertGreater(totals["character_swap_with_fragment_population_change"], 0)
+
+    def test_two_histories_moving_oppositely_do_not_cancel(self):
+        # Averaged first, a rise and a matching fall leave a flat population
+        # and no transfer at all.  Classified first, both are counted.
+        rising = write_history(self.root, "SHPROP.1", self.nframes + 1, 24, 0.0, 1.0)
+        falling = write_history(self.root, "SHPROP.5", self.nframes + 1, 24, 1.0, 0.0)
+        _, report = self._run(histories=[rising, falling])
+        moved = "character_swap_with_fragment_population_change"
+        for record in report["per_history"]["per_history"]:
+            self.assertGreater(record["by_classification"].get(moved, 0), 0)
+        mean = 0.5 * (np.linspace(0.0, 1.0, 24) + np.linspace(1.0, 0.0, 24))
+        self.assertLess(float(np.max(np.abs(np.diff(mean)))), 1.0e-12)
+
+    def test_the_per_history_event_table_names_the_history(self):
+        out, _ = self._run(extra=["--late-window", "0.1:0.3"])
+        with (out / "per_history_events.csv").open("r", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertTrue(rows)
+        self.assertEqual({r["file"] for r in rows}, {"SHPROP.1", "SHPROP.5"})
+        for row in rows:
+            self.assertIn(row["NAMDTINI"], {"1", "5"})
+            self.assertIn(row["window"], {"early", "late", "outside"})
+
+    def test_early_and_late_event_counts_are_compared(self):
+        _, report = self._run(extra=["--late-window", "0.1:0.3"])
+        comparison = report["early_vs_late_events"]
+        self.assertEqual(comparison["early_window"], "early")
+        self.assertEqual(comparison["late_window"], "late")
+        by_window = report["per_history"]["totals_by_window"]
+        self.assertEqual(comparison["early_total"], sum(by_window["early"].values()))
+        self.assertEqual(comparison["late_total"], sum(by_window["late"].values()))
+        self.assertGreater(comparison["early_total"], 0)
+        self.assertGreater(comparison["late_total"], 0)
+        for row in comparison["rows"]:
+            self.assertEqual(row["difference"], row["early"] - row["late"])
+
+    def test_the_comparison_refuses_to_read_a_raw_count_as_a_rate(self):
+        _, report = self._run(extra=["--late-window", "0.1:0.3"])
+        note = report["early_vs_late_events"]["note"]
+        self.assertIn("different length", note)
+        self.assertIn("not by itself a higher rate", note)
+
+    def test_the_early_window_defaults_and_the_late_one_does_not(self):
+        _, report = self._run()
+        # No --late-window: there is nothing to compare against, and none is
+        # invented.
+        self.assertIsNone(report["early_vs_late_events"])
+        self.assertEqual(list(report["per_history"]["totals_by_window"]), ["early"])
+
+    def test_shprop_without_a_state_map_is_refused(self):
+        code = dispatch_main(
+            [
+                "character-crossings",
+                "--projection-character", str(self.character_path),
+                "--eigtxt", str(self.eig),
+                "--natxt", str(self.nat),
+                "--dt-fs", "1.0",
+                "--shprop", str(self.histories[0]),
+                "--frame-mode", "dish-cyclic",
+                "--out", str(self.root / "refused"),
+            ]
+        )
+        self.assertEqual(code, 2)
+
+    def test_a_history_visiting_an_uncovered_frame_is_refused(self):
+        from namd_analysis.crossings import history_fragment_population
+        from namd_analysis.populations import StateMap
+
+        character = read_projection_character(self.character_path)
+        with self.assertRaises(CrossingError) as ctx:
+            history_fragment_population(
+                self.histories[0],
+                StateMap.from_json(self.state_map_path),
+                character,
+                [976, 977],
+                np.full(24, 999),  # a frame the character table does not cover
+            )
+        self.assertIn("does not cover", str(ctx.exception))
+
+    def test_the_population_is_the_projection_weighted_diagonal_contraction(self):
+        from namd_analysis.crossings import history_fragment_population
+        from namd_analysis.populations import StateMap
+
+        character = read_projection_character(self.character_path)
+        frames = np.array([1, 2, 3] * 8)
+        population, times = history_fragment_population(
+            self.histories[0],
+            StateMap.from_json(self.state_map_path),
+            character,
+            [976, 977],
+            frames,
+        )
+        raw = np.loadtxt(self.histories[0])
+        band_at = character.band_index()
+        frame_at = character.frame_index()
+        for step in (0, 7, 23):
+            weights = character.weights[frame_at[int(frames[step])]]
+            expected = (
+                raw[step, 2] * weights[band_at[976]]
+                + raw[step, 3] * weights[band_at[977]]
+            )
+            np.testing.assert_allclose(population[step], expected, rtol=0, atol=1e-12)
+        # The time axis is the file's own column, not a grid rebuilt from the
+        # first and last rows.
+        np.testing.assert_allclose(times, raw[:, 0], rtol=0, atol=1e-9)
+
+    def test_an_uneven_time_column_is_taken_as_written(self):
+        from namd_analysis.crossings import history_fragment_population
+        from namd_analysis.populations import StateMap
+
+        # A grid rebuilt from first and last rows would put row 1 at 20000 fs;
+        # the file says 15000, and the file is what decides the window.
+        path = self.root / "SHPROP.1"
+        text = path.read_text(encoding="utf-8").splitlines()
+        fields = text[2].split()
+        fields[0] = f"{15000.0:.10E}"
+        text[2] = " ".join(fields)
+        path.write_text("\n".join(text) + "\n", encoding="utf-8")
+
+        character = read_projection_character(self.character_path)
+        _, times = history_fragment_population(
+            path,
+            StateMap.from_json(self.state_map_path),
+            character,
+            [976, 977],
+            np.array([1, 2, 3] * 8),
+        )
+        self.assertAlmostEqual(float(times[1]), 15000.0, places=6)
+
+
 class CrossingCliTests(_Crossing):
     def test_end_to_end_writes_every_artifact(self):
         swapped = np.column_stack([self.weights[:, 1], self.weights[:, 0]])

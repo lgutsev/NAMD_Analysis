@@ -545,3 +545,328 @@ def sensitivity(
             "can be applied without re-running the analysis"
         ),
     }
+
+
+# --------------------------------------------------------------------------
+# Per history, along its own trajectory
+# --------------------------------------------------------------------------
+#
+# When histories start at different NAMDTINI they visit different frames at the
+# same row, so there is no ensemble "population at frame f": under a cyclic
+# mapping one history revisits a frame many times, at different populations
+# each time. What *is* well defined is one history's own trajectory -- at step
+# t it occupies frame f_r(t) with population P^(r)(t) -- so events are detected
+# along that, per history, and only then aggregated.
+#
+# Averaging first would destroy exactly the thing being measured: two histories
+# can exchange character in opposite directions at the same frame, and their
+# mean shows nothing.
+
+
+@dataclass
+class HistoryEvents:
+    """Events found along one history, with the window each fell in."""
+
+    path: Path
+    namdtini: int
+    namdtini_source: str
+    n_time: int
+    frames: np.ndarray
+    events: List[CrossingEvent]
+    window_of_event: List[str]
+    fragment_population: np.ndarray  # (ntime, ngroup)
+    time_ns: np.ndarray
+
+    def counts(self, window: Optional[str] = None) -> Dict[str, int]:
+        out: Dict[str, int] = {}
+        for event, which in zip(self.events, self.window_of_event):
+            if window is not None and which != window:
+                continue
+            out[event.classification] = out.get(event.classification, 0) + 1
+        return out
+
+
+def history_fragment_population(
+    shprop_path,
+    state_map,
+    character: CharacterSeries,
+    bands: Sequence[int],
+    frames: np.ndarray,
+    chunk_rows: int = 100_000,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """``P_g(t) = sum_i P_i(t) w_ig[f(t)]`` for one history, streamed.
+
+    The same diagonal contraction ``character-populations`` performs, but kept
+    per history rather than averaged, because an event has to be classified on
+    the history that produced it.
+
+    Returns the population and this history's **own** time column, read from
+    the file.  The time axis is not reconstructed from the first and last rows:
+    that would assume a uniform grid, and an event would then be assigned to a
+    window on the strength of the assumption rather than the data.
+    """
+    from .io.hefei import iter_shprop_chunks
+
+    band_at = character.band_index()
+    missing = [b for b in bands if b not in band_at]
+    if missing:
+        raise CrossingError(
+            f"the character table has no bands {missing}; it must cover the whole "
+            "SHPROP basis for a per-history population"
+        )
+    selected = character.weights[:, [band_at[b] for b in bands], :]
+    frame_at = character.frame_index()
+    columns = np.asarray(state_map.population_columns, dtype=int)
+
+    out = np.empty((frames.size, len(character.groups)), dtype=float)
+    times = np.empty(frames.size, dtype=float)
+    rows_seen = 0
+    for offset, chunk in iter_shprop_chunks(Path(shprop_path), chunk_rows):
+        rows = chunk.shape[0]
+        if rows_seen + rows > frames.size:
+            raise CrossingError(
+                f"{shprop_path}: more rows than the {frames.size} the alignment "
+                "resolved; the file changed under the analysis"
+            )
+        slice_frames = frames[offset : offset + rows]
+        unknown = sorted({int(f) for f in slice_frames} - set(frame_at))
+        if unknown:
+            raise CrossingError(
+                f"{shprop_path}: rows {offset}..{offset + rows - 1} visit frames "
+                f"{unknown[:10]} that the character table does not cover"
+            )
+        indices = np.asarray([frame_at[int(f)] for f in slice_frames], dtype=int)
+        out[offset : offset + rows] = np.einsum(
+            "ts,tsg->tg", chunk[:, columns], selected[indices]
+        )
+        times[offset : offset + rows] = chunk[:, state_map.time_column]
+        rows_seen += rows
+    if rows_seen != frames.size:
+        raise CrossingError(
+            f"{shprop_path}: {rows_seen} rows against {frames.size} resolved frames"
+        )
+    return out, times
+
+
+def detect_history_events(
+    shprop_path,
+    state_map,
+    character: CharacterSeries,
+    couplings: Optional[CouplingSeries],
+    band_pairs: Sequence[Tuple[int, int]],
+    frames: np.ndarray,
+    namdtini: int,
+    namdtini_source: str,
+    thresholds: Optional[Dict[str, float]] = None,
+    population_tolerance: float = 1.0e-3,
+    windows: Optional[Sequence[Any]] = None,
+    chunk_rows: int = 100_000,
+) -> HistoryEvents:
+    """Walk one history's trajectory and classify what happens along it.
+
+    Consecutive entries are consecutive *time steps of this history*, so the
+    frames they occupy are whatever the resolved mapping says -- adjacent,
+    wrapped, or repeated. The population difference is between the two steps,
+    not between two frames of some ensemble average.
+
+    The time each event is stamped with is this history's own time column, so a
+    window assignment never depends on a reconstructed grid.
+    """
+    thresholds = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
+    bands = [int(b) for b in character.bands]
+    population, time_raw = history_fragment_population(
+        shprop_path, state_map, character, bands, frames, chunk_rows=chunk_rows
+    )
+    time_ns = time_raw / state_map.to_ns
+
+    band_at = character.band_index()
+    frame_at = character.frame_index()
+    state_of = {int(b): k for k, b in enumerate(character.bands)}
+    coupling_row = (
+        {int(f): r for r, f in enumerate(couplings.frames)} if couplings is not None else {}
+    )
+
+    events: List[CrossingEvent] = []
+    window_of: List[str] = []
+    for step in range(1, frames.size):
+        before_frame, after_frame = int(frames[step - 1]), int(frames[step])
+        if before_frame == after_frame:
+            # The trajectory stayed on one electronic frame: the character
+            # cannot have changed, whatever the population did.
+            continue
+        bi_index_before = frame_at[before_frame]
+        bi_index_after = frame_at[after_frame]
+        change = float(np.max(np.abs(population[step] - population[step - 1])))
+
+        for bi, bj in band_pairs:
+            if bi not in band_at or bj not in band_at:
+                continue
+            wi_before = character.weights[bi_index_before, band_at[bi]]
+            wi_after = character.weights[bi_index_after, band_at[bi]]
+            wj_before = character.weights[bi_index_before, band_at[bj]]
+            wj_after = character.weights[bi_index_after, band_at[bj]]
+
+            change_i = float(np.max(np.abs(wi_after - wi_before)))
+            change_j = float(np.max(np.abs(wj_after - wj_before)))
+            dom_i_before = character.groups[int(np.argmax(wi_before))]
+            dom_i_after = character.groups[int(np.argmax(wi_after))]
+            dom_j_before = character.groups[int(np.argmax(wj_before))]
+            dom_j_after = character.groups[int(np.argmax(wj_after))]
+            swap = (dom_i_before != dom_i_after) or (dom_j_before != dom_j_after)
+            exchanged = max(change_i, change_j) >= thresholds["character_change"]
+
+            gap = nac = None
+            row = coupling_row.get(after_frame)
+            if row is not None and couplings is not None:
+                i, j = state_of.get(bi), state_of.get(bj)
+                if i is not None and j is not None and max(i, j) < couplings.energies.shape[1]:
+                    gap = float(abs(couplings.energies[row, i] - couplings.energies[row, j]))
+                    if couplings.nac is not None:
+                        nac = float(couplings.nac[row, i, j])
+            small_gap = gap is not None and gap <= thresholds["gap_ev"]
+            strong_nac = nac is not None and nac >= thresholds["nac_ev"]
+
+            if not (swap or exchanged or small_gap or strong_nac):
+                continue
+            label, note = _classify(
+                small_gap, strong_nac, swap or exchanged, change, population_tolerance
+            )
+            events.append(
+                CrossingEvent(
+                    frame=after_frame,
+                    band_i=bi,
+                    band_j=bj,
+                    gap_ev=float(gap) if gap is not None else float("nan"),
+                    nac_ev=nac,
+                    character_change_i=change_i,
+                    character_change_j=change_j,
+                    dominant_i_before=dom_i_before,
+                    dominant_i_after=dom_i_after,
+                    dominant_j_before=dom_j_before,
+                    dominant_j_after=dom_j_after,
+                    small_gap=small_gap,
+                    strong_nac=strong_nac,
+                    character_swap=bool(swap or exchanged),
+                    fragment_population_change=change,
+                    classification=label,
+                    note=note,
+                )
+            )
+            window_of.append(_window_name(time_ns[step], windows))
+
+    return HistoryEvents(
+        path=Path(shprop_path),
+        namdtini=int(namdtini),
+        namdtini_source=namdtini_source,
+        n_time=int(frames.size),
+        frames=frames,
+        events=events,
+        window_of_event=window_of,
+        fragment_population=population,
+        time_ns=time_ns,
+    )
+
+
+def _window_name(time_value: float, windows: Optional[Sequence[Any]]) -> str:
+    if not windows:
+        return "all"
+    for window in windows:
+        low = -np.inf if window.start_ns is None else window.start_ns
+        high = np.inf if window.end_ns is None else window.end_ns
+        if low <= time_value <= high:
+            return window.name
+    return "outside"
+
+
+def aggregate_histories(
+    histories: Sequence[HistoryEvents], window_names: Sequence[str] = ()
+) -> Dict[str, Any]:
+    """Combine per-history classifications -- after classification, never before.
+
+    The per-history counts are kept alongside the totals: two histories can
+    exchange character in opposite directions at the same frame, and a number
+    that only ever appears summed would hide that.
+    """
+    per_history = [
+        {
+            "file": h.path.name,
+            "NAMDTINI": h.namdtini,
+            "NAMDTINI_source": h.namdtini_source,
+            "n_time_points": h.n_time,
+            "distinct_frames_visited": int(np.unique(h.frames).size),
+            "first_frame": int(h.frames[0]),
+            "last_frame": int(h.frames[-1]),
+            "n_events": len(h.events),
+            "by_classification": h.counts(),
+            "by_window": {name: h.counts(name) for name in window_names} if window_names else {},
+        }
+        for h in histories
+    ]
+    totals: Dict[str, int] = {}
+    for record in per_history:
+        for label, count in record["by_classification"].items():
+            totals[label] = totals.get(label, 0) + count
+
+    by_window: Dict[str, Dict[str, int]] = {}
+    for name in window_names:
+        merged: Dict[str, int] = {}
+        for history in histories:
+            for label, count in history.counts(name).items():
+                merged[label] = merged.get(label, 0) + count
+        by_window[name] = merged
+
+    starts = sorted({h.namdtini for h in histories})
+    return {
+        "n_histories": len(histories),
+        "distinct_namdtini": starts,
+        "per_history": per_history,
+        "totals_by_classification": totals,
+        "totals_by_window": by_window,
+        "note": (
+            "every event was classified on the history that produced it, using "
+            "that history's own resolved frame mapping and its own "
+            "projection-weighted fragment population, and only then summed. "
+            "Histories starting at different NAMDTINI visit different frames at "
+            "the same row, so no population was ever correlated by row number "
+            "across histories, and nothing was averaged before classification"
+        ),
+        "why_not_averaged": (
+            "two histories can exchange character in opposite directions at the "
+            "same frame; their mean shows nothing. The per-history counts are "
+            "kept so that cancellation is visible rather than silent"
+        ),
+    }
+
+
+def compare_event_windows(
+    aggregate: Dict[str, Any], early_name: str, late_name: str
+) -> Dict[str, Any]:
+    """Early against late, on the same per-history classifications."""
+    by_window = aggregate.get("totals_by_window", {})
+    early = by_window.get(early_name, {})
+    late = by_window.get(late_name, {})
+    labels = sorted(set(early) | set(late))
+    rows = [
+        {
+            "classification": label,
+            "early": early.get(label, 0),
+            "late": late.get(label, 0),
+            "difference": early.get(label, 0) - late.get(label, 0),
+        }
+        for label in labels
+    ]
+    early_total = sum(early.values())
+    late_total = sum(late.values())
+    return {
+        "early_window": early_name,
+        "late_window": late_name,
+        "rows": rows,
+        "early_total": early_total,
+        "late_total": late_total,
+        "note": (
+            "raw event counts per window. The windows are of different length, so "
+            "a larger count in one is not by itself a higher rate; divide by the "
+            "window duration before comparing, and remember these are flagged "
+            "metric crossings rather than measured transitions"
+        ),
+    }

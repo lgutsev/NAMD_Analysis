@@ -19,14 +19,19 @@ from .crossings import (
     DEFAULT_THRESHOLDS,
     EVENT_HEADER,
     CrossingError,
+    aggregate_histories,
+    compare_event_windows,
     detect_events,
+    detect_history_events,
     load_couplings,
     nac_ceiling_note,
     read_projection_character,
     sensitivity,
 )
+from .populations import StateMap
 from .provenance import environment, fingerprint
 from .report import prepare_output, write_csv, write_json
+from .transient import parse_window
 
 
 def _band_pairs(spec: Optional[str], bands: Sequence[int]) -> List[Tuple[int, int]]:
@@ -58,6 +63,72 @@ def _fragment_population(path: Optional[str], alignment: Optional[str]):
         # same time index; one frame therefore has no single population.
         return None
     return None
+
+
+def _expand(patterns: Sequence[str]) -> List[Path]:
+    """Glob SHPROP paths, de-duplicated, in a stable order."""
+    import glob as globlib
+
+    found: List[Path] = []
+    for pattern in patterns:
+        matches = sorted(globlib.glob(str(pattern)))
+        if not matches:
+            candidate = Path(pattern)
+            if not candidate.exists():
+                raise CrossingError(f"no file matches {pattern!r}")
+            matches = [str(candidate)]
+        found.extend(Path(item) for item in matches)
+    unique, seen = [], set()
+    for path in found:
+        resolved = path.resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            unique.append(path)
+    return unique
+
+
+def _per_history(args, character, couplings, pairs, thresholds, windows):
+    """Resolve each history's own frame mapping, then classify along it.
+
+    Nothing is averaged before classification and no population is correlated
+    by row number across histories: each history is walked on its own
+    trajectory, with its own frames and its own fragment population.
+    """
+    from .character import _load_projection_manifest, aligned_frames, resolve_namdtini
+    from .io.hefei import shprop_structure
+
+    state_map = StateMap.from_json(args.state_map)
+    cycle_length = None
+    if args.projection_manifest:
+        cycle_length = _load_projection_manifest(args.projection_manifest).cycle_length
+
+    histories = []
+    for raw in args.shprop:
+        for path in _expand([raw]):
+            record = shprop_structure(path)
+            start, source = resolve_namdtini(record)
+            frames = aligned_frames(
+                {"NAMDTINI": start, "NSW": record.metadata.get("NSW")},
+                record.n_rows,
+                args.frame_mode,
+                path,
+                cycle_length=cycle_length,
+            )
+            histories.append(
+                detect_history_events(
+                    path,
+                    state_map,
+                    character,
+                    couplings,
+                    pairs,
+                    frames,
+                    start,
+                    source,
+                    thresholds,
+                    windows=windows,
+                )
+            )
+    return histories
 
 
 def build_parser(prog: str = "namd-analysis character-crossings") -> argparse.ArgumentParser:
@@ -108,6 +179,39 @@ def build_parser(prog: str = "namd-analysis character-crossings") -> argparse.Ar
     parser.add_argument(
         "--dominance", type=float, default=DEFAULT_THRESHOLDS["dominance"],
         help="weight above which a band is called dominated by one fragment",
+    )
+    parser.add_argument(
+        "--shprop", nargs="+", default=None,
+        help=(
+            "original SHPROP histories. With these, every event is classified on "
+            "the history that produced it, using that history's own resolved frame "
+            "mapping and its own projection-weighted fragment population, and only "
+            "then aggregated. Required when the histories start at different "
+            "NAMDTINI, because there is then no ensemble population per frame"
+        ),
+    )
+    parser.add_argument(
+        "--state-map", default=None,
+        help="SHPROP state-map JSON; required with --shprop",
+    )
+    parser.add_argument(
+        "--projection-manifest", default=None,
+        help="projection manifest, for the cyclic period the alignment needs",
+    )
+    parser.add_argument(
+        "--frame-mode", choices=("dish-cyclic", "linear"), default=None,
+        help="how NAMD time points select frames; required with --shprop",
+    )
+    parser.add_argument(
+        "--early-window", default="0:0.1",
+        help="START:END ns for the fast transient (default 0:0.1, i.e. 0-100 ps)",
+    )
+    parser.add_argument(
+        "--late-window", default=None,
+        help=(
+            "START:END ns for the slow regime. Never defaulted: no manuscript fit "
+            "window is encoded in this repository. Required to compare windows"
+        ),
     )
     parser.add_argument("--out", required=True, help="new output directory")
     parser.add_argument("--overwrite", action="store_true")
@@ -217,6 +321,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         pairs = _band_pairs(args.band_pairs, [int(b) for b in character.bands])
         events = detect_events(character, couplings, pairs, thresholds)
         sweep = sensitivity(character, couplings, pairs, thresholds)
+
+        histories = []
+        aggregate = None
+        window_comparison = None
+        windows = []
+        if args.shprop:
+            if not args.state_map or not args.frame_mode:
+                print(
+                    "error: --shprop needs --state-map and --frame-mode, so each "
+                    "history's own frame mapping can be resolved"
+                )
+                return 2
+            windows = [parse_window(args.early_window, name="early")]
+            if args.late_window:
+                windows.append(parse_window(args.late_window, name="late"))
+            histories = _per_history(args, character, couplings, pairs, thresholds, windows)
+            aggregate = aggregate_histories(histories, [w.name for w in windows])
+            if args.late_window:
+                window_comparison = compare_event_windows(aggregate, "early", "late")
     except (CrossingError, ValueError, OSError) as exc:
         print(f"error: {exc}")
         return 2
@@ -284,6 +407,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "event_counts": dict(counts),
         "n_events": len(events),
         "sensitivity": sweep,
+        "per_history": aggregate,
+        "early_vs_late_events": window_comparison,
         "nac_interpretation": nac_ceiling_note(couplings),
         "vocabulary": {
             "adiabatic_state_population": "P_i = rho_ii, which eigenstate is occupied",
@@ -306,8 +431,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     summary = write_crossing_summary(out / "crossing_summary.md", payload, events)
 
+    if aggregate is not None:
+        write_csv(
+            out / "per_history_events.csv",
+            ["file", "NAMDTINI", "window", *EVENT_HEADER],
+            [
+                [h.path.name, h.namdtini, which, *event.as_row()]
+                for h in histories
+                for event, which in zip(h.events, h.window_of_event)
+            ],
+        )
     print(f"{len(events)} flagged event(s) over {character.frames.size} frames, "
           f"{len(pairs)} band pair(s)")
+    if aggregate is not None:
+        print(f"per history ({aggregate['n_histories']} histories, NAMDTINI "
+              f"{aggregate['distinct_namdtini']}):")
+        for record in aggregate["per_history"]:
+            print(f"  {record['file']:>16s} start {record['NAMDTINI']:>6d}  "
+                  f"{record['n_events']:5d} event(s)  "
+                  f"{record['distinct_frames_visited']} distinct frame(s)")
+        print("  classified per history, then summed; never averaged first")
+        if window_comparison is not None:
+            print(f"  early {window_comparison['early_total']} event(s) vs "
+                  f"late {window_comparison['late_total']}")
     for name, count in counts.most_common():
         print(f"  {count:5d}  {name}")
     print(f"threshold sensitivity: totals {[r['total_events'] for r in sweep['rows']]} "

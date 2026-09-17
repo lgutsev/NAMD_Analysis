@@ -153,3 +153,66 @@ Everything is synchronized on the **resolved MD frame**, never on a SHPROP row
 index. Histories with different `NAMDTINI` visit different frames at the same
 row, and a cyclic mapping wraps them; a row-number correlation would be wrong
 in a way that still produces plausible numbers.
+
+## Per history, along its own trajectory
+
+```bash
+namd-analysis character-crossings \
+  --projection-character results/character/projection_character.csv \
+  --eigtxt EIGTXT --natxt NATXT --dt-fs 1 \
+  --shprop 'run/SHPROP.*' \
+  --state-map state_map.json \
+  --projection-manifest projection_manifest.json \
+  --frame-mode dish-cyclic \
+  --late-window 0.1:10 \
+  --out results/crossings
+```
+
+Given `--shprop`, each history is classified **on its own trajectory**, and the
+fragment population attached to an event is that history's own
+
+```
+P_g^(r)(t) = Σ_i P_i^(r)(t) w_ig[f_r(t)]
+```
+
+— the same projection-weighted diagonal contraction `character-populations`
+performs, but kept per history, because an event has to be classified on the
+history that produced it. `SHPROP.master` is not a valid input here either.
+
+There is no ensemble "population at frame *f*" to classify against. Under a
+cyclic mapping one history revisits a frame many times, at a different
+population each time, and two histories occupy different frames at the same
+row. What *is* well defined is one history's own trajectory: at step *t* it
+occupies frame `f_r(t)` with population `P^(r)(t)`. Consecutive entries are
+therefore consecutive **time steps of that history**, and the frames they
+occupy are whatever the resolved mapping says — adjacent, wrapped, or repeated.
+A step that stays on one electronic frame is skipped: the character cannot have
+changed, whatever the population did.
+
+**Classification comes first, aggregation second.** Two histories can exchange
+character in opposite directions at the same frame, and their mean shows
+nothing — a rise and a matching fall average to a flat population and to no
+transfer at all. `per_history_events.csv` and the `per_history` block of
+`report.json` keep the per-history counts beside the totals, so cancellation is
+visible rather than silent.
+
+| field | meaning |
+| --- | --- |
+| `distinct_namdtini` | the starts actually found, so a shared mapping is obvious if it happens |
+| `first_frame` / `last_frame` | where each history opened and closed — under a wrap, `last < first` |
+| `by_classification` | that history's own counts, before any sum |
+| `totals_by_classification` | the sum of those counts, and nothing else |
+
+## Early against late
+
+`--early-window` defaults to `0:0.1` ns (0–100 ps); **`--late-window` is
+required and never defaulted**, for the reason given in
+[early_late_regimes.md](early_late_regimes.md) — no manuscript fit window is
+encoded anywhere in this repository. Without one, `early_vs_late_events` is
+`null` rather than a comparison against an invented window.
+
+The comparison splits the *same* per-history classifications by the window each
+event fell in. The windows are of different length, so **a larger count in one
+is not by itself a higher rate**: divide by the window duration before
+comparing, and remember these are flagged metric crossings rather than measured
+transitions.
