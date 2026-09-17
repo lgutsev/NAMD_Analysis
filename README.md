@@ -58,6 +58,13 @@ Version 0.5.2 provides:
 - Bounded-memory SHPROP reading: preflight costs the same on a 900 MB history
   as on a small one, and the analysis streams each history in row chunks into a
   running ensemble mean instead of building a whole-campaign stack.
+- Early-vs-late regime analysis: two declared windows characterized separately,
+  then one global kinetic model scored against early-plus-late. The early
+  window defaults to 0-100 ps; the late window is never defaulted, because no
+  manuscript fit window is encoded here.
+- Adiabatic character events: gap, |NAC| and frame-resolved fragment character
+  synchronized on the resolved MD frame, with crossing events classified
+  without calling a character swap a surface hop or automatic charge transfer.
 - JSON reports, CSV tables, PNG/PDF plots, SHA-256 fingerprints and imported
   launcher manifests.
 
@@ -558,6 +565,32 @@ per group, with the time of worst disagreement — this is what tells you
 whether dynamic character changed the conclusion), `character_swaps.csv`,
 `projection_quality_by_band.csv`, `projection_character.csv`,
 `shprop_alignment.csv`, a figure, and `report.json` with full provenance.
+
+### Early and late regimes
+
+```bash
+namd-analysis regime-analysis   --files 'run/SHPROP.*'   --config state_map.json   --late-window 0.1:10   --scheme 'BCF->PCBM,PCBM->VBM'   --out results/regimes
+```
+
+Characterizes the first 100 ps separately from the slow regime and asks whether
+one kinetic description is adequate for both. The early default is a choice,
+not a constant; the late window is **required**, because no manuscript fit
+window is encoded in this repository and inventing one would put a number
+nobody chose into the science. Details:
+[docs/early_late_regimes.md](docs/early_late_regimes.md).
+
+### Adiabatic character events
+
+```bash
+namd-analysis character-crossings   --projection-character results/character/projection_character.csv   --eigtxt /path/to/EIGTXT --natxt /path/to/NATXT --dt-fs 1   --out results/crossings
+```
+
+Reuses the character outputs rather than reparsing PROCARs, and synchronizes
+gap, coupling and fragment character on the resolved MD frame. **A character
+swap is not a surface hop, and neither is automatically charge transfer** --
+staying on one adiabatic state through an avoided crossing changes the fragment
+identity, while hopping between two can preserve it. Why, with the two-state
+model behind it: [docs/adiabatic_vs_diabatic.md](docs/adiabatic_vs_diabatic.md).
 
 Theory and conventions: [docs/state_character.md](docs/state_character.md).
 Generating the configuration: [docs/campaign_preparation.md](docs/campaign_preparation.md). A worked campaign: [examples/bcf_pcbm/FAPI_001_A](examples/bcf_pcbm/FAPI_001_A).
