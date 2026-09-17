@@ -25,6 +25,95 @@ def _table(header: List[str], rows: List[List[Any]]) -> List[str]:
     return lines
 
 
+def _per_history_section(payload: Dict[str, Any]) -> List[str]:
+    """What each history did, before anything was summed.
+
+    A referee asking "is this transfer?" is asking about a trajectory, not
+    about an average, so the per-history counts come before the totals.
+    """
+    aggregate = payload.get("per_history")
+    if not aggregate:
+        return []
+
+    out: List[str] = [
+        "## Per history",
+        "",
+        f"{aggregate['n_histories']} SHPROP histories, starting at "
+        f"`NAMDTINI` {aggregate['distinct_namdtini']}. Each was classified on "
+        "its **own** resolved frame mapping, carrying its **own** "
+        "projection-weighted fragment population "
+        "`P_g(t) = sum_i P_i(t) w_ig[f(t)]`.",
+        "",
+    ]
+    if len(aggregate["distinct_namdtini"]) > 1:
+        out += [
+            "> The starts differ, so the histories occupy **different frames at "
+            "the same row**, and a cyclic mapping wraps them. There is no "
+            "ensemble population at a frame to classify against: one history "
+            "revisits a frame many times, at a different population each time. "
+            "**No population was correlated by row number across histories, and "
+            "nothing was averaged before classification** — two histories can "
+            "exchange character in opposite directions at the same frame, and "
+            "their mean would show nothing.",
+            "",
+        ]
+    out += _table(
+        ["history", "NAMDTINI", "source", "steps", "first frame", "last frame",
+         "distinct frames", "events"],
+        [
+            [r["file"], r["NAMDTINI"], r["NAMDTINI_source"], r["n_time_points"],
+             r["first_frame"], r["last_frame"], r["distinct_frames_visited"],
+             r["n_events"]]
+            for r in aggregate["per_history"]
+        ],
+    )
+    labels = sorted(
+        {label for r in aggregate["per_history"] for label in r["by_classification"]}
+    )
+    if labels:
+        out += ["Classifications per history, and only then the sum:", ""]
+        out += _table(
+            ["classification", *[r["file"] for r in aggregate["per_history"]], "total"],
+            [
+                [
+                    label,
+                    *[r["by_classification"].get(label, 0)
+                      for r in aggregate["per_history"]],
+                    aggregate["totals_by_classification"].get(label, 0),
+                ]
+                for label in labels
+            ],
+        )
+
+    comparison = payload.get("early_vs_late_events")
+    if comparison:
+        out += [
+            "### Early against late",
+            "",
+            f"`{comparison['early_window']}` against `{comparison['late_window']}`, "
+            "on the same per-history classifications.",
+            "",
+        ]
+        out += _table(
+            ["classification", "early", "late", "early − late"],
+            [[r["classification"], r["early"], r["late"], r["difference"]]
+             for r in comparison["rows"]],
+        )
+        out += [
+            f"**{comparison['early_total']}** early against "
+            f"**{comparison['late_total']}** late. " + comparison["note"] + ".",
+            "",
+        ]
+    elif aggregate.get("totals_by_window"):
+        out += [
+            "No late window was supplied, so no early-vs-late comparison was "
+            "made. No manuscript fit window is encoded in this repository, and "
+            "one is not invented here.",
+            "",
+        ]
+    return out
+
+
 def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
     counts = Counter(e.classification for e in events)
     swaps = [e for e in events if e.character_swap]
@@ -94,6 +183,8 @@ def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
             "index points at.",
             "",
         ]
+
+    out += _per_history_section(payload)
 
     thresholds = payload.get("thresholds", {})
     out += ["## Thresholds", "", "Every cutoff that turned a metric into an event:", ""]

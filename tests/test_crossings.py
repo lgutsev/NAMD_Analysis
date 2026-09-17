@@ -486,6 +486,26 @@ class PerHistoryTests(_Crossing):
         self.assertIsNone(report["early_vs_late_events"])
         self.assertEqual(list(report["per_history"]["totals_by_window"]), ["early"])
 
+    def test_the_referee_summary_reports_each_history_before_the_total(self):
+        out, report = self._run(extra=["--late-window", "0.1:0.3"])
+        text = (out / "crossing_summary.md").read_text(encoding="utf-8")
+        self.assertIn("## Per history", text)
+        self.assertIn("SHPROP.1", text)
+        self.assertIn("SHPROP.5", text)
+        self.assertIn("nothing was averaged before classification", text)
+        self.assertIn("### Early against late", text)
+        # The per-history column must appear beside the total, not instead of it.
+        self.assertIn("| total |", text)
+        for record in report["per_history"]["per_history"]:
+            self.assertIn(str(record["first_frame"]), text)
+
+    def test_the_summary_says_no_late_window_rather_than_inventing_one(self):
+        out, _ = self._run()
+        text = (out / "crossing_summary.md").read_text(encoding="utf-8")
+        self.assertIn("No late window was supplied", text)
+        self.assertIn("not invented here", text)
+        self.assertNotIn("### Early against late", text)
+
     def test_shprop_without_a_state_map_is_refused(self):
         code = dispatch_main(
             [
