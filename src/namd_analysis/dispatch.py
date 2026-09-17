@@ -11,7 +11,7 @@ from __future__ import annotations
 import sys
 from typing import Optional, Sequence
 
-from . import character_cli, cli, prepare_cli, regimes_cli
+from . import character_cli, cli, crossings_cli, prepare_cli, regimes_cli
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -28,6 +28,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return prepare_cli.main([*args[1:], "--write-sbatch"])
     if args and args[0] in ("regime-analysis", "early-late-analysis"):
         return regimes_cli.main(args[1:])
+    if args and args[0] in ("character-crossings", "adiabatic-character-events"):
+        return crossings_cli.main(args[1:])
     if args in (["--help"], ["-h"]):
         parser = cli.build_parser()
         text = parser.format_help().rstrip()
@@ -44,6 +46,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "  regime-analysis        characterize an early and a late window "
             "separately, then compare one global kinetic model against "
             "early-plus-late (alias: early-late-analysis)\n"
+            "  character-crossings    synchronize adiabatic gap, |NAC| and "
+            "frame-resolved fragment character, and classify crossing events "
+            "without calling a character swap a hop "
+            "(alias: adiabatic-character-events)\n"
             "\nRun 'namd-analysis character-populations --help' for their options.\n"
         )
         print(text)
