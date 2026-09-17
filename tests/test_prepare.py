@@ -61,10 +61,10 @@ class _Prepared(unittest.TestCase):
 
 
 class VersionTests(unittest.TestCase):
-    def test_package_and_metadata_versions_agree_at_0_5_2(self):
-        self.assertEqual(__version__, "0.5.2")
+    def test_package_and_metadata_versions_agree(self):
+        self.assertEqual(__version__, "0.6.0")
         text = (REPO / "pyproject.toml").read_text(encoding="utf-8")
-        self.assertIn('version = "0.5.2"', text)
+        self.assertIn(f'version = "{__version__}"', text)
 
     def test_provenance_reports_the_package_version(self):
         from namd_analysis.provenance import environment

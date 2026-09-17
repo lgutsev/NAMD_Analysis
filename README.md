@@ -6,7 +6,7 @@ fit windows, and input provenance. This package is independent of
 and runs calculations; this package reads their output. Existing manually
 prepared campaigns work too.
 
-Version 0.5.2 provides:
+Version 0.6.0 provides:
 
 - Campaign inventory and identification of failed historical single-exponential fits.
 - EIGTXT/NATXT dimension and run-setting audits, energy-gap statistics, and
