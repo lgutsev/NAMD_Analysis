@@ -37,7 +37,8 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# THE STUDY LAYOUT.
+# THE STUDY LAYOUT. Recorded in examples/bcf_pcbm/production_profile.json,
+# which the tests hold to the values below; change both together.
 #
 #   common root:       ${ROOT}
 #   reference/control: ${ROOT}/NuTest        shared by the whole A/B/C study,

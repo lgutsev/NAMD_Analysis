@@ -1,0 +1,157 @@
+{
+  "profile": "bcf_pcbm_fapi_2026",
+  "analysis_version": "0.7.1",
+  "purpose": "The filesystem and study layout of the FAPI/BCF/PCBM A/B/C study, recorded so a production run does not depend on remembering where anything lives. This file carries layout and provenance status only. The scientific content of a configuration -- its state order, band numbers, atom partition -- lives in that configuration's own reference files and in the preset registry, and is never copied between configurations.",
+  "study": {
+    "name": "FAPI_MD_NAMD_2026",
+    "root": "/ddnB/work/lgutsev/MD/FAPI_MD_NAMD_2026",
+    "reference_root": "NuTest",
+    "reference_root_role": "The shared reference/control workspace for the whole A/B/C study. It is not configuration A's provenance directory: A's reference products merely happen to have been established there first. Configuration-specific reference files live beneath it, one directory per configuration, on equal footing.",
+    "analysis_subdir": "analysis",
+    "analysis_run_prefix": "ensemble_v0.7.1",
+    "analysis_run_pattern": "<data_dir>/analysis/ensemble_v0.7.1_<jobid>/",
+    "analysis_output_rule": "Every analysis run writes into a new directory under its own configuration's analysis/ subdirectory. Nothing new is written into the top level of a configuration directory, which holds the archive itself."
+  },
+  "shared": {
+    "note": "Properties of the study, not of any one configuration. A value is listed here only when it is genuinely common; everything else is configuration-specific and appears under configurations below.",
+    "cycle_length": 1999,
+    "cycle_length_basis": "All three configurations recycle the same 1999-frame nuclear trajectory. Shared does not mean unchecked: confirm the frame count against each configuration's own manifest before trusting its frame axis.",
+    "frame_mode": "dish-cyclic",
+    "late_window_start_ns": 0.1,
+    "not_shared": [
+      "population column order and state order",
+      "VASP band numbers",
+      "atom partition",
+      "fixed nominal state map",
+      "projection character",
+      "crossing/episode window",
+      "NAMDTINI provenance"
+    ]
+  },
+  "configuration_fields": [
+    "label",
+    "data_dir",
+    "reference_dir",
+    "analysis_dir",
+    "projection_character",
+    "state_map",
+    "fixed_state_map",
+    "atom_groups",
+    "projection_manifest",
+    "cycle_length",
+    "episode_window",
+    "history_count_observed",
+    "preset",
+    "campaign",
+    "preset_registered",
+    "provenance"
+  ],
+  "provenance_fields": [
+    "population_column_order",
+    "band_numbers",
+    "atom_partition",
+    "fixed_state_map",
+    "projection_character",
+    "trajectory_coverage",
+    "namdtini"
+  ],
+  "provenance_states": {
+    "established": "verified against this configuration's own files, and the verifying product is on disk",
+    "not_established": "not yet determined for this configuration; nothing is borrowed from another configuration in the meantime"
+  },
+  "configurations": {
+    "A": {
+      "label": "A",
+      "data_dir": "FAPI_001_BCF_PCBM_A",
+      "reference_dir": "NuTest/A",
+      "analysis_dir": "FAPI_001_BCF_PCBM_A/analysis",
+      "projection_character": "NuTest/A/projection_character.csv",
+      "state_map": "NuTest/A/state_map.json",
+      "fixed_state_map": "NuTest/A/fixed_state_map.json",
+      "atom_groups": "NuTest/A/atom_groups.json",
+      "projection_manifest": "NuTest/A/projection_manifest.json",
+      "cycle_length": 1999,
+      "episode_window": "1320:1331",
+      "history_count_observed": 98,
+      "preset": "bcf_pcbm",
+      "campaign": "A",
+      "preset_registered": true,
+      "provenance": {
+        "population_column_order": "established",
+        "band_numbers": "established",
+        "atom_partition": "established",
+        "fixed_state_map": "established",
+        "projection_character": "established",
+        "trajectory_coverage": "established",
+        "namdtini": "established"
+      },
+      "notes": [
+        "The reference products were produced by the character run in NuTest/character_test_A_1030646 and are addressed here as NuTest/A so all three configurations are addressed the same way.",
+        "history_count_observed is the archive as it stands: 98 numbered SHPROP histories. It is the denominator A's results report. A gap in the numbering is a history that was never written and is not filled in.",
+        "A is the configuration whose reference analysis was established first. That is a fact about the order of work, not a claim of precedence: it holds no field B and C do not."
+      ]
+    },
+    "B": {
+      "label": "B",
+      "data_dir": "FAPI_001_BCF_PCBM_B",
+      "reference_dir": "NuTest/B",
+      "analysis_dir": "FAPI_001_BCF_PCBM_B/analysis",
+      "projection_character": "NuTest/B/projection_character.csv",
+      "state_map": "NuTest/B/state_map.json",
+      "fixed_state_map": "NuTest/B/fixed_state_map.json",
+      "atom_groups": "NuTest/B/atom_groups.json",
+      "projection_manifest": "NuTest/B/projection_manifest.json",
+      "cycle_length": 1999,
+      "episode_window": null,
+      "history_count_observed": null,
+      "preset": "bcf_pcbm",
+      "campaign": "B",
+      "preset_registered": false,
+      "provenance": {
+        "population_column_order": "not_established",
+        "band_numbers": "not_established",
+        "atom_partition": "not_established",
+        "fixed_state_map": "not_established",
+        "projection_character": "not_established",
+        "trajectory_coverage": "not_established",
+        "namdtini": "not_established"
+      },
+      "notes": [
+        "The paths above are where B's reference products belong once prepared from B's own archive. An absent file is an absent file: the ensemble run refuses rather than falling back to another configuration's.",
+        "episode_window is null because B's crossing manifold has not been located. That is not a prerequisite: populations, the symmetric decomposition and the fixed-vs-dynamic comparison all run without it, and episode classification can be added afterwards.",
+        "history_count_observed is null until B's archive is counted. Count it; do not assume A's."
+      ]
+    },
+    "C": {
+      "label": "C",
+      "data_dir": "FAPI_001_BCF_PCBM_C",
+      "reference_dir": "NuTest/C",
+      "analysis_dir": "FAPI_001_BCF_PCBM_C/analysis",
+      "projection_character": "NuTest/C/projection_character.csv",
+      "state_map": "NuTest/C/state_map.json",
+      "fixed_state_map": "NuTest/C/fixed_state_map.json",
+      "atom_groups": "NuTest/C/atom_groups.json",
+      "projection_manifest": "NuTest/C/projection_manifest.json",
+      "cycle_length": 1999,
+      "episode_window": null,
+      "history_count_observed": null,
+      "preset": "bcf_pcbm",
+      "campaign": "C",
+      "preset_registered": false,
+      "provenance": {
+        "population_column_order": "not_established",
+        "band_numbers": "not_established",
+        "atom_partition": "not_established",
+        "fixed_state_map": "not_established",
+        "projection_character": "not_established",
+        "trajectory_coverage": "not_established",
+        "namdtini": "not_established"
+      },
+      "notes": [
+        "The paths above are where C's reference products belong once prepared from C's own archive. An absent file is an absent file: the ensemble run refuses rather than falling back to another configuration's.",
+        "episode_window is null because C's crossing manifold has not been located. That is not a prerequisite: populations, the symmetric decomposition and the fixed-vs-dynamic comparison all run without it, and episode classification can be added afterwards.",
+        "history_count_observed is null until C's archive is counted. Count it; do not assume A's."
+      ]
+    }
+  }
+}
