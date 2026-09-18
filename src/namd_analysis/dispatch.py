@@ -30,6 +30,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return regimes_cli.main(args[1:])
     if args and args[0] in ("character-crossings", "adiabatic-character-events"):
         return crossings_cli.main(args[1:])
+    if args and args[0] in ("character-ensemble", "ensemble-analysis"):
+        from . import ensemble_cli
+
+        return ensemble_cli.main(args[1:])
     if args in (["--help"], ["-h"]):
         parser = cli.build_parser()
         text = parser.format_help().rstrip()

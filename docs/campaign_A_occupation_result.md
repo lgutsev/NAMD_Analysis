@@ -129,11 +129,35 @@ the comparison exists to detect.
 
 ---
 
-## Bottom line for R3.2
+## The conclusion this history licenses
 
-On this history, the 977/978 crossing is **not** the BCF→PCBM transfer event.
-It is a large, nearly reversible character exchange that moves almost no
-occupation. What does accumulate is occupation onto **BCF**, steadily, across
-the whole cycle — consistent with BCF as a long-lived intermediate that the
-carrier reaches and remains on over 10 ns, with no onward occupation transfer
-to PCBM observed in this history.
+> In `SHPROP.25`, the crossing region produces a large but mostly reversible
+> fragment-character excursion and no persistent BCF→PCBM transfer; the
+> long-time net change instead favours BCF accumulation. **Whether this
+> behaviour is representative of Campaign A must be determined from the full
+> ensemble of 300 SHPROP histories across three runs.**
+
+That is the whole of it. This document is **validation of the machinery and one
+realization**, not a mechanistic result.
+
+### Retracted
+
+An earlier version of this section said "the 977/978 crossing is **not** the
+BCF→PCBM transfer event." **That is retracted.** It generalizes from n = 1 to
+Campaign A, which one history cannot support. The crossing was not the transfer
+event *in this history*; whether it is in others is unmeasured.
+
+No statement of the form "BCF is predominantly a reservoir", "PCBM transfer
+occurs in a minority/majority of histories", or "the crossing manifold is
+largely reversible" may be made until all 300 histories have been analysed. See
+[ensemble_hierarchy.md](ensemble_hierarchy.md) for the level at which R3.2 is
+answerable.
+
+### On the two decomposition terms
+
+The occupation/character percentages quoted above are an **unbiased bookkeeping
+convention**, not an observable decomposition of the Hamiltonian dynamics. The
+symmetric midpoint split is exact and endpoint-unbiased, but it is one of
+infinitely many exact splits, and its relative percentages are **not physical
+branching fractions**. They say how the *chosen* bookkeeping apportions a
+change. Do not report them as a mechanism ratio.
