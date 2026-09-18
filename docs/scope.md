@@ -3,7 +3,8 @@
 ## What this package does
 
 It reads results that already exist on disk and describes them: campaign
-inventory, coupling audits, SHPROP population averaging and group analysis,
+inventory, campaign-configuration preparation, coupling audits, SHPROP
+population averaging and group analysis,
 optional single-exponential fits with explicit windows and diagnostics,
 frame-dependent projection-weighted subsystem populations when genuine PROCAR
 projections are supplied, and VACF / phonon spectral density analysis. Every command writes a

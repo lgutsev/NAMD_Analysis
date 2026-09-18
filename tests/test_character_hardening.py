@@ -598,8 +598,22 @@ class CliSmokeTests(_Campaign):
         self.assertEqual(report["frame_mode"], "dish-cyclic")
         self.assertEqual(report["frame_consumption"]["frames_required_by_shprop"], 4)
         self.assertEqual(len(report["inputs"]), 2 + 3 + 4)
-        for record in report["inputs"]:
+        # Every input is still recorded. Configuration files are hashed because
+        # they are small and they are what reproduces the run; data files are
+        # not, because hashing five 889 MB histories and up to 1999 PROCARs
+        # would be a second full read of the archive. The record says which.
+        hashed = [r for r in report["inputs"] if r["hashed"]]
+        described = [r for r in report["inputs"] if not r["hashed"]]
+        self.assertEqual(len(hashed), 3, "the three configuration files")
+        self.assertEqual(len(described), 2 + 4, "two histories and four PROCARs")
+        for record in hashed:
             self.assertEqual(len(record["sha256"]), 64)
+        for record in described:
+            self.assertIsNone(record["sha256"])
+            self.assertGreater(record["bytes"], 0)
+            self.assertIn("modified_utc", record)
+        self.assertEqual(report["input_fingerprinting"]["configuration_files"], "sha256")
+        self.assertIn("second full read", report["input_fingerprinting"]["note"])
         self.assertIn("fixed_vs_projected_summary", report)
         self.assertIn("dominance", report)
         self.assertIn("p5_captured_projection", report["projection_quality"])
@@ -617,6 +631,27 @@ class CliSmokeTests(_Campaign):
         for ti, time in enumerate(np.arange(4) * 1000.0 / 1e6):
             self.assertAlmostEqual(values[(time, "BCF")], expected[ti, 0], places=10)
             self.assertAlmostEqual(values[(time, "PCBM")], expected[ti, 1], places=10)
+
+    def test_fingerprint_data_hashes_every_input(self):
+        out = self.root / "hashed"
+        code = dispatch_main(
+            [
+                "character-populations",
+                "--files", str(self.campaign["shprop"][0]), str(self.campaign["shprop"][1]),
+                "--config", str(self.campaign["state_map"]),
+                "--projection-manifest", str(self.campaign["manifest"]),
+                "--atom-groups", str(self.campaign["atom_groups"]),
+                "--frame-mode", "dish-cyclic",
+                "--fingerprint-data",
+                "--out", str(out),
+            ]
+        )
+        self.assertEqual(code, 0)
+        report = json.loads((out / "report.json").read_text(encoding="utf-8"))
+        self.assertTrue(all(r["hashed"] for r in report["inputs"]))
+        for record in report["inputs"]:
+            self.assertEqual(len(record["sha256"]), 64)
+        self.assertEqual(report["input_fingerprinting"]["data_files"], "sha256")
 
     def test_preflight_flag_writes_no_populations(self):
         out = self.root / "pre"

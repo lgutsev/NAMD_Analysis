@@ -250,18 +250,78 @@ def build_rate_matrix(
     return K
 
 
-def propagate(K: np.ndarray, p0: np.ndarray, time: np.ndarray) -> np.ndarray:
-    """P(t) = exp(K t) P(0) on a uniform time grid, shape ``(ntime, ngroups)``."""
+#: How far the step may vary before one propagator cannot be reused for all of
+#: them.  This is a numerical precondition, not a scientific tolerance.
+#:
+#: A SHPROP time column is written as fixed-precision text, so round-tripping a
+#: uniform grid through ten significant digits leaves a relative step jitter of
+#: order 1e-8 -- genuinely uniform data that a 1e-8 test rejects.  The error
+#: that matters is the one reusing ``expm(K * mean_step)`` introduces: it is
+#: first order in the step jitter, so a relative jitter j gives a per-step
+#: propagator error of order j * |K| * step, and over n steps roughly
+#: n * j * |K| * step = j * |K| * span.  At the tolerance below, with |K| * span
+#: of order ten, that is about 1e-5 of a population -- below the 1e-5
+#: conservation tolerance used everywhere else, and far below anything these
+#: populations resolve.  Beyond it the grid is reported, not silently averaged.
+PROPAGATOR_STEP_RTOL = 1.0e-6
+
+
+def grid_uniformity(time: np.ndarray) -> Dict[str, Any]:
+    """How uniform a time grid is, and whether one propagator can serve it."""
     time = np.asarray(time, dtype=float)
     if time.size < 2:
         raise KineticsError("at least two time points are needed")
     steps = np.diff(time)
-    if not np.allclose(steps, steps[0], rtol=1e-8, atol=0.0):
+    mean_step = float(np.mean(steps))
+    if mean_step <= 0:
+        raise KineticsError("population time must strictly increase")
+    spread = float(np.max(steps) - np.min(steps))
+    relative = spread / mean_step
+    return {
+        "mean_step_ns": mean_step,
+        "min_step_ns": float(np.min(steps)),
+        "max_step_ns": float(np.max(steps)),
+        "relative_spread": relative,
+        "tolerance": PROPAGATOR_STEP_RTOL,
+        "uniform_enough": bool(relative <= PROPAGATOR_STEP_RTOL),
+    }
+
+
+def require_uniform_grid(time: np.ndarray, what: str = "the time grid") -> Dict[str, Any]:
+    """Raise once, with numbers, if one propagator cannot serve this grid.
+
+    Checked before the optimizer rather than inside it: a non-uniform grid is a
+    property of the input, and discovering it five times over as "every
+    optimizer start failed" tells the caller nothing about what is wrong.
+    """
+    report = grid_uniformity(time)
+    if not report["uniform_enough"]:
+        raise KineticsError(
+            f"{what} is not uniform enough to reuse one propagator: steps range "
+            f"over [{report['min_step_ns']:.6g}, {report['max_step_ns']:.6g}] ns, a "
+            f"relative spread of {report['relative_spread']:.3g} against a tolerance "
+            f"of {report['tolerance']:.3g}. The propagator is built once per step "
+            "and reused; on this grid that would misstate the populations rather "
+            "than merely slow the fit. Resample the histories onto one grid "
+            "upstream -- nothing here interpolates them."
+        )
+    return report
+
+
+def propagate(K: np.ndarray, p0: np.ndarray, time: np.ndarray) -> np.ndarray:
+    """P(t) = exp(K t) P(0) on a uniform time grid, shape ``(ntime, ngroups)``."""
+    time = np.asarray(time, dtype=float)
+    report = grid_uniformity(time)
+    if not report["uniform_enough"]:
         raise KineticsError(
             "the time grid is not uniform; the propagator is built once per step "
-            "and cannot be reused on an irregular grid"
+            "and cannot be reused on an irregular grid (relative step spread "
+            f"{report['relative_spread']:.3g} > {report['tolerance']:.3g})"
         )
-    propagator = expm(K * steps[0])
+    # The mean step, not the first: on a grid that is uniform to within the
+    # tolerance, the mean is the better single representative and does not let
+    # one rounded first interval set the whole propagator.
+    propagator = expm(K * report["mean_step_ns"])
     out = np.empty((time.size, K.shape[0]), dtype=float)
     out[0] = p0
     for n in range(1, time.size):
@@ -551,6 +611,10 @@ def fit_master_equation(
     span = float(time_ns[-1] - time_ns[0])
     if span <= 0:
         raise KineticsError("the time window has no extent")
+    # Once, up front. KineticsError subclasses ValueError, so a grid problem
+    # raised inside the start loop below would be caught by its handler and
+    # reported as "every optimizer start failed" -- true, but useless.
+    require_uniform_grid(time_ns, "the fit window's time grid")
     base = 1.0 / span
 
     best = None

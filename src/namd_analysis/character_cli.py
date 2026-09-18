@@ -17,6 +17,7 @@ from .character import (
     DISCREPANCY_HEADER,
     POPULATION_DEFINITION,
     POPULATION_LABEL,
+    SHPROP_IO_MODES,
     AtomGroupMap,
     CharacterError,
     character_populations,
@@ -25,11 +26,14 @@ from .character import (
     plan_analysis,
     preflight_report,
     projection_table_rows,
+    resolve_chunk_rows,
 )
+from .memory_budget import RETAIN_CHOICES, BudgetError, estimate_memory, human, parse_size
 from .observables import LEGEND, OBSERVED
 from .populations import StateMap
-from .provenance import environment, fingerprint
+from .provenance import describe, environment, fingerprint
 from .report import prepare_output, write_csv, write_json
+from .validation_summary import write as write_validation_summary
 
 ALIGNMENT_KEYS = (
     "file",
@@ -141,50 +145,209 @@ def build_parser(prog: str = "namd-analysis character-populations") -> argparse.
         ),
     )
     parser.add_argument(
+        "--shprop-chunk-rows",
+        type=int,
+        default=None,
+        help=(
+            "rows of a SHPROP table to hold at once (default: chosen from file size). "
+            "Chunking changes only residency, never the result"
+        ),
+    )
+    parser.add_argument(
+        "--shprop-io-mode",
+        choices=SHPROP_IO_MODES,
+        default="auto",
+        help=(
+            "auto picks a chunk size from the largest history; stream always chunks; "
+            "memory reads each whole table in one chunk"
+        ),
+    )
+    parser.add_argument(
+        "--memory-budget",
+        default=None,
+        help=(
+            "ceiling for the arrays this run will hold, e.g. 24G. Checked against an "
+            "estimate made before any file is opened; a run that cannot fit is "
+            "refused rather than started"
+        ),
+    )
+    parser.add_argument(
+        "--retain-per-file",
+        choices=RETAIN_CHOICES,
+        default="auto",
+        help=(
+            "keep the per-history projected populations. They are a diagnostic: the "
+            "ensemble mean and standard error come from a running accumulator and "
+            "never depend on them. auto decides from the budget"
+        ),
+    )
+    parser.add_argument(
+        "--accumulator-memmap-dir",
+        default=None,
+        help=(
+            "spill the running ensemble mean/variance to memory-mapped files in this "
+            "directory when they are large; without it they stay in RAM"
+        ),
+    )
+    parser.add_argument(
         "--out",
         default=None,
         help="new output directory (optional with --preflight, which can print only)",
+    )
+    parser.add_argument(
+        "--fingerprint-data",
+        action="store_true",
+        help=(
+            "SHA-256 the SHPROP histories and every parsed PROCAR as well as the "
+            "configuration. Correct but expensive: a second full read of the archive"
+        ),
     )
     parser.add_argument("--overwrite", action="store_true")
     return parser
 
 
+#: Above this many time points a figure is drawn from a min/max envelope
+#: rather than from every sample.  A raster axis has a few thousand
+#: distinguishable x positions, so plotting six million points costs gigabytes
+#: of matplotlib path data to draw something no eye can resolve.
+PLOT_ENVELOPE_THRESHOLD = 20_000
+
+#: Buckets across the x axis when the envelope is used.
+PLOT_ENVELOPE_BUCKETS = 4_000
+
+
+def _envelope(time_ns, values, buckets: int):
+    """Per-bucket min and max, so no excursion is hidden by decimation.
+
+    Plain decimation (take every Nth sample) can step straight over a spike.
+    Taking both extremes of each bucket cannot: whatever the series did inside
+    a bucket, the band drawn for that bucket spans it.
+    """
+    import numpy as np
+
+    n = len(time_ns)
+    edges = np.linspace(0, n, buckets + 1, dtype=int)
+    edges = np.unique(edges)
+    centres = np.empty(len(edges) - 1, dtype=float)
+    lows = np.empty(len(edges) - 1, dtype=float)
+    highs = np.empty(len(edges) - 1, dtype=float)
+    for i in range(len(edges) - 1):
+        start, stop = edges[i], edges[i + 1]
+        if stop <= start:
+            stop = start + 1
+        block = values[start:stop]
+        centres[i] = float(time_ns[(start + stop - 1) // 2])
+        lows[i] = float(block.min())
+        highs[i] = float(block.max())
+    return centres, lows, highs
+
+
 def _plot(result, out: Path) -> List[str]:
+    """Population figures, plus a fixed-vs-projected overlay per shared group.
+
+    Large campaigns are drawn as a min/max envelope; the axis says so, because
+    a reader must not take a decimated curve for every sample.
+    """
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import numpy as np
+
+    ntime = len(result.time_ns)
+    decimated = ntime > PLOT_ENVELOPE_THRESHOLD
+    outputs: List[str] = []
 
     fig, ax = plt.subplots(figsize=(8, 4.5), constrained_layout=True)
     for gi, group in enumerate(result.group_names):
-        ax.plot(result.time_ns, result.mean[:, gi], label=group)
-        if result.sem is not None:
-            low = result.mean[:, gi] - result.sem[:, gi]
-            high = result.mean[:, gi] + result.sem[:, gi]
-            ax.fill_between(result.time_ns, low, high, alpha=0.2)
+        series = np.asarray(result.mean[:, gi])
+        if decimated:
+            x, low, high = _envelope(result.time_ns, series, PLOT_ENVELOPE_BUCKETS)
+            ax.fill_between(x, low, high, alpha=0.85, label=group, linewidth=0)
+        else:
+            ax.plot(result.time_ns, series, label=group)
+            if result.sem is not None:
+                spread = np.asarray(result.sem[:, gi])
+                ax.fill_between(
+                    result.time_ns, series - spread, series + spread, alpha=0.2
+                )
     ax.set(
         xlabel="Time (ns)",
         ylabel="Projection-weighted diagonal subsystem population",
         ylim=(-0.03, 1.03),
     )
     ax.set_title(
-        "diagonal approximation: coherences are not recorded by SHPROP",
+        "diagonal approximation: coherences are not recorded by SHPROP"
+        + (
+            f"  |  min/max envelope over {PLOT_ENVELOPE_BUCKETS} buckets of {ntime} samples"
+            if decimated
+            else ""
+        ),
         fontsize=8,
         loc="left",
     )
     ax.legend()
-    outputs = []
     for suffix in ("png", "pdf"):
         path = out / f"character_populations.{suffix}"
         fig.savefig(path, dpi=200)
         outputs.append(str(path))
     plt.close(fig)
+
+    # Fixed-column against projection-weighted, one panel per shared group.
+    shared = [name for name in result.fixed_mean if name in result.group_names]
+    if shared:
+        lookup = {name: i for i, name in enumerate(result.group_names)}
+        fig, axes = plt.subplots(
+            len(shared), 1, figsize=(8, 2.6 * len(shared)), sharex=True,
+            constrained_layout=True, squeeze=False,
+        )
+        for row, name in enumerate(shared):
+            panel = axes[row][0]
+            fixed = np.asarray(result.fixed_mean[name])
+            projected = np.asarray(result.mean[:, lookup[name]])
+            if decimated:
+                x, low, high = _envelope(result.time_ns, fixed, PLOT_ENVELOPE_BUCKETS)
+                panel.fill_between(x, low, high, alpha=0.45, label="fixed column", linewidth=0)
+                x, low, high = _envelope(result.time_ns, projected, PLOT_ENVELOPE_BUCKETS)
+                panel.fill_between(
+                    x, low, high, alpha=0.45, label="projection-weighted", linewidth=0
+                )
+            else:
+                panel.plot(result.time_ns, fixed, label="fixed column")
+                panel.plot(result.time_ns, projected, label="projection-weighted")
+                if result.sem is not None:
+                    spread = np.asarray(result.sem[:, lookup[name]])
+                    panel.fill_between(
+                        result.time_ns, projected - spread, projected + spread, alpha=0.2
+                    )
+            panel.set(ylabel=name, ylim=(-0.03, 1.03))
+            if row == 0:
+                panel.legend(fontsize=8)
+                panel.set_title(
+                    "fixed column map vs projection-weighted diagonal subsystem "
+                    "population; a difference is mislabelling, not a transfer rate",
+                    fontsize=8,
+                    loc="left",
+                )
+        axes[-1][0].set(xlabel="Time (ns)")
+        for suffix in ("png", "pdf"):
+            path = out / f"fixed_vs_projected.{suffix}"
+            fig.savefig(path, dpi=200)
+            outputs.append(str(path))
+        plt.close(fig)
     return outputs
 
 
 def _run_preflight(args, paths, state_map, atom_groups) -> int:
     report = preflight_report(
-        paths, state_map, args.projection_manifest, atom_groups, args.frame_mode
+        paths,
+        state_map,
+        args.projection_manifest,
+        atom_groups,
+        args.frame_mode,
+        memory_budget=parse_size(args.memory_budget) if args.memory_budget else None,
+        retain_per_file=args.retain_per_file,
+        memmap_dir=args.accumulator_memmap_dir,
     )
     payload = {
         "command": "character-populations --preflight",
@@ -206,6 +369,14 @@ def _run_preflight(args, paths, state_map, atom_groups) -> int:
     if report.get("distinct_namdtini") is not None:
         print(f"  distinct NAMDTINI: {report['distinct_namdtini']}")
         print(f"  SHPROP row counts: {report['row_counts']}")
+    io_block = report.get("shprop_io")
+    if io_block:
+        megabytes = io_block["total_bytes"] / (1024 * 1024)
+        print(
+            f"  SHPROP input: {len(io_block['per_file'])} file(s), {megabytes:.1f} MiB total, "
+            f"{io_block['rows_per_history']} rows each; analysis would read "
+            f"{io_block['chunk_rows']} row(s) at a time ({io_block['reason']})"
+        )
     cycle = report.get("cycle")
     if cycle:
         print(
@@ -235,6 +406,31 @@ def _run_preflight(args, paths, state_map, atom_groups) -> int:
             f"{structure['n_kpoints']} k-point(s), spins "
             f"{structure['spin_components_seen'] or '[unlabelled]'}"
         )
+    memory = report.get("memory")
+    if memory and "estimated_total_human" in memory:
+        print(
+            f"  estimated memory: {memory['estimated_resident_human']} of arrays "
+            f"(+{human(memory['assumed_overhead_bytes'])} assumed overhead) = "
+            f"{memory['estimated_total_human']}"
+            + (f", budget {memory['budget_human']}" if memory.get("budget_human") else "")
+        )
+        print(
+            f"  plan: {memory['shprop_chunk_rows']} row chunks, "
+            f"retain per-history results = {memory['retain_per_file']}, "
+            f"memmap accumulators = {memory['spill_accumulators_to_memmap']}"
+        )
+    window = report.get("band_window")
+    if window and window.get("band_numbers"):
+        print(
+            f"  bands: {window['band_numbers'][0]}..{window['band_numbers'][-1]} "
+            f"({len(window['band_numbers'])} states), source {window['band_numbers_source']}"
+        )
+    provenance = report.get("provenance")
+    if provenance:
+        sources = sorted({row["source"] for row in provenance["NAMDTINI"]})
+        print(f"  NAMDTINI provenance: {', '.join(sources)}")
+        periods = sorted({str(row["source"]) for row in provenance["cycle_period"]})
+        print(f"  cycle period provenance: {', '.join(periods)}")
     if report.get("atom_coverage"):
         coverage = report["atom_coverage"]
         print(
@@ -267,6 +463,30 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return _run_preflight(args, paths, state_map, atom_groups)
 
         plan = plan_analysis(paths, state_map, args.projection_manifest, args.frame_mode)
+        chunk_rows, io_plan = resolve_chunk_rows(
+            plan.shprop_structures, args.shprop_io_mode, args.shprop_chunk_rows
+        )
+        budget = parse_size(args.memory_budget) if args.memory_budget else None
+        memory = estimate_memory(
+            n_files=len(paths),
+            n_time=plan.n_time[0],
+            n_states=len(plan.bands),
+            n_groups=len(atom_groups.names),
+            n_fixed_groups=len(state_map.groups),
+            n_frames=len(plan.required_frames),
+            n_bands=len(plan.bands),
+            n_columns=plan.shprop_structures[0].n_columns,
+            chunk_rows=chunk_rows,
+            budget=budget,
+            retain_per_file=args.retain_per_file,
+            memmap_dir=args.accumulator_memmap_dir,
+        )
+        for line in memory.decisions:
+            print(f"memory: {line}")
+        if not memory.ok:
+            for problem in memory.problems:
+                print(f"error: {problem}")
+            return 2
         result = character_populations(
             paths,
             state_map,
@@ -274,29 +494,38 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             atom_groups,
             args.frame_mode,
             plan=plan,
+            chunk_rows=chunk_rows,
+            memmap_dir=Path(args.accumulator_memmap_dir)
+            if (args.accumulator_memmap_dir and memory.spill_accumulators)
+            else None,
+            keep_per_file=memory.retain_per_file,
         )
         swaps, swap_summary = character_swap_rows(
             result.projection, dominance_threshold=args.dominance_threshold
         )
         discrepancy = fixed_vs_projected_summary(result)
         dominance = result.projection.dominance_summary(args.dominance_threshold)
-    except (CharacterError, ValueError, OSError) as exc:
+    except (CharacterError, BudgetError, ValueError, OSError) as exc:
         print(f"error: {exc}")
         return 2
 
     out = prepare_output(args.out, overwrite=args.overwrite)
-    rows = []
-    for ti, time in enumerate(result.time_ns):
-        for gi, group in enumerate(result.group_names):
-            rows.append(
-                [
+
+    # Generators, not lists. write_csv consumes an iterable, and a campaign of
+    # six million time points times three groups is eighteen million rows: as
+    # Python lists that is gigabytes staged in memory purely to hand it to a
+    # writer one row at a time.
+    def _population_rows():
+        for ti, time in enumerate(result.time_ns):
+            for gi, group in enumerate(result.group_names):
+                yield [
                     float(time),
                     group,
                     float(result.mean[ti, gi]),
                     None if result.sem is None else float(result.sem[ti, gi]),
                     OBSERVED,
                 ]
-            )
+
     write_csv(
         out / "character_populations.csv",
         [
@@ -306,26 +535,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "sem",
             "observable_class",
         ],
-        rows,
+        _population_rows(),
     )
 
-    comparison_rows = []
     projected_lookup = {name: i for i, name in enumerate(result.group_names)}
-    for group, fixed in result.fixed_mean.items():
-        if group not in projected_lookup:
-            continue
-        gi = projected_lookup[group]
-        projected = result.mean[:, gi]
-        for time, fixed_value, projected_value in zip(result.time_ns, fixed, projected):
-            comparison_rows.append(
-                [
+
+    def _comparison_rows():
+        for group, fixed in result.fixed_mean.items():
+            if group not in projected_lookup:
+                continue
+            projected = result.mean[:, projected_lookup[group]]
+            for time, fixed_value, projected_value in zip(
+                result.time_ns, fixed, projected
+            ):
+                yield [
                     float(time),
                     group,
                     float(fixed_value),
                     float(projected_value),
                     float(projected_value - fixed_value),
                 ]
-            )
+
     write_csv(
         out / "fixed_vs_projected.csv",
         [
@@ -335,7 +565,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "projection_weighted_diagonal_population",
             "difference",
         ],
-        comparison_rows,
+        _comparison_rows(),
     )
     write_csv(
         out / "fixed_vs_projected_summary.csv", DISCREPANCY_HEADER, discrepancy["rows"]
@@ -390,7 +620,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "dominant_group",
             "dominant_weight",
         ],
-        list(projection_table_rows(result.projection)),
+        projection_table_rows(result.projection),
     )
     write_csv(
         out / "shprop_alignment.csv",
@@ -407,12 +637,31 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     figures = _plot(result, out)
 
-    input_paths = paths + [Path(args.config), Path(args.projection_manifest), Path(args.atom_groups)]
-    input_paths += result.projection.source_paths
+    # Configuration files are small and are always hashed. The data files are
+    # not, by default: SHA-256 over five 889 MB histories and up to two thousand
+    # PROCARs is a second full read of the archive, which would cost more than
+    # the analysis itself. --fingerprint-data forces it when integrity matters
+    # more than time, and the report says which was done.
+    config_paths = [Path(args.config), Path(args.projection_manifest), Path(args.atom_groups)]
+    data_paths = list(paths) + list(result.projection.source_paths)
+    if args.fingerprint_data:
+        inputs = fingerprint(config_paths + data_paths)
+    else:
+        inputs = fingerprint(config_paths) + describe(data_paths)
     payload = {
         "command": "character-populations",
         "environment": environment(),
-        "inputs": fingerprint(input_paths),
+        "inputs": inputs,
+        "input_fingerprinting": {
+            "configuration_files": "sha256",
+            "data_files": "sha256" if args.fingerprint_data else "size and mtime only",
+            "note": (
+                "hashing every SHPROP history and PROCAR is a second full read of "
+                "the archive. Configuration files are always hashed because they "
+                "are small and they are what a reader needs to reproduce the run; "
+                "pass --fingerprint-data to hash the data too"
+            ),
+        },
         "frame_mode": args.frame_mode,
         "projection_cycle_length": result.projection.cycle_length,
         "cycle_period_used": result.projection.cycle_period,
@@ -423,6 +672,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "min_projection_weight": atom_groups.min_projection_weight,
         },
         "frame_consumption": plan.consumption(),
+        "procar_parsing": result.projection.parse_stats,
+        "band_provenance_conflicts": plan.band_provenance_conflicts,
+        "shprop_io": {**io_plan, **result.io},
+        "memory": memory.as_dict(),
         "projection_frames": [int(v) for v in result.projection.frames],
         "projection_bands": [int(v) for v in result.projection.bands],
         "projection_quality": quality,
@@ -463,6 +716,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ],
     }
     write_json(out / "report.json", payload)
+    summary_path = write_validation_summary(out / "validation_summary.md", payload)
 
     consumption = plan.consumption()
     print(
@@ -470,7 +724,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         f"parsed of {consumption['manifest_declared_frames']} declared, "
         f"{len(result.projection.bands)} band(s)"
     )
+    for conflict in plan.band_provenance_conflicts:
+        print(f"warning: {conflict}")
     print(f"reporting the {POPULATION_LABEL} (coherences are not in the inputs)")
+    print(
+        f"estimated peak {human(memory.resident_bytes)} of arrays plus assumed overhead"
+        + (f", budget {human(memory.budget_bytes)}" if memory.budget_bytes else "")
+    )
+    print(
+        f"SHPROP read in {result.io['chunks_per_history']} chunk(s) of "
+        f"{result.io['shprop_chunk_rows']} row(s) per history "
+        f"(mode {io_plan['requested_mode']}); no whole-campaign stack was built"
+    )
     print(
         f"groups: {', '.join(result.group_names)}; dominant-character swaps: "
         f"{swap_summary['dominant_character_swaps']} "
@@ -501,5 +766,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "note: projection-manifest cycle_length differs from SHPROP NSW-1; "
             "the explicit manifest period was used and the mismatch was recorded"
         )
+    print(f"summary: {summary_path}")
     print(f"written to {out}")
+    # Every output is on disk; the running accumulators can go, taking any
+    # memory-mapped spill files with them.
+    result.release()
     return 0

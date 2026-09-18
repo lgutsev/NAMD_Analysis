@@ -32,6 +32,34 @@ def fingerprint(paths: Iterable) -> List[Dict[str, Any]]:
                     stat.st_mtime, _dt.timezone.utc
                 ).isoformat(),
                 "sha256": sha256_file(path),
+                "hashed": True,
+            }
+        )
+    return records
+
+
+def describe(paths: Iterable) -> List[Dict[str, Any]]:
+    """Size and mtime for each input, without reading its contents.
+
+    Hashing identifies a file beyond doubt, but it costs a full read. A
+    campaign of two thousand PROCARs is a hundred gigabytes, so hashing them
+    to write a report would double the cost of the analysis that just read
+    them once. This records what can be known from the directory entry, and
+    says plainly that it is not a hash.
+    """
+    records = []
+    for item in paths:
+        path = Path(item)
+        stat = path.stat()
+        records.append(
+            {
+                "path": str(path),
+                "bytes": stat.st_size,
+                "modified_utc": _dt.datetime.fromtimestamp(
+                    stat.st_mtime, _dt.timezone.utc
+                ).isoformat(),
+                "sha256": None,
+                "hashed": False,
             }
         )
     return records

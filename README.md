@@ -6,7 +6,7 @@ fit windows, and input provenance. This package is independent of
 and runs calculations; this package reads their output. Existing manually
 prepared campaigns work too.
 
-Version 0.5 provides:
+Version 0.6.0 provides:
 
 - Campaign inventory and identification of failed historical single-exponential fits.
 - EIGTXT/NATXT dimension and run-setting audits, energy-gap statistics, and
@@ -50,6 +50,21 @@ Version 0.5 provides:
   mislabelled; each original SHPROP is projected before averaging, only the
   electronic frames actually visited are parsed, and a cheap preflight checks
   the whole configuration before any projection is read.
+- One-command campaign preparation: `character-prepare` reads a campaign
+  directory and writes `state_map.json`, `atom_groups.json`,
+  `projection_manifest.json`, an audit of how every value was decided, and
+  optionally a Slurm script that preflights before it computes. Ambiguity is
+  refused rather than resolved.
+- Bounded-memory SHPROP reading: preflight costs the same on a 900 MB history
+  as on a small one, and the analysis streams each history in row chunks into a
+  running ensemble mean instead of building a whole-campaign stack.
+- Early-vs-late regime analysis: two declared windows characterized separately,
+  then one global kinetic model scored against early-plus-late. The early
+  window defaults to 0-100 ps; the late window is never defaulted, because no
+  manuscript fit window is encoded here.
+- Adiabatic character events: gap, |NAC| and frame-resolved fragment character
+  synchronized on the resolved MD frame, with crossing events classified
+  without calling a character swap a surface hop or automatic charge transfer.
 - JSON reports, CSV tables, PNG/PDF plots, SHA-256 fingerprints and imported
   launcher manifests.
 
@@ -391,6 +406,24 @@ The full statement travels with the numbers, in `report.json` under
 `population_definition`, and the CSV column is named
 `projection_weighted_diagonal_population`.
 
+### Generate the configuration instead of writing it
+
+```bash
+namd-analysis character-prepare   --shprop-dir /path/to/NuTest   --projection-dir /path/to/FAPI_001_BCF_PCBM_A   --preset bcf_pcbm --campaign A   --frame-mode dish-cyclic   --write-sbatch --run-preflight
+```
+
+Reads the SHPROP headers and a bounded sample of rows, walks the numbered frame
+directories, and writes `state_map.json`, `atom_groups.json`,
+`projection_manifest.json`, `prepare_report.json` and a batch script — then
+runs the ordinary preflight against exactly those files.
+
+It prints what was **inferred** from the files separately from what came from a
+**preset** (a declaration a human established for that campaign) and what still
+needs **you**. It refuses to name a subsystem, place an atom boundary, choose
+between two readings of a table, guess the frame mode, or pick a cycle length
+when directory coverage and `NSW - 1` disagree. Details:
+[docs/campaign_preparation.md](docs/campaign_preparation.md).
+
 ### What you need
 
 | input | what it is |
@@ -504,6 +537,26 @@ the resolved frame series rather than guessed from which frames happen to be
 loaded. When it is not examined the report says which of the reasons
 applies; it is never passed over in silence.
 
+### Large histories
+
+Archived histories run to hundreds of megabytes each. Preflight reads only
+headers, row counts and each file's first and last row, so its memory does not
+grow with file size. The analysis streams each history in row chunks and folds
+them into a running ensemble mean and variance rather than building an
+`(nfiles, nrows, ncolumns)` stack.
+
+Chunking changes residency only — the mean, the standard error and every
+validation are identical at any chunk size, which is pinned by test. Tune it if
+you want to:
+
+- `--shprop-chunk-rows N` — rows held at once.
+- `--shprop-io-mode auto|stream|memory` — `auto` picks from file size, `stream`
+  always chunks, `memory` reads each whole table in one chunk. There is one
+  code path; `memory` is a chunk the size of the table, not a second
+  implementation.
+- `--accumulator-memmap-dir DIR` — spill the running mean/variance to
+  memory-mapped files when they are large. Without it they stay in RAM.
+
 ### Outputs
 
 `character_populations.csv`, `fixed_vs_projected.csv` and its summary
@@ -513,7 +566,58 @@ whether dynamic character changed the conclusion), `character_swaps.csv`,
 `projection_quality_by_band.csv`, `projection_character.csv`,
 `shprop_alignment.csv`, a figure, and `report.json` with full provenance.
 
+### Early and late regimes
+
+```bash
+namd-analysis regime-analysis   --files 'run/SHPROP.*'   --config state_map.json   --late-window 0.1:10   --scheme 'BCF->PCBM,PCBM->VBM'   --out results/regimes
+```
+
+Characterizes the first 100 ps separately from the slow regime and asks whether
+one kinetic description is adequate for both. The early default is a choice,
+not a constant; the late window is **required**, because no manuscript fit
+window is encoded in this repository and inventing one would put a number
+nobody chose into the science. Details:
+[docs/early_late_regimes.md](docs/early_late_regimes.md).
+
+### Adiabatic character events
+
+```bash
+namd-analysis character-crossings   --projection-character results/character/projection_character.csv   --eigtxt /path/to/EIGTXT --natxt /path/to/NATXT --dt-fs 1   --out results/crossings
+```
+
+Reuses the character outputs rather than reparsing PROCARs, and synchronizes
+gap, coupling and fragment character on the resolved MD frame. **A character
+swap is not a surface hop, and neither is automatically charge transfer** --
+staying on one adiabatic state through an avoided crossing changes the fragment
+identity, while hopping between two can preserve it. Why, with the two-state
+model behind it: [docs/adiabatic_vs_diabatic.md](docs/adiabatic_vs_diabatic.md).
+
+For counting donor→acceptor transfer events against the arbitrary population
+thresholds used in the surface-hopping literature — swept, never single, and
+consuming only the occupation-driven component — see `namd_analysis.transfer`
+and [docs/transfer_mechanism.md](docs/transfer_mechanism.md), which also sets
+out which mechanistic claims the analysis supports and which it forbids.
+Manuscript-ready text is in
+[docs/manuscript_wording.md](docs/manuscript_wording.md).
+
+Add `--shprop` (with `--state-map`, `--frame-mode` and, for a cyclic run,
+`--projection-manifest`) to attach each history's **own** projection-weighted
+fragment population to its events:
+
+```bash
+namd-analysis character-crossings   --projection-character results/character/projection_character.csv   --eigtxt /path/to/EIGTXT --natxt /path/to/NATXT --dt-fs 1   --shprop '/path/to/SHPROP.*' --state-map state_map.json   --projection-manifest projection_manifest.json --frame-mode dish-cyclic   --late-window 0.1:10 --out results/crossings
+```
+
+Each history is walked on its own resolved frame mapping and classified
+**before** anything is summed. Histories starting at different `NAMDTINI` visit
+different frames at the same row, so no population is ever correlated by row
+number across histories, and none is averaged before classification — two
+histories exchanging character in opposite directions would cancel to nothing.
+`--early-window` defaults to `0:0.1` ns; **`--late-window` is required and never
+defaulted**, so without it no early-vs-late comparison is produced.
+
 Theory and conventions: [docs/state_character.md](docs/state_character.md).
+Generating the configuration: [docs/campaign_preparation.md](docs/campaign_preparation.md). A worked campaign: [examples/bcf_pcbm/FAPI_001_A](examples/bcf_pcbm/FAPI_001_A).
 
 ## Analyze phonon spectra
 

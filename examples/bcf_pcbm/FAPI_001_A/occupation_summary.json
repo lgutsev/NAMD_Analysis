@@ -1,0 +1,66 @@
+{
+  "history": "SHPROP.25",
+  "namdtini": 25,
+  "n_rows": 10000000,
+  "decomposition_max_residual": 3.3306690738754696e-16,
+  "groups": [
+    "perovskite",
+    "BCF",
+    "PCBM"
+  ],
+  "population": {
+    "perovskite": {
+      "initial": 0.0,
+      "final": 0.066,
+      "net": 0.066,
+      "min": 0.0,
+      "max": 1.0
+    },
+    "BCF": {
+      "initial": 0.0,
+      "final": 0.78,
+      "net": 0.78,
+      "min": 0.0,
+      "max": 0.9910866141732283
+    },
+    "PCBM": {
+      "initial": 1.0,
+      "final": 0.154,
+      "net": -0.846,
+      "min": 0.0,
+      "max": 1.0
+    }
+  },
+  "whole_trajectory": {
+    "perovskite": {
+      "occupation_redistribution": -0.6987788359019539,
+      "character_evolution": 0.7647788359019491
+    },
+    "BCF": {
+      "occupation_redistribution": 0.6182900350781979,
+      "character_evolution": 0.16170996492227668
+    },
+    "PCBM": {
+      "occupation_redistribution": 0.08048880082375315,
+      "character_evolution": -0.9264888008239014
+    }
+  },
+  "episode_1320_1331": {
+    "n_steps": 60024,
+    "perovskite": {
+      "net": -7.826434034416826,
+      "occupation_redistribution": -0.00689379720592222,
+      "character_evolution": -7.819540237210903
+    },
+    "BCF": {
+      "net": 9.128735024516192,
+      "occupation_redistribution": 0.11884268630263245,
+      "character_evolution": 9.00989233821356
+    },
+    "PCBM": {
+      "net": -1.3023009900991043,
+      "occupation_redistribution": -0.1119488890967101,
+      "character_evolution": -1.190352101002394
+    }
+  }
+}

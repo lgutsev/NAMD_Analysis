@@ -1,0 +1,42 @@
+{
+  "window": [
+    1315,
+    1335
+  ],
+  "bands": {
+    "977": {
+      "normalized_swaps": true,
+      "raw_swaps": true,
+      "agree": true,
+      "frame_of_largest_normalized_excursion": 1325,
+      "frame_of_largest_raw_excursion": 1325,
+      "captured_min": 0.503,
+      "captured_max": 0.527,
+      "captured_relative_range": 0.04618345093008342,
+      "raw_BCF_first": 0.524,
+      "raw_BCF_at_excursion": 0.008,
+      "raw_PCBM_first": 0.0,
+      "raw_PCBM_at_excursion": 0.498,
+      "normalized_BCF_at_excursion": 0.015810276679841896,
+      "normalized_PCBM_at_excursion": 0.9841897233201581
+    },
+    "978": {
+      "normalized_swaps": true,
+      "raw_swaps": true,
+      "agree": true,
+      "frame_of_largest_normalized_excursion": 1325,
+      "frame_of_largest_raw_excursion": 1325,
+      "captured_min": 0.501,
+      "captured_max": 0.526,
+      "captured_relative_range": 0.04909754044702145,
+      "raw_BCF_first": 0.0,
+      "raw_BCF_at_excursion": 0.514,
+      "raw_PCBM_first": 0.505,
+      "raw_PCBM_at_excursion": 0.003,
+      "normalized_BCF_at_excursion": 0.9941972920696325,
+      "normalized_PCBM_at_excursion": 0.005802707930367505
+    }
+  },
+  "all_agree": true,
+  "note": "the exchange is confirmed against the raw PAW-sphere weights W_ig as well as the normalized w_ig. Where both swap, the normalization did not create the exchange. captured_relative_range says how much the denominator moved over the window: a small range means it could not have produced the swap on its own"
+}

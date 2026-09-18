@@ -1,0 +1,176 @@
+{
+  "early 0-0.1 ns": {
+    "window_ns": [
+      0.0,
+      0.1
+    ],
+    "n_samples": 100000,
+    "groups": {
+      "BCF": {
+        "fixed": {
+          "initial": 0.0,
+          "final": 0.837,
+          "net_change": 0.837,
+          "min": 0.0,
+          "max": 0.915,
+          "range": 0.915,
+          "slope_per_ns": 6.841233092490122,
+          "mean": 0.69572775
+        },
+        "dynamic": {
+          "initial": 0.0,
+          "final": 0.837,
+          "net_change": 0.837,
+          "min": 0.0,
+          "max": 0.9910866141732283,
+          "range": 0.9910866141732283,
+          "slope_per_ns": 6.166368163386278,
+          "mean": 0.7093172553415948
+        },
+        "net_change_difference": 0.0,
+        "range_ratio_dynamic_over_fixed": 1.0831547695882275
+      },
+      "PCBM": {
+        "fixed": {
+          "initial": 0.0,
+          "final": 0.163,
+          "net_change": 0.163,
+          "min": 0.0,
+          "max": 0.242,
+          "range": 0.242,
+          "slope_per_ns": -0.3240436913244141,
+          "mean": 0.15086788
+        },
+        "dynamic": {
+          "initial": 1.0,
+          "final": 0.163,
+          "net_change": -0.837,
+          "min": 0.0,
+          "max": 1.0,
+          "range": 1.0,
+          "slope_per_ns": -1.0412308490659967,
+          "mean": 0.16965784489514218
+        },
+        "net_change_difference": -1.0,
+        "range_ratio_dynamic_over_fixed": 4.132231404958678
+      }
+    },
+    "note": "a population that is flat under the fixed column map is not necessarily flat under the projection, because the fixed map assigns each column to a fragment for the whole run while the projection lets the assignment move with the geometry. Both readings are reported; neither is subtracted from the other"
+  },
+  "full 0-10 ns": {
+    "window_ns": [
+      0.0,
+      10.0
+    ],
+    "n_samples": 10000000,
+    "groups": {
+      "BCF": {
+        "fixed": {
+          "initial": 0.0,
+          "final": 0.78,
+          "net_change": 0.78,
+          "min": 0.0,
+          "max": 0.915,
+          "range": 0.915,
+          "slope_per_ns": -0.004391782481648005,
+          "mean": 0.8186701713
+        },
+        "dynamic": {
+          "initial": 0.0,
+          "final": 0.78,
+          "net_change": 0.78,
+          "min": 0.0,
+          "max": 0.9910866141732283,
+          "range": 0.9910866141732283,
+          "slope_per_ns": -0.004472240308690868,
+          "mean": 0.8165190798189087
+        },
+        "net_change_difference": 0.0,
+        "range_ratio_dynamic_over_fixed": 1.0831547695882275
+      },
+      "PCBM": {
+        "fixed": {
+          "initial": 0.0,
+          "final": 0.154,
+          "net_change": 0.154,
+          "min": 0.0,
+          "max": 0.242,
+          "range": 0.242,
+          "slope_per_ns": -0.0008870351337315198,
+          "mean": 0.1445498222
+        },
+        "dynamic": {
+          "initial": 1.0,
+          "final": 0.154,
+          "net_change": -0.846,
+          "min": 0.0,
+          "max": 1.0,
+          "range": 1.0,
+          "slope_per_ns": -0.0009660435481385472,
+          "mean": 0.14670374907642486
+        },
+        "net_change_difference": -1.0,
+        "range_ratio_dynamic_over_fixed": 4.132231404958678
+      }
+    },
+    "note": "a population that is flat under the fixed column map is not necessarily flat under the projection, because the fixed map assigns each column to a fragment for the whole run while the projection lets the assignment move with the geometry. Both readings are reported; neither is subtracted from the other"
+  },
+  "late 0.1-10 ns": {
+    "window_ns": [
+      0.1,
+      10.0
+    ],
+    "n_samples": 9900001,
+    "groups": {
+      "BCF": {
+        "fixed": {
+          "initial": 0.837,
+          "final": 0.78,
+          "net_change": -0.05699999999999994,
+          "min": 0.739,
+          "max": 0.915,
+          "range": 0.17600000000000005,
+          "slope_per_ns": -0.005293499942923977,
+          "mean": 0.819912015665453
+        },
+        "dynamic": {
+          "initial": 0.837,
+          "final": 0.78,
+          "net_change": -0.05699999999999994,
+          "min": 0.06717281977966529,
+          "max": 0.9132267441860465,
+          "range": 0.8460539244063813,
+          "slope_per_ns": -0.0052783907063277315,
+          "mean": 0.817601928490202
+        },
+        "net_change_difference": 0.0,
+        "range_ratio_dynamic_over_fixed": 4.807124570490801
+      },
+      "PCBM": {
+        "fixed": {
+          "initial": 0.163,
+          "final": 0.154,
+          "net_change": -0.009000000000000008,
+          "min": 0.068,
+          "max": 0.216,
+          "range": 0.148,
+          "slope_per_ns": -0.0008747855926458118,
+          "mean": 0.14448600530444392
+        },
+        "dynamic": {
+          "initial": 0.163,
+          "final": 0.154,
+          "net_change": -0.009000000000000008,
+          "min": 0.068,
+          "max": 0.9094699352451434,
+          "range": 0.8414699352451434,
+          "slope_per_ns": -0.0008526015933817212,
+          "mean": 0.1464718911922064
+        },
+        "net_change_difference": 0.0,
+        "range_ratio_dynamic_over_fixed": 5.685607670575293
+      }
+    },
+    "note": "a population that is flat under the fixed column map is not necessarily flat under the projection, because the fixed map assigns each column to a fragment for the whole run while the projection lets the assignment move with the geometry. Both readings are reported; neither is subtracted from the other"
+  }
+}

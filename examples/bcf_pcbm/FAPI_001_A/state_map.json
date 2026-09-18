@@ -1,0 +1,40 @@
+{
+  "name": "FAPI_001_BCF_PCBM_A",
+  "time_column": 0,
+  "time_unit": "fs",
+  "population_columns": [
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "band_numbers": [
+    976,
+    977,
+    978,
+    979,
+    980,
+    981
+  ],
+  "groups": {
+    "VBM": [
+      2
+    ],
+    "BCF": [
+      3
+    ],
+    "PCBM": [
+      4,
+      5,
+      6
+    ],
+    "CBM": [
+      7
+    ]
+  },
+  "complete_population": true,
+  "recombined_group": "VBM",
+  "notes": "Nominal fixed-column map for FAPI/BCF/PCBM interfaces, for comparison only. The column order is a property of the run that wrote SHPROP, not something this package can verify; confirm it against the run's inp/INICON before trusting any fixed-column number. PCBM1/PCBM2/PCBM3 are separate basis states but one physical subsystem, so they are grouped. The dynamic PROCAR groups are coarser still -- perovskite / BCF / PCBM -- because atomic localization cannot separate VBM from CBM when both are perovskite-localized. Where the fixed map and the projection disagree is exactly what the character workflow exists to show."
+}
