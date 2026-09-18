@@ -11,14 +11,19 @@
 #SBATCH --output=ens_prod_%A_%a.out
 #SBATCH --error=ens_prod_%A_%a.err
 #
-# Production ensemble: 100 SHPROP electronic histories per configuration.
+# Production ensemble: every SHPROP electronic history a configuration has.
 #
 #   passes  subset of  histories  subset of  configuration
 #
 # A, B and C are DISTINCT INTERFACE CONFIGURATIONS, not replicates. Each one's
-# 100-history summary licenses statements about that configuration on its own;
-# a Campaign A statement needs Campaign A, not B and C as well. Combining them
-# afterwards is a cross-configuration comparison, not a statistical level.
+# whole-archive summary licenses statements about that configuration on its
+# own; a Campaign A statement needs Campaign A, not B and C as well. Combining
+# them afterwards is a cross-configuration comparison, not a statistical level.
+#
+# The denominator is whatever the archive holds, counted below and carried into
+# the summary. A currently has 98 numbered histories, and 98 is what its
+# results say: a missing number is a history that was never written, never one
+# to be manufactured to round the count up.
 #
 # One array task per configuration, not per history: histories stream one at a
 # time inside a task, so peak memory is per-history (~1.5 GiB measured)
@@ -32,9 +37,25 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
+# THE STUDY LAYOUT.
+#
+#   common root:       ${ROOT}
+#   reference/control: ${ROOT}/NuTest        shared by the whole A/B/C study,
+#                                            NOT an A-specific directory
+#   production data:   ${ROOT}/FAPI_001_BCF_PCBM_{A,B,C}   the SHPROP archives
+#   analysis output:   <configuration>/analysis/ensemble_<version>_<jobid>/
+#
+# Configuration-specific reference files live under NuTest/<label>/, one
+# directory per configuration on equal footing. A is not the parent of B and C;
+# it is only the configuration whose reference analysis was established first.
+#
+# Every path below is absolute, so this can be submitted from anywhere,
+# including the common root itself.
+#
 # EDIT THESE. Each configuration needs its OWN provenance. Campaign A values
 # must not be reused for B or C -- the band mapping, SHPROP state order, atom
-# partition and cyclic-frame provenance are per-configuration facts.
+# partition and crossing window are per-configuration facts. What IS shared is
+# study-level: the recycled nuclear trajectory below.
 #
 # REQUIRED per configuration: directory, projection character, state map,
 #   fixed (nominal) state map, cycle length.
@@ -60,6 +81,10 @@ declare -A RUN_DIR=(
   [3]="${ROOT}/FAPI_001_BCF_PCBM_C"
 )
 
+# Each configuration's reference products, prepared into its own directory
+# under the shared control workspace. A's were established by the character run
+# in NuTest/character_test_A_1030646; place (or link) them as NuTest/A/ so all
+# three configurations are addressed the same way.
 declare -A RUN_CHAR=(
   [1]="${REFERENCE_ROOT}/A/projection_character.csv"
   [2]="${REFERENCE_ROOT}/B/projection_character.csv"
@@ -79,8 +104,11 @@ declare -A RUN_FIXED_MAP=(
 )
 
 
-# The recycled nuclear trajectory length. A is 1999; B and C must be
-# established from their own manifests, not assumed equal.
+# The recycled nuclear trajectory length. 1999 frames is a property of the
+# shared nuclear trajectory the whole study recycles, not a value borrowed from
+# A: confirm it against each configuration's own manifest before trusting the
+# frame axis. Nothing else transfers -- state maps, fixed maps, band numbers,
+# atom partitions and crossing windows stay configuration-specific.
 declare -A RUN_CYCLE=( [1]=1999 [2]=1999 [3]=1999 )
 # Crossing manifold window, per configuration. OPTIONAL. A is 1320:1331.
 # Leave B and C empty until their manifolds are located.
@@ -96,7 +124,11 @@ STATE_MAP=${RUN_STATE_MAP[$T]}
 FIXED_MAP=${RUN_FIXED_MAP[$T]}
 CYCLE=${RUN_CYCLE[$T]}
 EPISODE=${RUN_EPISODE[$T]}
-OUT=ens_${LABEL}_${SLURM_ARRAY_JOB_ID:-manual}
+JOBID=${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-manual}}
+# One dedicated directory per analysis run, under the configuration it belongs
+# to. Nothing is written into the top level of the configuration directory:
+# those already hold the archive itself.
+OUT="${DIR}/analysis/ensemble_v0.7.1_${JOBID}"
 
 echo "========================================"
 echo "Ensemble production, configuration ${LABEL}"
@@ -108,12 +140,21 @@ echo "========================================"
 # Required provenance. The episode window is deliberately NOT in this list.
 if [[ "${CYCLE}" == "0" ]]; then
     echo "ERROR: configuration ${LABEL} has no cycle length set."
-    echo "       The recycled nuclear trajectory length is required provenance"
-    echo "       and is per-configuration. Campaign A's 1999 must NOT be reused."
+    echo "       The recycled nuclear trajectory length is required provenance."
+    echo "       Confirm it against configuration ${LABEL}'s own manifest rather"
+    echo "       than assuming another configuration's value."
+    exit 1
+fi
+
+if [[ ! -d "${DIR}" ]]; then
+    echo "ERROR: configuration ${LABEL} has no data directory: ${DIR}"
+    echo "       Each configuration keeps its SHPROP archive in its own"
+    echo "       FAPI_001_BCF_PCBM_<label> directory under the common root."
     exit 1
 fi
 
 cd "${DIR}"
+mkdir -p "${DIR}/analysis"
 
 for required in "${CHAR}" "${STATE_MAP}" "${FIXED_MAP}"; do
     if [[ ! -f "${required}" ]]; then
@@ -136,10 +177,9 @@ if [[ "${N}" -lt 1 ]]; then
     echo "ERROR: no SHPROP histories in ${DIR}"
     exit 1
 fi
-if [[ "${N}" -ne 100 ]]; then
-    echo "NOTE: expected 100 histories, found ${N}. Proceeding; the per-"
-    echo "      configuration denominators will say ${N}."
-fi
+echo "This configuration's denominator is therefore N = ${N}."
+echo "Gaps in the numbering are not filled in: a history that was never"
+echo "written is not one this analysis invents."
 
 EPISODE_ARGS=()
 if [[ -n "${EPISODE}" ]]; then
@@ -176,7 +216,7 @@ echo
 echo "  ${OUT}/per_history.csv       <- one row per SHPROP, including the"
 echo "                                 fixed-column columns net_*_fixed and"
 echo "                                 range_late_fixed"
-echo "  ${OUT}/run_summary.json      <- this configuration's 100 histories"
+echo "  ${OUT}/run_summary.json      <- this configuration's ${N} histories"
 echo "  ${OUT}/ensemble_curves.json  <- median and quantile band, dynamic and"
 echo "                                 fixed: keys and fixed:<group>"
 echo "  ${OUT}/*.png  ${OUT}/*.pdf   <- populations, fixed-vs-dynamic,"
@@ -188,12 +228,16 @@ echo
 echo "To compare configurations afterwards (a cross-configuration comparison,"
 echo "not a statistical level):"
 echo
+echo "  cd ${ROOT}"
 echo "  namd-analysis character-ensemble --combine \\"
-echo "      ens_A_*/run_summary.json \\"
-echo "      ens_B_*/run_summary.json \\"
-echo "      ens_C_*/run_summary.json \\"
-echo "      --combine-curves A=ens_A_JOBID B=ens_B_JOBID C=ens_C_JOBID \\"
-echo "      --out ens_across_configurations"
+echo "      FAPI_001_BCF_PCBM_A/analysis/ensemble_v0.7.1_*/run_summary.json \\"
+echo "      FAPI_001_BCF_PCBM_B/analysis/ensemble_v0.7.1_*/run_summary.json \\"
+echo "      FAPI_001_BCF_PCBM_C/analysis/ensemble_v0.7.1_*/run_summary.json \\"
+echo "      --combine-curves \\"
+echo "          A=FAPI_001_BCF_PCBM_A/analysis/ensemble_v0.7.1_JOBID \\"
+echo "          B=FAPI_001_BCF_PCBM_B/analysis/ensemble_v0.7.1_JOBID \\"
+echo "          C=FAPI_001_BCF_PCBM_C/analysis/ensemble_v0.7.1_JOBID \\"
+echo "      --out analysis_across_configurations"
 echo
 echo "Nothing is pooled across configurations: they are different physical"
 echo "systems, so a mean over them is not a measurement of anything."
