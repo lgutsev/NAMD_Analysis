@@ -72,6 +72,7 @@ def analyse_history(
     late_start_ns: float,
     chunk_rows: int,
     curve_stride: int,
+    fixed_state_map: Optional[StateMap] = None,
 ) -> tuple:
     """One history, start to finish. Returns (HistoryResult, curves)."""
     record = shprop_structure(path)
@@ -128,6 +129,29 @@ def analyse_history(
 
     curves = {g: P[::curve_stride, gi].copy() for gi, g in enumerate(groups)}
     curves["_time_ns"] = time_ns[::curve_stride].copy()
+
+    # The fixed-column reading, for the fixed-vs-dynamic comparison. Read
+    # straight from the SHPROP columns with no PROCAR weighting: that is the
+    # reading the comparison exists to test, so it must not be derived from the
+    # weighted one.
+    if fixed_state_map is not None:
+        from .io.hefei import iter_shprop_chunks
+
+        fixed_groups = list(fixed_state_map.groups)
+        totals = {g: np.empty(record.n_rows) for g in fixed_groups}
+        for offset, chunk in iter_shprop_chunks(path, chunk_rows):
+            n = chunk.shape[0]
+            for g in fixed_groups:
+                cols = np.asarray(fixed_state_map.groups[g], dtype=int)
+                totals[g][offset : offset + n] = chunk[:, cols].sum(axis=1)
+        for g in fixed_groups:
+            y = totals[g]
+            curves[f"fixed:{g}"] = y[::curve_stride].copy()
+            if late.sum() >= 2:
+                z = y[late]
+                result.net_late_fixed[g] = float(z[-1] - z[0])
+                result.range_late_fixed[g] = float(z.max() - z.min())
+            result.net_full_fixed[g] = float(y[-1] - y[0])
     return result, curves
 
 
@@ -162,6 +186,15 @@ def build_parser(prog: str = "namd-analysis character-ensemble") -> argparse.Arg
     parser.add_argument("--projection-character", default=None,
                         help="projection_character.csv for this run")
     parser.add_argument("--state-map", default=None, help="SHPROP state-map JSON")
+    parser.add_argument(
+        "--fixed-state-map", default=None,
+        help=(
+            "the NOMINAL fixed-column state map, if the fixed-vs-dynamic "
+            "comparison is wanted. Its groups are read straight from the SHPROP "
+            "columns with no PROCAR weighting, which is exactly the reading the "
+            "comparison exists to test"
+        ),
+    )
     parser.add_argument("--frame-mode", choices=("dish-cyclic", "linear"), default=None)
     parser.add_argument("--cycle-length", type=int, default=None,
                         help="frames in the recycled nuclear trajectory")
@@ -174,10 +207,22 @@ def build_parser(prog: str = "namd-analysis character-ensemble") -> argparse.Arg
                         help="thin the saved population curves by this factor")
     parser.add_argument("--combine", nargs="+", default=None,
                         help="per-run summary JSONs to compare across runs")
+    parser.add_argument(
+        "--combine-curves", nargs="+", default=None,
+        help=(
+            "LABEL=DIR per run, for the across-run figures. DIR is the "
+            "output directory of that run holding ensemble_curves.json and "
+            "per_history.csv"
+        ),
+    )
     parser.add_argument("--donor", default="BCF")
     parser.add_argument("--acceptor", default="PCBM")
     parser.add_argument("--out", required=True, help="new output directory")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--no-figures", action="store_true",
+        help="write only the machine-readable outputs, no figures",
+    )
     return parser
 
 
@@ -217,6 +262,31 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     [[row["row"], *[row["values"][r] for r in table["runs"]]]
                      for row in table["rows"]],
                 )
+            if not args.no_figures and args.combine_curves:
+                from . import ensemble_plots as ep
+
+                manifest: List[dict] = []
+                sets, rows_by_run, sources = {}, {}, []
+                for spec in args.combine_curves:
+                    label, _, where = spec.partition("=")
+                    base = Path(where or label)
+                    sets[label] = ep.load_curves(base / "ensemble_curves.json")
+                    sources.append(str(base / "ensemble_curves.json"))
+                    per = base / "per_history.csv"
+                    if per.is_file():
+                        rows_by_run[label] = ep.load_per_history(per)
+                ep.plot_run_comparison(sets, out, manifest, sources)
+                if rows_by_run:
+                    ep.plot_delta_distributions(
+                        rows_by_run, out, manifest,
+                        [str(Path(s).parent / "per_history.csv") for s in sources],
+                        donor=args.donor, acceptor=args.acceptor)
+                    ep.plot_decomposition_distributions(
+                        rows_by_run, out, manifest,
+                        [str(Path(s).parent / "per_history.csv") for s in sources],
+                        groups=(args.donor, args.acceptor))
+                ep.write_figure_manifest(out, manifest)
+                print(f"  {len(manifest)} across-run figure(s)")
             print(f"combined {len(runs)} run(s): {', '.join(r['run'] for r in runs)}")
             for row in comparison["reviewer_table_full_trajectory"]["rows"]:
                 values = comparison["reviewer_table_full_trajectory"]["runs"]
@@ -242,6 +312,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         character = read_projection_character(args.projection_character)
         state_map = StateMap.from_json(args.state_map)
+        fixed_state_map = (
+            StateMap.from_json(args.fixed_state_map)
+            if args.fixed_state_map else None
+        )
         bands = [int(b) for b in character.bands]
         groups = list(character.groups)
         episode = None
@@ -255,7 +329,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         rows_path = out / "per_history.csv"
         header = history_header(groups)
         results: List[HistoryResult] = []
-        curves: Dict[str, List[np.ndarray]] = {g: [] for g in groups}
+        fixed_groups = list(fixed_state_map.groups) if fixed_state_map else []
+        curve_keys = list(groups) + [f"fixed:{g}" for g in fixed_groups]
+        curves: Dict[str, List[np.ndarray]] = {k: [] for k in curve_keys}
         time_axis = None
 
         # Flushed per history: hours of work must not be lost to a late crash.
@@ -267,15 +343,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     path, args.run_label, state_map, character, bands,
                     args.frame_mode, args.cycle_length, episode,
                     args.late_window_start_ns, args.shprop_chunk_rows,
-                    args.curve_stride,
+                    args.curve_stride, fixed_state_map,
                 )
                 writer.writerow(result.as_row(groups))
                 handle.flush()
                 results.append(result)
                 if time_axis is None:
                     time_axis = curve["_time_ns"]
-                for g in groups:
-                    curves[g].append(curve[g])
+                for key in curve_keys:
+                    curves[key].append(curve[key])
                 print(f"  [{index}/{len(paths)}] {path.name}: "
                       f"NAMDTINI {result.namdtini}, "
                       + ", ".join(f"{g} {result.net_full.get(g, float('nan')):+.4f}"
@@ -292,7 +368,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         write_json(out / "run_summary.json", summary)
 
         bands_out = {}
-        for g in groups:
+        for g in curve_keys:
             try:
                 bands_out[g] = {
                     k: (v.tolist() if isinstance(v, np.ndarray) else v)
@@ -303,12 +379,43 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         write_json(out / "ensemble_curves.json", {
             "time_ns": time_axis.tolist() if time_axis is not None else [],
             "groups": bands_out,
+            "dynamic_groups": list(groups),
+            "fixed_groups": [f"fixed:{g}" for g in fixed_groups],
             "note": (
                 "quantiles across histories of one run, NOT a standard error: "
                 "the histories share a nuclear trajectory and are not "
-                "independent draws"
+                "independent draws. Keys prefixed fixed: are the nominal "
+                "fixed-column reading, unweighted by any PROCAR character"
             ),
         })
+
+        # Figures read the files just written, not the in-memory arrays, so a
+        # plotted number and a tabulated number cannot drift apart.
+        if not args.no_figures:
+            from . import ensemble_plots as ep
+
+            manifest: List[dict] = []
+            curves_file = out / "ensemble_curves.json"
+            loaded = ep.load_curves(curves_file)
+            ep.plot_run_populations(
+                loaded, args.run_label, out, manifest, curves_file.name)
+            try:
+                ep.plot_fixed_vs_dynamic(
+                    loaded, args.run_label, out, manifest, curves_file.name,
+                    late_start_ns=args.late_window_start_ns,
+                    stats=summary, stats_source="run_summary.json")
+            except ep.PlotError as exc:
+                print(f"  no fixed-vs-dynamic figure: {exc}")
+            rows = ep.load_per_history(rows_path)
+            ep.plot_delta_distributions(
+                {args.run_label: rows}, out, manifest, [rows_path.name],
+                donor=args.donor, acceptor=args.acceptor)
+            ep.plot_decomposition_distributions(
+                {args.run_label: rows}, out, manifest, [rows_path.name],
+                groups=(args.donor, args.acceptor))
+            ep.write_figure_manifest(out, manifest)
+            print(f"  {len(manifest)} figure(s) as PNG and PDF, "
+                  "each traceable via figures.json")
 
         print(f"\nrun {args.run_label}: {len(results)} history/histories")
         print(f"  max decomposition residual {summary['max_decomposition_residual']:.3e}")

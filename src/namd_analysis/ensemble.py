@@ -95,6 +95,12 @@ class HistoryResult:
     #: How the episode response is classified for this history.
     episode_verdict: str = "not_classified"
     decomposition_residual: float = float("nan")
+    #: The fixed-column reading of the same history, when a nominal state
+    #: map was supplied.  Kept beside the dynamic one rather than replacing
+    #: it: the comparison between the two is the point.
+    net_full_fixed: Dict[str, float] = field(default_factory=dict)
+    net_late_fixed: Dict[str, float] = field(default_factory=dict)
+    range_late_fixed: Dict[str, float] = field(default_factory=dict)
 
     def as_row(self, groups: Sequence[str]) -> List[Any]:
         row: List[Any] = [
@@ -104,6 +110,7 @@ class HistoryResult:
             self.net_full, self.net_late, self.range_late,
             self.occupation_redistribution, self.character_evolution,
             self.episode_net_per_pass, self.episode_occupation_per_pass,
+            self.net_full_fixed, self.net_late_fixed, self.range_late_fixed,
         ):
             row += [mapping.get(g, "") for g in groups]
         row += [self.episode_verdict, self.decomposition_residual]
@@ -116,6 +123,7 @@ def history_header(groups: Sequence[str]) -> List[str]:
         "net_full", "net_late", "range_late",
         "occupation_redistribution", "character_evolution",
         "episode_net_per_pass", "episode_occupation_per_pass",
+        "net_full_fixed", "net_late_fixed", "range_late_fixed",
     ):
         header += [f"{prefix}_{g}" for g in groups]
     header += ["episode_verdict", "decomposition_residual"]
@@ -176,6 +184,9 @@ def summarize_run(
         "character_evolution": lambda h: h.character_evolution,
         "episode_net_per_pass": lambda h: h.episode_net_per_pass,
         "episode_occupation_per_pass": lambda h: h.episode_occupation_per_pass,
+        "net_full_fixed": lambda h: h.net_full_fixed,
+        "net_late_fixed": lambda h: h.net_late_fixed,
+        "range_late_fixed": lambda h: h.range_late_fixed,
     }
     summary: Dict[str, Any] = {
         "run": run,
