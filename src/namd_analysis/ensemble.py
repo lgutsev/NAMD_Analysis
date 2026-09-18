@@ -1,28 +1,31 @@
-"""Three-level aggregation: passes inside histories inside runs.
+"""Aggregation within a campaign, and comparison between campaigns.
 
-The nesting is not decoration; it is what keeps the statistics honest.
-
-    passes  subset of  SHPROP histories  subset of  runs
+    passes  subset of  SHPROP histories  subset of  campaign
 
 **Passes** are re-traversals of one recycled nuclear trajectory. They are not
 independent samples of anything, so nothing here computes a standard error over
 passes.
 
-**Histories** within a run share that run's nuclear trajectory. They differ in
-electronic initial condition (``NAMDTINI``) and in the stochastic surface-hopping
-realization, so they *are* distinct realizations of the electronic dynamics --
-but they are **not** 100 independent nuclear configurations. A spread across
-histories is a spread over electronic initial conditions at fixed nuclei.
+**Histories** are the electronic-history ensemble of one campaign: 100 SHPROP
+files differing in electronic initial condition (``NAMDTINI``) and in the
+stochastic surface-hopping realization, on that campaign's nuclear trajectory.
+They *are* the statistical unit within a campaign. They are **not** independent
+nuclear configurations, so a spread across them is a spread over electronic
+initial conditions at fixed nuclei.
 
-**Runs** are the top-level reproducibility unit. Three runs means n = 3 for any
-claim about the system rather than about one trajectory, and 300 histories do
-not become 300 nuclear realizations by being counted together.
+**Campaigns are not a statistical level at all.** A, B and C are *distinct
+interface configurations* -- different physical systems, each with its own band
+map, atom partition, cycle length and crossing manifold. They are **not**
+replicate runs of one system, and nothing here averages them, pools them, or
+treats their agreement as reproducibility. Comparing them is a comparison of
+physical cases, and a difference between them is a result about the systems
+rather than scatter about a common truth.
 
-So: per-history quantities are reported individually; per-run statistics
-summarize the 100 histories of that run; and the across-run comparison is the
-only place a Campaign-level statement may be made. A grand mean over all 300 is
-available but deliberately labelled as *not* the headline, because it hides the
-between-run variation that is the actual reproducibility check.
+So: per-history quantities are reported individually; per-campaign statistics
+summarize that campaign's 100 histories; and the across-campaign table sets the
+three cases side by side. A grand 300-history average is never the headline --
+it would mix three physically different configurations into one meaningless
+number.
 """
 
 from __future__ import annotations
@@ -51,12 +54,13 @@ QUANTILES = (0.05, 0.25, 0.50, 0.75, 0.95)
 
 HIERARCHY_NOTE = (
     "passes are re-traversals of one recycled nuclear trajectory and are not "
-    "independent samples; histories within a run share that run's nuclear "
-    "trajectory and differ in electronic initial condition, so they are "
-    "realizations of the electronic dynamics but NOT independent nuclear "
-    "configurations; runs are the top-level reproducibility unit. No standard "
-    "error is quoted over passes, and the 300 histories are never treated as "
-    "300 nuclear realizations"
+    "independent samples; the 100 histories are the electronic-history ensemble "
+    "of one campaign, differing in electronic initial condition at fixed nuclei, "
+    "and are NOT independent nuclear configurations; campaigns A, B and C are "
+    "DISTINCT INTERFACE CONFIGURATIONS, not statistical replicates of one "
+    "system, so they are never averaged or pooled and their agreement is not a "
+    "reproducibility check. No standard error is quoted over passes, and no "
+    "grand 300-history average is reported as a result"
 )
 
 BOOKKEEPING_NOTE = (
@@ -225,11 +229,14 @@ def compare_runs(
     groups: Sequence[str],
     quantity: str = "net_full",
 ) -> Dict[str, Any]:
-    """Compare run-level results. This is the reproducibility check.
+    """Set the campaigns side by side. This is a comparison of physical cases.
 
-    With three runs there are three numbers per quantity. A mean of three is
-    reported, and so is the full spread, because with n = 3 the spread is the
-    informative part and a mean alone would imply more precision than exists.
+    A, B and C are distinct interface configurations, so this is **not** a
+    reproducibility check and the numbers are not repeat measurements of one
+    quantity. Nothing is averaged across campaigns: a "mean over configurations"
+    would be a mean over different systems. What is reported is each campaign's
+    own value, and whether the campaigns differ -- which, if they do, is a
+    result about the interfaces rather than scatter.
     """
     if not runs:
         raise EnsembleError("no run summaries to compare")
@@ -240,9 +247,10 @@ def compare_runs(
         "quantity": quantity,
         "groups": {},
         "note": (
-            "runs are the top-level reproducibility unit. With three of them, "
-            "read the spread and not the mean: three values cannot support a "
-            "standard error, and the between-run difference is the result"
+            "campaigns are distinct interface configurations, not replicates. "
+            "No value is averaged across them, because a mean over different "
+            "physical systems is not a measurement of anything. A difference "
+            "between campaigns is a result about the interfaces"
         ),
         "hierarchy_note": HIERARCHY_NOTE,
     }
@@ -254,21 +262,46 @@ def compare_runs(
             fractions.append(block.get("fraction_gain", float("nan")))
             ns.append(block.get("n", 0))
         medians_a = np.array(medians, dtype=float)
+        finite = medians_a[np.isfinite(medians_a)]
         out["groups"][g] = {
-            "per_run_median": {n: m for n, m in zip(names, medians)},
-            "per_run_fraction_gain": {n: f for n, f in zip(names, fractions)},
-            "per_run_n_histories": {n: c for n, c in zip(names, ns)},
-            "median_of_run_medians": float(np.nanmedian(medians_a)),
-            "range_of_run_medians": (
-                float(np.nanmax(medians_a) - np.nanmin(medians_a))
-                if np.isfinite(medians_a).any() else float("nan")
+            "per_campaign_median": {n: m for n, m in zip(names, medians)},
+            "per_campaign_fraction_gain": {n: f for n, f in zip(names, fractions)},
+            "per_campaign_n_histories": {n: c for n, c in zip(names, ns)},
+            # Deliberately NOT a mean: these are different systems. The spread
+            # says how far apart the configurations are, not how uncertain one
+            # value is.
+            "spread_between_campaigns": (
+                float(finite.max() - finite.min()) if finite.size else float("nan")
             ),
-            "runs_agree_in_sign": bool(
-                np.all(medians_a[np.isfinite(medians_a)] > 0)
-                or np.all(medians_a[np.isfinite(medians_a)] < 0)
-            ) if np.isfinite(medians_a).any() else False,
+            "campaigns_agree_in_sign": (
+                bool(np.all(finite > 0) or np.all(finite < 0))
+                if finite.size else False
+            ),
+            "interpretation": (
+                "same sign in every campaign means the three interfaces behave "
+                "alike in direction; differing signs mean they do not, which is "
+                "a statement about the interfaces and not about precision"
+            ),
         }
     return out
+
+
+def _dominant_term(summary, group):
+    """Which bookkeeping term carries the larger share, or neither clearly."""
+    q = summary.get("quantities", {})
+    occ = q.get("occupation_redistribution", {}).get(group, {}).get("median")
+    chr_ = q.get("character_evolution", {}).get(group, {}).get("median")
+    if occ is None or chr_ is None:
+        return ""
+    total = abs(occ) + abs(chr_)
+    if total <= 0.0:
+        return "neither (no movement)"
+    share = abs(occ) / total
+    if share >= 0.7:
+        return f"occupation ({100*share:.0f}%)"
+    if share <= 0.3:
+        return f"character ({100*(1-share):.0f}%)"
+    return f"mixed (occupation {100*share:.0f}%)"
 
 
 def reviewer_table(
@@ -277,18 +310,25 @@ def reviewer_table(
     acceptor: str = "PCBM",
     quantity: str = "net_full",
 ) -> Dict[str, Any]:
-    """The compact per-run table a referee should see.
+    """The compact per-campaign table a referee should see.
 
-    Rows are counts and medians per run; columns are runs.  Counts are given as
-    ``x/N`` rather than as percentages, so the denominator travels with them.
+    One column per campaign, and nothing pooled across them: A, B and C are
+    distinct interface configurations, so there is no column for a combined
+    value and no row that averages them.
+
+    Counts are given as ``x/N`` rather than as percentages, so the denominator
+    travels with them.
     """
     if not runs:
-        raise EnsembleError("no run summaries")
+        raise EnsembleError("no campaign summaries")
     names = [r["run"] for r in runs]
     rows: List[Dict[str, Any]] = []
 
-    def block(r, group):
-        return r["quantities"].get(quantity, {}).get(group, {})
+    def block(r, group, which=None):
+        return r["quantities"].get(which or quantity, {}).get(group, {})
+
+    def add(label, fn):
+        rows.append({"row": label, "values": {n: fn(r) for n, r in zip(names, runs)}})
 
     for label, group, key in (
         (f"histories with net {acceptor} gain", acceptor, "n_gain"),
@@ -296,32 +336,57 @@ def reviewer_table(
         (f"histories with net {acceptor} loss", acceptor, "n_loss"),
         (f"histories with net {donor} loss", donor, "n_loss"),
     ):
-        rows.append({
-            "row": label,
-            "values": {
-                n: f"{block(r, group).get(key, 0)}/{block(r, group).get('n', 0)}"
-                for n, r in zip(names, runs)
-            },
-        })
-    for label, group in ((f"median dP_{acceptor}", acceptor),
-                         (f"median dP_{donor}", donor)):
-        rows.append({
-            "row": label,
-            "values": {
-                n: block(r, group).get("median", float("nan"))
-                for n, r in zip(names, runs)
-            },
-        })
+        add(label, lambda r, g=group, k=key:
+            f"{block(r, g).get(k, 0)}/{block(r, g).get('n', 0)}")
+
+    for group in (acceptor, donor):
+        add(f"median dP_{group}",
+            lambda r, g=group: block(r, g).get("median", float("nan")))
+
+    # The late window, which is the manuscript's own fit region.
+    for group in (acceptor, donor):
+        add(f"late-window net dP_{group}",
+            lambda r, g=group: block(r, g, "net_late").get("median", float("nan")))
+
+    # Fixed against dynamic: a net difference means the fixed labelling was
+    # wrong somewhere, and a range difference means the population is not
+    # static even where the nets agree.
+    for group in (acceptor, donor):
+        def discrepancy(r, g=group):
+            dyn = block(r, g, "net_late").get("median")
+            fix = block(r, g, "net_late_fixed").get("median")
+            rng_d = block(r, g, "range_late").get("median")
+            rng_f = block(r, g, "range_late_fixed").get("median")
+            if dyn is None or fix is None:
+                return "no fixed reading"
+            parts = [f"net {dyn - fix:+.4f}"]
+            if rng_d is not None and rng_f is not None and rng_f > 0:
+                parts.append(f"range x{rng_d / rng_f:.1f}")
+            return ", ".join(parts)
+
+        add(f"fixed vs dynamic discrepancy, {group} (late)", discrepancy)
+
+    for group in (acceptor, donor):
+        add(f"dominant decomposition term, {group}",
+            lambda r, g=group: _dominant_term(r, g))
+
+    add("histories analysed", lambda r: str(r.get("n_histories", "")))
+    add("max decomposition residual",
+        lambda r: r.get("max_decomposition_residual", float("nan")))
+
     return {
         "runs": names,
+        "campaigns": names,
         "quantity": quantity,
         "rows": rows,
         "note": (
-            "counts are per run out of that run's history count. Histories "
-            "within a run share a nuclear trajectory, so a fraction here is a "
-            "fraction of electronic initial conditions, not of nuclear "
-            "configurations"
+            "one column per campaign; nothing is pooled across them, because A, "
+            "B and C are distinct interface configurations rather than "
+            "replicates. Counts are out of that campaign's own history count, "
+            "and a fraction is a fraction of electronic initial conditions, not "
+            "of nuclear configurations"
         ),
+        "decomposition_caveat": BOOKKEEPING_NOTE,
     }
 
 

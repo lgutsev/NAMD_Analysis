@@ -1,8 +1,14 @@
 # The three levels, and what may be said at each
 
 ```
-passes  ⊂  SHPROP histories  ⊂  runs
+passes  ⊂  SHPROP histories  ⊂  campaign
 ```
+
+**Campaigns A, B and C are distinct interface configurations, not
+replicates.** They are different physical systems, each with its own band
+map, atom partition, cycle length and crossing manifold. Nothing averages
+or pools them, and their agreement is *not* a reproducibility check: a
+difference between campaigns is a result about the interfaces.
 
 The nesting is what keeps the statistics honest. Collapsing it is the easiest
 way to manufacture significance that is not there.
@@ -11,7 +17,7 @@ way to manufacture significance that is not there.
 | --- | --- | --- | --- |
 | pass | one traversal of the recycled 1999-frame trajectory | nothing — the same nuclei, again | **no** |
 | history | one SHPROP | electronic initial condition (`NAMDTINI`) and the hopping realization | of each other, **at fixed nuclei** |
-| run | 100 histories on one nuclear/electronic run | the nuclear trajectory | **yes** — this is the reproducibility unit |
+| campaign | 100 histories on one interface configuration | the interface itself | **not a statistical level** — a separate physical case |
 
 Three consequences, enforced in `namd_analysis.ensemble`:
 
@@ -25,11 +31,11 @@ Three consequences, enforced in `namd_analysis.ensemble`:
    the nuclei held fixed. `summarize_run` labels it
    `std_between_histories` and states that it is not an uncertainty on the
    system.
-3. **Three runs means n = 3.** `compare_runs` reports the per-run medians, the
-   **range** of those medians, and whether the runs agree in sign. It does not
-   compute a standard error on three numbers. A grand mean over all 300 exists
-   but is not the headline, because it hides exactly the between-run variation
-   that is the actual check.
+3. **Campaigns are never pooled.** `compare_runs` reports each campaign's own
+   median, the spread between campaigns, and whether they agree in sign. It
+   computes no mean across them, because a mean over three different physical
+   systems is not a measurement of anything. **No grand 300-history average is
+   reported as a result.**
 
 ## What each level answers
 
@@ -44,16 +50,21 @@ and a tally of episode verdicts
 (`persistent_acceptor_gain`, `persistent_donor_gain`,
 `essentially_reversible`, `no_clear_direction`).
 
-**Across runs** — `across_runs.json` plus the reviewer table:
+**Across campaigns** — `across_runs.json` plus the comparison table. One
+column per campaign, nothing pooled:
 
-| | Run A | Run B | Run C |
+| Quantity | Campaign A | Campaign B | Campaign C |
 | --- | --- | --- | --- |
-| histories with net PCBM gain | x/100 | y/100 | z/100 |
+| histories with net PCBM gain | x/100 | x/100 | x/100 |
 | histories with net BCF gain | … | … | … |
 | histories with net PCBM loss | … | … | … |
 | histories with net BCF loss | … | … | … |
 | median ΔP_PCBM | … | … | … |
 | median ΔP_BCF | … | … | … |
+| late-window net ΔP_PCBM | … | … | … |
+| late-window net ΔP_BCF | … | … | … |
+| fixed vs dynamic discrepancy | net …, range ×… | … | … |
+| dominant decomposition term | … | … | … |
 
 produced for both the full trajectory and the `t ≥ 100 ps` window, with
 `ensemble_curves.json` carrying the median and quantile band per run.
@@ -70,8 +81,9 @@ None of the following may be made from fewer than all three runs:
 - "PCBM transfer occurs in a minority / majority of histories."
 - "The crossing manifold is largely reversible."
 
-Each is a claim about a *distribution*. One history can only ever say what that
-history did. `docs/campaign_A_occupation_result.md` reports `SHPROP.25` and is
+Each is a claim about a *distribution*, and each must be made **per campaign**:
+A, B and C may differ, and if they do that is the finding. One history can only
+ever say what that history did. `docs/campaign_A_occupation_result.md` reports `SHPROP.25` and is
 explicitly labelled as machinery validation plus one realization — and carries
 a retraction of an earlier sentence that generalized from it.
 

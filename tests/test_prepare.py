@@ -62,9 +62,12 @@ class _Prepared(unittest.TestCase):
 
 class VersionTests(unittest.TestCase):
     def test_package_and_metadata_versions_agree(self):
-        self.assertEqual(__version__, "0.6.0")
+        # The invariant is that the two agree, not that either equals some
+        # literal: pinning the number here breaks the suite on every release
+        # and says nothing about consistency.
         text = (REPO / "pyproject.toml").read_text(encoding="utf-8")
         self.assertIn(f'version = "{__version__}"', text)
+        self.assertRegex(__version__, r"^\d+\.\d+\.\d+$")
 
     def test_provenance_reports_the_package_version(self):
         from namd_analysis.provenance import environment

@@ -1,10 +1,11 @@
-"""The hierarchy: passes inside histories inside runs.
+"""The hierarchy: passes inside histories inside a campaign.
 
 What these pin is mostly what the statistics must *refuse* to do -- treat
 passes as samples, treat 300 histories as 300 nuclear realizations, or reduce
-three runs to a mean that hides their disagreement.
+three campaigns to a mean, when they are different physical systems.
 """
 
+import json
 import unittest
 
 import numpy as np
@@ -111,8 +112,10 @@ class RunSummaryTests(unittest.TestCase):
         self.assertIn("decomposition_residual", header)
 
 
-class AcrossRunTests(unittest.TestCase):
-    def test_runs_disagreeing_in_sign_are_reported_as_such(self):
+class AcrossCampaignTests(unittest.TestCase):
+    """A, B and C are different systems, not repeat measurements."""
+
+    def test_campaigns_disagreeing_in_sign_are_reported_as_such(self):
         runs = [
             run_of("run1", [0.5] * 20, [-0.4] * 20),
             run_of("run2", [0.3] * 20, [-0.2] * 20),
@@ -120,31 +123,34 @@ class AcrossRunTests(unittest.TestCase):
         ]
         out = compare_runs(runs, GROUPS)
         self.assertFalse(
-            out["groups"]["PCBM"]["runs_agree_in_sign"],
-            "run3 has the opposite sign and that must show",
+            out["groups"]["PCBM"]["campaigns_agree_in_sign"],
+            "campaign 3 has the opposite sign and that must show",
         )
-        self.assertTrue(out["groups"]["BCF"]["runs_agree_in_sign"])
+        self.assertTrue(out["groups"]["BCF"]["campaigns_agree_in_sign"])
 
-    def test_the_range_of_run_medians_is_the_headline_not_the_mean(self):
+    def test_the_spread_between_campaigns_is_reported_and_never_a_mean(self):
         runs = [
             run_of("run1", [0.5] * 10, [-0.4] * 10),
             run_of("run2", [0.5] * 10, [-0.2] * 10),
             run_of("run3", [0.5] * 10, [+0.3] * 10),
         ]
         out = compare_runs(runs, GROUPS)
-        self.assertAlmostEqual(out["groups"]["PCBM"]["range_of_run_medians"], 0.7, places=6)
-        self.assertIn("read the spread and not the mean", out["note"])
+        self.assertAlmostEqual(
+            out["groups"]["PCBM"]["spread_between_campaigns"], 0.7, places=6)
+        self.assertNotIn("mean_of", json.dumps(out))
+        self.assertIn("not replicates", out["note"])
+        self.assertIn("distinct interface configurations", out["note"])
 
-    def test_per_run_values_are_keyed_by_run_name(self):
+    def test_per_campaign_values_are_keyed_by_campaign_name(self):
         runs = [run_of("run1", [0.5] * 5, [0.1] * 5),
                 run_of("run2", [0.2] * 5, [0.3] * 5)]
         out = compare_runs(runs, GROUPS)
         self.assertEqual(
-            sorted(out["groups"]["BCF"]["per_run_median"]), ["run1", "run2"]
+            sorted(out["groups"]["BCF"]["per_campaign_median"]), ["run1", "run2"]
         )
-        self.assertAlmostEqual(out["groups"]["BCF"]["per_run_median"]["run2"], 0.2)
+        self.assertAlmostEqual(out["groups"]["BCF"]["per_campaign_median"]["run2"], 0.2)
 
-    def test_no_runs_is_refused(self):
+    def test_no_campaigns_is_refused(self):
         with self.assertRaises(EnsembleError):
             compare_runs([], GROUPS)
 
@@ -171,6 +177,72 @@ class ReviewerTableTests(unittest.TestCase):
     def test_the_fraction_is_of_electronic_conditions_not_nuclear_ones(self):
         runs = [run_of("run1", [0.5] * 10, [0.1] * 10)]
         self.assertIn("not of nuclear", reviewer_table(runs)["note"])
+
+    def test_the_late_window_row_reads_the_late_quantity(self):
+        runs = [run_of("run1", [0.5] * 10, [-0.4] * 10)]
+        table = reviewer_table(runs)
+        row = next(r for r in table["rows"] if r["row"] == "late-window net dP_PCBM")
+        # net_late is a tenth of net_full in the fixture.
+        self.assertAlmostEqual(row["values"]["run1"], -0.04, places=9)
+
+    def test_the_fixed_vs_dynamic_row_reports_net_and_range(self):
+        hs = [
+            HistoryResult(
+                run="run1", history=f"SHPROP.{k}", namdtini=k,
+                n_rows=10, n_passes=1,
+                net_late={"PCBM": -0.009}, range_late={"PCBM": 0.8415},
+                net_late_fixed={"PCBM": -0.009}, range_late_fixed={"PCBM": 0.1480},
+            )
+            for k in range(5)
+        ]
+        table = reviewer_table([summarize_run("run1", hs, ["PCBM"])], acceptor="PCBM")
+        row = next(r for r in table["rows"] if "discrepancy, PCBM" in r["row"])
+        value = row["values"]["run1"]
+        self.assertIn("net +0.0000", value)   # nets agree exactly
+        self.assertIn("range x5.7", value)    # 0.8415 / 0.1480
+
+    def test_a_campaign_with_no_fixed_reading_says_so(self):
+        runs = [run_of("run1", [0.5] * 5, [0.1] * 5)]
+        table = reviewer_table(runs)
+        row = next(r for r in table["rows"] if "discrepancy, PCBM" in r["row"])
+        self.assertEqual(row["values"]["run1"], "no fixed reading")
+
+    def test_the_dominant_term_is_named_with_its_share(self):
+        # BCF is 80/20 occupation in the fixture, PCBM is 10/90 character.
+        runs = [run_of("run1", [0.5] * 10, [-0.4] * 10)]
+        table = reviewer_table(runs)
+        bcf = next(r for r in table["rows"] if r["row"].endswith("term, BCF"))
+        pcbm = next(r for r in table["rows"] if r["row"].endswith("term, PCBM"))
+        self.assertIn("occupation", bcf["values"]["run1"])
+        self.assertIn("character", pcbm["values"]["run1"])
+
+    def test_a_balanced_split_is_called_mixed_not_dominant(self):
+        hs = [
+            HistoryResult(
+                run="run1", history=f"SHPROP.{k}", namdtini=k, n_rows=10, n_passes=1,
+                occupation_redistribution={"BCF": 0.10},
+                character_evolution={"BCF": 0.11},
+            )
+            for k in range(4)
+        ]
+        table = reviewer_table([summarize_run("run1", hs, ["BCF"])], donor="BCF")
+        row = next(r for r in table["rows"] if r["row"].endswith("term, BCF"))
+        self.assertIn("mixed", row["values"]["run1"])
+
+    def test_the_table_carries_the_bookkeeping_caveat(self):
+        runs = [run_of("run1", [0.5] * 5, [0.1] * 5)]
+        table = reviewer_table(runs)
+        self.assertIn("NOT physical branching fractions", table["decomposition_caveat"])
+
+    def test_nothing_is_pooled_across_campaigns(self):
+        runs = [run_of("A", [0.5] * 10, [-0.4] * 10),
+                run_of("B", [0.2] * 10, [+0.3] * 10)]
+        table = reviewer_table(runs)
+        self.assertEqual(table["campaigns"], ["A", "B"])
+        for row in table["rows"]:
+            self.assertEqual(sorted(row["values"]), ["A", "B"],
+                             f"{row['row']} gained a pooled column")
+        self.assertIn("nothing is pooled", table["note"])
 
 
 class EnsembleCurveTests(unittest.TestCase):
