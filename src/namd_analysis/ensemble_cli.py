@@ -3,11 +3,11 @@
 Two modes, because the production shape is a job array followed by a gather:
 
 * **analyse** -- walk the SHPROP histories of ONE run, one at a time, and write
-  a per-history row plus a per-run summary. Histories stream independently, so
-  a job array can split them and the rows concatenate.
-* **--combine** -- read several per-run summaries and emit the across-run
-  comparison and the reviewer table. This is the only level at which a
-  Campaign-level statement may be made.
+  a per-history row plus that configuration's summary. Histories stream
+  independently, so a job array can split them and the rows concatenate.
+* **--combine** -- read several configuration summaries and set them side by
+  side. This is a cross-configuration comparison, not a statistical level:
+  each configuration's own summary already licenses statements about it.
 
 Per-history rows are flushed as they are produced. A run of a hundred 910 MB
 histories takes hours, and a crash at history 87 must not discard the first 86.
@@ -176,9 +176,11 @@ def build_parser(prog: str = "namd-analysis character-ensemble") -> argparse.Arg
     parser = argparse.ArgumentParser(
         prog=prog,
         description=(
-            "Aggregate SHPROP histories at three levels: per history, per run, "
-            "and across runs. Passes within a history and histories within a "
-            "run are not independent samples, and the hierarchy is preserved."
+            "Aggregate the SHPROP histories of one interface configuration, "
+            "per history and per configuration, and optionally set several "
+            "configurations side by side. Passes within a history are not "
+            "independent samples, and A/B/C are distinct physical systems "
+            "rather than replicates."
         ),
     )
     parser.add_argument("--run-label", default=None, help="name of the run being analysed")
@@ -206,13 +208,13 @@ def build_parser(prog: str = "namd-analysis character-ensemble") -> argparse.Arg
     parser.add_argument("--curve-stride", type=int, default=1000,
                         help="thin the saved population curves by this factor")
     parser.add_argument("--combine", nargs="+", default=None,
-                        help="per-run summary JSONs to compare across runs")
+                        help="configuration summary JSONs to set side by side")
     parser.add_argument(
         "--combine-curves", nargs="+", default=None,
         help=(
-            "LABEL=DIR per run, for the across-run figures. DIR is the "
-            "output directory of that run holding ensemble_curves.json and "
-            "per_history.csv"
+            "LABEL=DIR per configuration, for the comparison figures. DIR is "
+            "that configuration's output directory holding "
+            "ensemble_curves.json and per_history.csv"
         ),
     )
     parser.add_argument("--donor", default="BCF")
@@ -238,7 +240,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 for g in r.get("quantities", {}).get("net_full", {})
             })
             comparison = {
-                "across_runs": {
+                "across_configurations": {
                     q: compare_runs(runs, groups, quantity=q)
                     for q in ("net_full", "net_late", "episode_net_per_pass")
                 },
@@ -250,7 +252,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     quantity="net_late"),
                 "environment": environment(),
             }
-            write_json(out / "across_runs.json", comparison)
+            write_json(out / "across_configurations.json", comparison)
             for name, table in (
                 ("reviewer_table_full_trajectory.csv",
                  comparison["reviewer_table_full_trajectory"]),
@@ -286,8 +288,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         [str(Path(s).parent / "per_history.csv") for s in sources],
                         groups=(args.donor, args.acceptor))
                 ep.write_figure_manifest(out, manifest)
-                print(f"  {len(manifest)} across-run figure(s)")
-            print(f"combined {len(runs)} run(s): {', '.join(r['run'] for r in runs)}")
+                print(f"  {len(manifest)} cross-configuration figure(s)")
+            print(f"compared {len(runs)} configuration(s): {', '.join(r['run'] for r in runs)}")
             for row in comparison["reviewer_table_full_trajectory"]["rows"]:
                 values = comparison["reviewer_table_full_trajectory"]["runs"]
                 cells = "  ".join(
@@ -295,7 +297,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     else f"{row['values'][r]:>12.4f}" for r in values
                 )
                 print(f"  {row['row']:>34}: {cells}")
-            print("\nruns are the reproducibility unit; read the spread, not the mean")
+            print("\nconfigurations are distinct physical systems: nothing is "
+                  "pooled, and a difference between them is a result")
             print(f"written to {out}")
             return 0
 

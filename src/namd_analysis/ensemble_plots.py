@@ -51,7 +51,8 @@ BOOKKEEPING_CAPTION = (
 
 HIERARCHY_CAPTION = (
     "passes are re-traversals of one recycled nuclear trajectory; histories "
-    "within a run share that trajectory; runs are the reproducibility unit. "
+    "within a configuration share that trajectory; A/B/C are distinct "
+    "interface configurations, not replicates. "
     "Histories are not independent nuclear configurations."
 )
 
@@ -299,7 +300,7 @@ def plot_run_comparison(
     sources: Sequence[str],
     groups: Sequence[str] = ("perovskite", "BCF", "PCBM"),
 ) -> List[str]:
-    """One column per run, identical axes. No grand average."""
+    """One column per configuration, identical axes. Nothing pooled."""
     plt = _pyplot()
     runs = list(curve_sets)
     if not runs:
@@ -336,15 +337,15 @@ def plot_run_comparison(
             ax.set_ylim(-0.02, 1.02)
             ax.legend(fontsize=8, loc="upper right")
     fig.suptitle(
-        "Runs side by side, identical axes -- the reproducibility check",
+        "Configurations side by side, identical axes",
         y=1.01, fontsize=11,
     )
     caption = (
-        "Each run plotted separately on identical axes; bands are inter-quartile "
-        "across that run's histories. Runs are the top-level reproducibility "
-        "unit, so they are NOT averaged together: a grand mean over all "
-        "histories would hide exactly the between-run variation this figure "
-        "exists to show. " + HIERARCHY_CAPTION
+        "Each configuration plotted separately on identical axes; bands are "
+        "inter-quartile across that configuration's histories. A, B and C are "
+        "distinct interface configurations, so they are NOT averaged together: "
+        "a mean over different physical systems is not a measurement of "
+        "anything, and a difference between them is a result. " + HIERARCHY_CAPTION
     )
     return _save(fig, out, "run_comparison_populations", manifest, sources, caption)
 

@@ -135,7 +135,7 @@ the comparison exists to detect.
 > fragment-character excursion and no persistent BCF→PCBM transfer; the
 > long-time net change instead favours BCF accumulation. **Whether this
 > behaviour is representative of Campaign A must be determined from the full
-> ensemble of 300 SHPROP histories across three runs.**
+> ensemble of Campaign A's 100 SHPROP histories.**
 
 That is the whole of it. This document is **validation of the machinery and one
 realization**, not a mechanistic result.

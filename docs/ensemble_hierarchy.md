@@ -1,4 +1,4 @@
-# The three levels, and what may be said at each
+# The levels, and what may be said at each
 
 ```
 passes  ⊂  SHPROP histories  ⊂  campaign
@@ -27,8 +27,8 @@ Three consequences, enforced in `namd_analysis.ensemble`:
    be — which is how the error announces itself if you try. Everything
    episode-level is reported **per pass**.
 2. **100 histories are not 100 nuclear configurations.** A spread across the
-   histories of one run is a spread over *electronic* initial conditions with
-   the nuclei held fixed. `summarize_run` labels it
+   histories of one configuration is a spread over *electronic* initial
+   conditions with the nuclei held fixed. `summarize_run` labels it
    `std_between_histories` and states that it is not an uncertainty on the
    system.
 3. **Campaigns are never pooled.** `compare_runs` reports each campaign's own
@@ -44,14 +44,16 @@ Three consequences, enforced in `namd_analysis.ensemble`:
 trajectory, the crossing-episode response per pass, the late-window net and
 range, and the decomposition residual (which must stay at machine precision).
 
-**Per run** — `run_summary.json`: mean, median, quantiles (5/25/50/75/95),
+**Per configuration** — `run_summary.json`: mean, median, quantiles (5/25/50/75/95),
 sign fractions with the tolerance that defined them, between-history spread,
 and a tally of episode verdicts
 (`persistent_acceptor_gain`, `persistent_donor_gain`,
 `essentially_reversible`, `no_clear_direction`).
 
-**Across campaigns** — `across_runs.json` plus the comparison table. One
-column per campaign, nothing pooled:
+**Across configurations** — `across_configurations.json` plus the comparison
+table. This is a **comparison, not a statistical level**: each configuration's
+own summary already licenses statements about it, and this table only sets
+them side by side. One column per configuration, nothing pooled:
 
 | Quantity | Campaign A | Campaign B | Campaign C |
 | --- | --- | --- | --- |
@@ -67,23 +69,26 @@ column per campaign, nothing pooled:
 | dominant decomposition term | … | … | … |
 
 produced for both the full trajectory and the `t ≥ 100 ps` window, with
-`ensemble_curves.json` carrying the median and quantile band per run.
+`ensemble_curves.json` carrying the median and quantile band per
+configuration.
 
 Counts are written `x/N`, not as percentages, so the denominator travels with
 them — and the note attached says the fraction is of *electronic initial
 conditions*, not of nuclear configurations.
 
-## Statements that require the full ensemble
+## Statements that require a full configuration ensemble
 
-None of the following may be made from fewer than all three runs:
+None of the following may be made from a handful of histories:
 
 - "BCF is predominantly a reservoir."
 - "PCBM transfer occurs in a minority / majority of histories."
 - "The crossing manifold is largely reversible."
 
-Each is a claim about a *distribution*, and each must be made **per campaign**:
-A, B and C may differ, and if they do that is the finding. One history can only
-ever say what that history did. `docs/campaign_A_occupation_result.md` reports `SHPROP.25` and is
+Each is a claim about a *distribution*, and each is made **per configuration**.
+**Campaign A's 100 histories license Campaign A statements on their own** — B
+and C are not a prerequisite. They are separate physical systems that get
+their own statements, and a difference between configurations is itself a
+finding. One history can only ever say what that history did. `docs/campaign_A_occupation_result.md` reports `SHPROP.25` and is
 explicitly labelled as machinery validation plus one realization — and carries
 a retraction of an earlier sentence that generalized from it.
 
@@ -104,20 +109,25 @@ but shifts up to ~0.5 of a population between the two terms.
 fractions.** The split is one of infinitely many exact splits; it is not a
 decomposition of the Hamiltonian dynamics into two mechanisms. Report both
 terms, report ensemble statistics for both, and do not read the percentages as
-a mechanism ratio. `BOOKKEEPING_NOTE` ships with every run summary saying so.
+a mechanism ratio. `BOOKKEEPING_NOTE` ships with every configuration summary
+saying so.
 
 ## Running it
 
 ```bash
-# One array task per run; histories stream inside a task.
+# One array task per configuration; histories stream inside a task. Each task
+# passes --fixed-state-map, so the output carries the fixed-vs-dynamic
+# statistics and figures.
 sbatch examples/bcf_pcbm/run_ensemble_production.sbatch
 
-# Then gather the three runs — the only level that licenses a Campaign claim.
+# Optional: set the configurations side by side. This is a comparison, not a
+# prerequisite — each configuration's own output is already interpretable.
 namd-analysis character-ensemble --combine \
-    ens_runA_*/run_summary.json \
-    ens_runB_*/run_summary.json \
-    ens_runC_*/run_summary.json \
-    --out ens_across_runs
+    ens_A_*/run_summary.json \
+    ens_B_*/run_summary.json \
+    ens_C_*/run_summary.json \
+    --combine-curves A=ens_A_JOBID B=ens_B_JOBID C=ens_C_JOBID \
+    --out ens_across_configurations
 ```
 
 Measured cost: **73.6 s per 10M-row history**, so ~2.0 h for 100 serial, ~6.1 h
@@ -125,7 +135,13 @@ for 300; ~1.5 GiB peak, independent of history count, because they stream one
 at a time. Per-history rows are flushed as produced, so a crash late in a run
 keeps everything before it.
 
-**Runs B and C need their own provenance** — band mapping, SHPROP state order,
-atom partition, cycle length, and the location of their own crossing manifold.
-The production script refuses to start on a run whose cycle length or episode
-window has not been set, rather than silently inheriting Campaign A's.
+**B and C need their own provenance.** Required: band mapping, SHPROP state
+order, atom partition, projection character, the nominal fixed state map, and
+the cycle length. The production script refuses to start when any of those is
+missing, rather than silently inheriting Campaign A's.
+
+**The crossing window is optional.** If a configuration's manifold has not been
+located yet, the populations, the symmetric decomposition and the
+fixed-vs-dynamic comparison all still run; every history simply reports
+`episode_verdict = not_classified`. Locate the manifold separately and rerun
+with `--episode-window` to add episode classification afterwards.

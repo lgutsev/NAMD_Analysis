@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "namd-analysis"
-version = "0.7.0"
+version = "0.7.1"
 description = "Analysis of saved CA-NAC / Hefei-NAMD output and VACF phonon spectra"
 readme = "README.md"
 requires-python = ">=3.9"

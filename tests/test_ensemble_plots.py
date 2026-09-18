@@ -185,7 +185,7 @@ class FixedVsDynamicTests(_Figures):
 
 
 class RunComparisonTests(_Figures):
-    def test_each_run_is_drawn_separately(self):
+    def test_each_configuration_is_drawn_separately(self):
         written = plot_run_comparison(
             {"A": curves(), "B": curves(), "C": curves()},
             self.out, self.manifest, ["A/c.json", "B/c.json", "C/c.json"],
@@ -193,7 +193,8 @@ class RunComparisonTests(_Figures):
         self.both_formats(written, "run_comparison_populations")
         caption = self.manifest[0]["caption"]
         self.assertIn("NOT averaged together", caption)
-        self.assertIn("grand mean", caption)
+        self.assertIn("distinct interface configurations", caption)
+        self.assertIn("not a measurement of anything", caption)
 
     def test_no_runs_is_refused(self):
         with self.assertRaises(PlotError):

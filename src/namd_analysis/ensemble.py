@@ -232,7 +232,7 @@ def compare_runs(
     """Set the campaigns side by side. This is a comparison of physical cases.
 
     A, B and C are distinct interface configurations, so this is **not** a
-    reproducibility check and the numbers are not repeat measurements of one
+    reproducibility check, and the numbers are not repeat measurements of one
     quantity. Nothing is averaged across campaigns: a "mean over configurations"
     would be a mean over different systems. What is reported is each campaign's
     own value, and whether the campaigns differ -- which, if they do, is a
