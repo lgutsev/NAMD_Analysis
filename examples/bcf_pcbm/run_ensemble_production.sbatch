@@ -43,32 +43,45 @@ set -euo pipefail
 #   analysis runs without it, and episode classification can be added later
 #   once the manifold is found.
 # ---------------------------------------------------------------------------
+
+ROOT=/ddnB/work/lgutsev/MD/FAPI_MD_NAMD_2026
+REFERENCE_ROOT="${ROOT}/NuTest"
+
+declare -A RUN_LABEL=(
+  [1]=A
+  [2]=B
+  [3]=C
+)
+
+# Real production SHPROP folders
 declare -A RUN_DIR=(
-  [1]=/ddnB/work/lgutsev/MD/FAPI_MD_NAMD_2026/NuTest
-  [2]=/ddnB/work/lgutsev/MD/FAPI_MD_NAMD_2026/RUN_B_PLACEHOLDER
-  [3]=/ddnB/work/lgutsev/MD/FAPI_MD_NAMD_2026/RUN_C_PLACEHOLDER
+  [1]="${ROOT}/FAPI_001_BCF_PCBM_A"
+  [2]="${ROOT}/FAPI_001_BCF_PCBM_B"
+  [3]="${ROOT}/FAPI_001_BCF_PCBM_C"
 )
+
 declare -A RUN_CHAR=(
-  [1]=/ddnB/work/lgutsev/MD/FAPI_MD_NAMD_2026/NuTest/character_test_A_1030646/projection_character.csv
-  [2]=RUN_B_projection_character.csv
-  [3]=RUN_C_projection_character.csv
+  [1]="${REFERENCE_ROOT}/A/projection_character.csv"
+  [2]="${REFERENCE_ROOT}/B/projection_character.csv"
+  [3]="${REFERENCE_ROOT}/C/projection_character.csv"
 )
-# The projection state map: SHPROP population columns in basis order, used for
-# the PROCAR-weighted dynamic reading.
-declare -A RUN_STATE_MAP=( [1]=state_map.json [2]=state_map.json [3]=state_map.json )
-# The NOMINAL fixed-column state map: each column assigned to a fragment for
-# the whole run, with no PROCAR weighting. This is the reading the
-# fixed-vs-dynamic comparison exists to test, so it is REQUIRED, not optional.
-# For A this is the established nominal map (VBM / BCF / PCBM1-3 / CBM).
+
+declare -A RUN_STATE_MAP=(
+  [1]="${REFERENCE_ROOT}/A/state_map.json"
+  [2]="${REFERENCE_ROOT}/B/state_map.json"
+  [3]="${REFERENCE_ROOT}/C/state_map.json"
+)
+
 declare -A RUN_FIXED_MAP=(
-  [1]=state_map.json
-  [2]=RUN_B_fixed_state_map.json
-  [3]=RUN_C_fixed_state_map.json
+  [1]="${REFERENCE_ROOT}/A/fixed_state_map.json"
+  [2]="${REFERENCE_ROOT}/B/fixed_state_map.json"
+  [3]="${REFERENCE_ROOT}/C/fixed_state_map.json"
 )
-declare -A RUN_LABEL=( [1]=A [2]=B [3]=C )
+
+
 # The recycled nuclear trajectory length. A is 1999; B and C must be
 # established from their own manifests, not assumed equal.
-declare -A RUN_CYCLE=( [1]=1999 [2]=0 [3]=0 )
+declare -A RUN_CYCLE=( [1]=1999 [2]=1999 [3]=1999 )
 # Crossing manifold window, per configuration. OPTIONAL. A is 1320:1331.
 # Leave B and C empty until their manifolds are located.
 declare -A RUN_EPISODE=( [1]=1320:1331 [2]= [3]= )
