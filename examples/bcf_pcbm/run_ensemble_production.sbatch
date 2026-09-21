@@ -1,11 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=ens_prod
 #SBATCH --account=loni_perovsk27
-#SBATCH --partition=workq
+#SBATCH --partition=single
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=8G
 #SBATCH --time=04:00:00
 #SBATCH --array=1-3
 #SBATCH --output=ens_prod_%A_%a.out
@@ -29,6 +28,11 @@
 # time inside a task, so peak memory is per-history (~1.5 GiB measured)
 # regardless of how many there are. Measured 73.6 s per 10M-row history, so
 # ~2.0 h for 100. The 4 h wall is that plus headroom.
+#
+# No --mem is requested: one task is one core on a shared partition, and the
+# partition's per-core default covers the ~1.5 GiB this needs. The figure is a
+# measurement, not a budget -- it does not grow with history count, because
+# histories are streamed rather than stacked. Re-measure before raising it.
 #
 # To split finer, set --array=1-300 and select a single history per task with
 # SLURM_ARRAY_TASK_ID; per_history.csv rows concatenate. Rows are flushed per
