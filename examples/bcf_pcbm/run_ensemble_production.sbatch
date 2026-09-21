@@ -60,10 +60,17 @@ set -euo pipefail
 #
 # REQUIRED per configuration: directory, projection character, state map,
 #   fixed (nominal) state map, cycle length.
-# OPTIONAL: the crossing/episode window. Leave it empty if that configuration's
-#   manifold has not been located yet -- the population and decomposition
-#   analysis runs without it, and episode classification can be added later
-#   once the manifold is found.
+# OPTIONAL: the crossing/episode windows. Leave them empty if that
+#   configuration's manifold has not been located yet -- the population and
+#   decomposition analysis runs without them, and episode classification can be
+#   added later once the manifold is found.
+#
+# A configuration may have SEVERAL crossing windows. B has four distinct
+# BCF/PCBM mixing regions; they are passed by name and every one of them is
+# evaluated during the SAME streamed pass over each ~900 MB SHPROP history, so
+# four regions cost one read of the archive rather than four. They are four
+# regions of one recycled nuclear trajectory, NOT four replicates and NOT four
+# independent samples, and nothing averages or pools them.
 # ---------------------------------------------------------------------------
 
 ROOT=/ddnB/work/lgutsev/MD/FAPI_MD_NAMD_2026
@@ -111,9 +118,43 @@ declare -A RUN_FIXED_MAP=(
 # frame axis. Nothing else transfers -- state maps, fixed maps, band numbers,
 # atom partitions and crossing windows stay configuration-specific.
 declare -A RUN_CYCLE=( [1]=1999 [2]=1999 [3]=1999 )
-# Crossing manifold window, per configuration. OPTIONAL. A is 1320:1331.
-# Leave B and C empty until their manifolds are located.
-declare -A RUN_EPISODE=( [1]=1320:1331 [2]= [3]= )
+
+# Crossing manifold windows, per configuration. OPTIONAL, and a configuration
+# may have more than one. Space-separated NAME=FIRST:LAST entries; the name
+# travels through per_history.csv, episode_per_history.csv and run_summary.json
+# so a number can always be traced back to the region it came from.
+#
+#   A  one located BCF/PCBM mixing region
+#   B  FOUR distinct BCF/PCBM mixing regions, reported separately by name.
+#      They are four regions of the SAME recycled nuclear trajectory. They are
+#      not replicates, not independent samples and not repeat measurements, so
+#      nothing averages or pools them and no combined B number is produced.
+#   C  NO clear BCF/PCBM character-exchange event, so no crossing window. That
+#      emptiness is the finding, not a gap to be filled.
+declare -A RUN_EPISODES=(
+  [1]="crossing_A=1320:1331"
+  [2]="crossing_B1=1488:1492 crossing_B2=1687:1696 crossing_B3=1801:1811 crossing_B4=1846:1855"
+  [3]=""
+)
+
+# CONTROL windows, per configuration. A control window is a range of frames
+# chosen for comparison. It is NOT an avoided crossing, NOT a character-exchange
+# region and NOT a BCF/PCBM transfer event, and no output may describe it as
+# one. It is passed through --control-episode so that every file records it as
+# role=control and it can never be read back as a crossing.
+#
+#   C  closest_approach_C is where the two fragments come closest. It is a
+#      control for C's absence of a crossing, and nothing more.
+declare -A RUN_CONTROL_EPISODES=(
+  [1]=""
+  [2]=""
+  [3]="closest_approach_C=1628:1632"
+)
+
+# The legacy single-window flag, kept so an existing recipe keeps working. It
+# is NOT used by the configurations above, which pass named windows instead.
+# Set it only for a one-off run of a single unnamed window.
+declare -A RUN_EPISODE=( [1]= [2]= [3]= )
 
 LATE_START_NS=0.1      # the Campaign A manuscript window: t >= 100 ps
 
@@ -125,6 +166,8 @@ STATE_MAP=${RUN_STATE_MAP[$T]}
 FIXED_MAP=${RUN_FIXED_MAP[$T]}
 CYCLE=${RUN_CYCLE[$T]}
 EPISODE=${RUN_EPISODE[$T]}
+EPISODES=${RUN_EPISODES[$T]}
+CONTROL_EPISODES=${RUN_CONTROL_EPISODES[$T]}
 JOBID=${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-manual}}
 # One dedicated directory per analysis run, under the configuration it belongs
 # to. Nothing is written into the top level of the configuration directory:
@@ -184,15 +227,32 @@ echo "written is not one this analysis invents."
 
 EPISODE_ARGS=()
 if [[ -n "${EPISODE}" ]]; then
-    EPISODE_ARGS=(--episode-window "${EPISODE}")
-    echo "Crossing window: ${EPISODE}"
-else
+    EPISODE_ARGS+=(--episode-window "${EPISODE}")
+    echo "Crossing window (legacy single-window flag): ${EPISODE}"
+fi
+for spec in ${EPISODES}; do
+    EPISODE_ARGS+=(--episode "${spec}")
+    echo "Crossing window: ${spec}"
+done
+for spec in ${CONTROL_EPISODES}; do
+    EPISODE_ARGS+=(--control-episode "${spec}")
+    echo "CONTROL window: ${spec}"
+    echo "      A control window is a range of frames chosen for comparison."
+    echo "      It is NOT an avoided crossing and NOT a BCF/PCBM transfer"
+    echo "      event, and it is recorded as role=control everywhere."
+done
+if [[ -z "${EPISODE}" && -z "${EPISODES}" ]]; then
     echo "NOTE: no crossing window set for configuration ${LABEL}."
     echo "      Populations, the symmetric decomposition and the fixed-vs-"
     echo "      dynamic comparison all run. Episode classification is skipped"
     echo "      and every history reports episode_verdict=not_classified."
     echo "      Locate this configuration's manifold separately, then rerun"
-    echo "      with --episode-window to add it."
+    echo "      with --episode to add it."
+fi
+if [[ -n "${EPISODES}" ]]; then
+    echo "All windows above are evaluated in ONE streamed pass per history."
+    echo "They are distinct regions of one recycled nuclear trajectory:"
+    echo "reported separately, never averaged, never pooled."
 fi
 
 echo
@@ -216,7 +276,12 @@ date
 echo
 echo "  ${OUT}/per_history.csv       <- one row per SHPROP, including the"
 echo "                                 fixed-column columns net_*_fixed and"
-echo "                                 range_late_fixed"
+echo "                                 range_late_fixed, plus one named column"
+echo "                                 block per episode, e.g."
+echo "                                 crossing_B1__BCF_net_per_pass"
+echo "  ${OUT}/episode_per_history.csv  <- long form: one row per history,"
+echo "                                 episode and fragment, each row naming"
+echo "                                 its own episode and role"
 echo "  ${OUT}/run_summary.json      <- this configuration's ${N} histories"
 echo "  ${OUT}/ensemble_curves.json  <- median and quantile band, dynamic and"
 echo "                                 fixed: keys and fixed:<group>"

@@ -44,11 +44,18 @@ Three consequences, enforced in `namd_analysis.ensemble`:
 trajectory, the crossing-episode response per pass, the late-window net and
 range, and the decomposition residual (which must stay at machine precision).
 
+**Per episode** — `episode_per_history.csv` (long form: one row per history,
+episode and fragment) and the named `<episode>__<group>_<quantity>` columns of
+`per_history.csv`. A configuration may have several crossing regions;
+Configuration B has four. Each keeps its own net, occupation and
+character-evolution response per pass, and its own verdict.
+
 **Per configuration** — `run_summary.json`: mean, median, quantiles (5/25/50/75/95),
 sign fractions with the tolerance that defined them, between-history spread,
-and a tally of episode verdicts
+a tally of episode verdicts
 (`persistent_acceptor_gain`, `persistent_donor_gain`,
-`essentially_reversible`, `no_clear_direction`).
+`essentially_reversible`, `no_clear_direction`), and an `episodes` block
+carrying each named window separately.
 
 **Across configurations** — `across_configurations.json` plus the comparison
 table. This is a **comparison, not a statistical level**: each configuration's
@@ -144,4 +151,52 @@ missing, rather than silently inheriting Campaign A's.
 located yet, the populations, the symmetric decomposition and the
 fixed-vs-dynamic comparison all still run; every history simply reports
 `episode_verdict = not_classified`. Locate the manifold separately and rerun
-with `--episode-window` to add episode classification afterwards.
+with `--episode` to add episode classification afterwards.
+
+## Several crossing windows in one configuration
+
+A configuration may contain more than one BCF/PCBM mixing region.
+Configuration B contains four. They are passed by name and reported by name:
+
+```bash
+namd-analysis character-ensemble \
+    --episode crossing_B1=1488:1492 \
+    --episode crossing_B2=1687:1696 \
+    --episode crossing_B3=1801:1811 \
+    --episode crossing_B4=1846:1855 \
+    ...
+```
+
+Two things about this, and they pull in opposite directions from each other.
+
+**All of them are evaluated in one streamed pass.** Each ~900 MB SHPROP is read
+once, the symmetric midpoint decomposition is formed once, and each window is a
+frame mask over that single result. Four regions cost one read of the archive,
+not four, and no window can change another window's numbers.
+
+**None of them is combined with any other.** B1–B4 are four regions of the
+*same* recycled nuclear trajectory. They are not four replicates, not four
+independent samples, and not four repeat measurements of one quantity. There is
+no level at which averaging them is defined, and nothing computes such an
+average — not `run_summary.json`, not `per_history.csv`, not the
+across-configuration comparison. A pooled "Campaign B episode response" would
+describe no region at all.
+
+The **legacy single `--episode-window`** is unchanged and still supported: it
+keeps the original unprefixed `episode_*` columns and the run-level
+`episode_verdict`. When only named windows are given, that run-level verdict
+stays `not_classified` — promoting one of four regions to "the" episode would
+be a choice with no basis in the data.
+
+### Control windows
+
+`--control-episode NAME=FIRST:LAST` records a window as an explicit **control**.
+A control window is a range of frames chosen for comparison. It is **not** an
+avoided crossing, **not** a character-exchange region and **not** a BCF/PCBM
+transfer event, and every output records it as `role = control` so it cannot
+later be read back as one.
+
+Configuration C has **no** clear BCF/PCBM character-exchange event. That
+emptiness is the finding, not a gap waiting to be filled. Its closest-approach
+window 1628:1632 is available as `closest_approach_C`, as a control and only as
+a control.

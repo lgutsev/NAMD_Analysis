@@ -82,6 +82,28 @@ DEFAULT_THRESHOLDS = {
 #: counts that move sharply across these are counts the threshold chose.
 SENSITIVITY_FACTORS = (0.5, 0.75, 1.0, 1.5, 2.0)
 
+#: The classification given to a character swap when **no** fragment population
+#: was supplied.  ``fragment_population_change is None`` means *not evaluated*,
+#: never *evaluated and found to be zero*, and the two must not share a label:
+#: a configuration-level scan (``projection_character.csv`` + EIGTXT + NATXT,
+#: with no SHPROP) cannot say anything at all about fragment population, and a
+#: report that said "no transfer accompanied this swap" from such a run would
+#: be claiming an absence it never measured.
+NOT_EVALUATED = "character_swap_population_not_evaluated"
+
+#: The classification given to a character swap where a fragment population
+#: **was** supplied and did not move.  This one is a measured absence.
+NO_TRANSFER = "character_swap_without_fragment_transfer"
+
+NOT_EVALUATED_NOTE = (
+    "no fragment population was supplied with this scan, so whether charge "
+    "moved between fragments was NOT EVALUATED. This is not a finding of zero "
+    "transfer: a configuration-level crossing scan reads "
+    "projection_character.csv, EIGTXT and NATXT, none of which carries a SHPROP "
+    "population, and the question cannot be asked of them. Rerun with --shprop "
+    "and --state-map to evaluate it"
+)
+
 
 class CrossingError(ValueError):
     """Raised when a crossing analysis would have to assume something."""
@@ -313,6 +335,10 @@ class CrossingEvent:
     small_gap: bool
     strong_nac: bool
     character_swap: bool
+    #: ``None`` means the fragment population was **not evaluated** for this
+    #: event, which is a different statement from a change of zero. Read
+    #: alongside :attr:`population_evaluated`, which says so explicitly rather
+    #: than leaving it to a reader of a blank CSV cell.
     fragment_population_change: Optional[float]
     classification: str
     note: str
@@ -323,6 +349,16 @@ class CrossingEvent:
     occupation_redistribution: Optional[float] = None
     character_evolution: Optional[float] = None
 
+    @property
+    def population_evaluated(self) -> bool:
+        """Was fragment population available to be tested at this event?
+
+        A blank ``fragment_population_change`` cell in a CSV is ambiguous to
+        the eye, so this travels beside it as its own column: ``False`` means
+        the question was never asked, not that the answer was zero.
+        """
+        return self.fragment_population_change is not None
+
     def as_row(self) -> List[Any]:
         return [
             self.frame, self.band_i, self.band_j, self.gap_ev, self.nac_ev,
@@ -330,6 +366,7 @@ class CrossingEvent:
             self.dominant_i_before, self.dominant_i_after,
             self.dominant_j_before, self.dominant_j_after,
             self.small_gap, self.strong_nac, self.character_swap,
+            self.population_evaluated,
             self.fragment_population_change,
             self.occupation_redistribution, self.character_evolution,
             self.classification,
@@ -342,6 +379,7 @@ EVENT_HEADER = [
     "dominant_i_before", "dominant_i_after",
     "dominant_j_before", "dominant_j_after",
     "small_gap", "strong_nac", "character_swap",
+    "population_evaluated",
     "fragment_population_change",
     "occupation_redistribution", "character_evolution",
     "classification",
@@ -424,11 +462,15 @@ def _classify(
     population actually moved.  A character swap on its own is a relabelling of
     which orbital a band index points at; a population redistribution on its
     own moved occupation between adiabatic states that may share a fragment.
+
+    ``population_change is None`` is **not evaluated**, and is kept apart from
+    an evaluated zero.  A configuration-level scan has no SHPROP populations at
+    all, so it cannot find that no transfer occurred -- it can only report that
+    the question was not asked.  Collapsing the two would turn a missing input
+    into a scientific claim.
     """
-    moved = (
-        population_change is not None
-        and abs(population_change) > population_tolerance
-    )
+    evaluated = population_change is not None
+    moved = evaluated and abs(population_change) > population_tolerance
     parts = []
     if small_gap:
         parts.append("small gap")
@@ -438,9 +480,20 @@ def _classify(
         parts.append("character swap")
     if moved:
         parts.append("fragment population change")
+    if not evaluated:
+        parts.append("fragment population not evaluated")
 
-    if character_swap and not moved:
-        label = "character_swap_without_fragment_transfer"
+    if character_swap and not evaluated:
+        label = NOT_EVALUATED
+        note = (
+            "the dominant fragment of a band index changed. Whether the "
+            "projection-weighted fragment population followed is UNKNOWN: "
+            + NOT_EVALUATED_NOTE
+            + ". Nothing here supports calling this a charge-transfer event, "
+            "and nothing here rules one out"
+        )
+    elif character_swap and not moved:
+        label = NO_TRANSFER
         note = (
             "the dominant fragment of a band index changed, but the "
             "projection-weighted fragment population did not follow. The band "
@@ -500,15 +553,23 @@ def _classify(
     elif small_gap and strong_nac:
         label = "close_and_coupled_without_character_swap"
         note = (
-            "the states were close and strongly coupled, but neither the "
-            "character nor the fragment population changed at this frame. A "
-            "coupling is an opportunity, not an event"
+            "the states were close and strongly coupled, but the character did "
+            "not change at this frame. A coupling is an opportunity, not an "
+            "event"
+        ) + (
+            ", and the fragment population did not change either"
+            if evaluated
+            else ". " + NOT_EVALUATED_NOTE
         )
     else:
         label = "flagged_metric_only"
         note = (
             "one or more raw metrics crossed its threshold without any change "
-            "of character or fragment population"
+            "of character"
+        ) + (
+            " or fragment population"
+            if evaluated
+            else ". " + NOT_EVALUATED_NOTE
         )
     if parts:
         note = f"{' + '.join(parts)}: {note}"

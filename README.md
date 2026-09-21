@@ -592,6 +592,14 @@ staying on one adiabatic state through an avoided crossing changes the fragment
 identity, while hopping between two can preserve it. Why, with the two-state
 model behind it: [docs/adiabatic_vs_diabatic.md](docs/adiabatic_vs_diabatic.md).
 
+Run this way -- `projection_character.csv`, `EIGTXT` and `NATXT`, with no
+SHPROP -- there is **no fragment population to test**, so the analysis reports
+that it was *not evaluated* rather than that nothing moved. Those exchanges are
+classified `character_swap_population_not_evaluated`, the event table carries a
+`population_evaluated` column, and `fragment_population_change = null` means
+**not evaluated**, never zero. No statement about fragment transfer -- in
+either direction -- is made from such a run.
+
 For counting donor→acceptor transfer events against the arbitrary population
 thresholds used in the surface-hopping literature — swept, never single, and
 consuming only the occupation-driven component — see `namd_analysis.transfer`
@@ -616,8 +624,58 @@ histories exchanging character in opposite directions would cancel to nothing.
 `--early-window` defaults to `0:0.1` ns; **`--late-window` is required and never
 defaulted**, so without it no early-vs-late comparison is produced.
 
+With `--shprop` the fragment population **is** evaluated, and a swap whose
+population was read and did not move keeps the stronger
+`character_swap_without_fragment_transfer` -- a measured absence, which the
+configuration-level run cannot produce.
+
 Theory and conventions: [docs/state_character.md](docs/state_character.md).
 Generating the configuration: [docs/campaign_preparation.md](docs/campaign_preparation.md). A worked campaign: [examples/bcf_pcbm/FAPI_001_A](examples/bcf_pcbm/FAPI_001_A).
+
+### Whole-archive ensembles, and crossing episodes
+
+```bash
+namd-analysis character-ensemble \
+  --run-label B --shprop '/path/to/B/SHPROP.*' \
+  --projection-character NuTest/B/projection_character.csv \
+  --state-map NuTest/B/state_map.json \
+  --fixed-state-map NuTest/B/fixed_state_map.json \
+  --frame-mode dish-cyclic --cycle-length 1999 \
+  --episode crossing_B1=1488:1492 \
+  --episode crossing_B2=1687:1696 \
+  --episode crossing_B3=1801:1811 \
+  --episode crossing_B4=1846:1855 \
+  --late-window-start-ns 0.1 \
+  --out results/ensemble_B
+```
+
+Walks every SHPROP history of one interface configuration, streaming each file
+once, and writes a per-history row, a long-form per-episode table and that
+configuration's summary.
+
+A configuration may contain **several** BCF/PCBM mixing regions. Name them with
+`--episode NAME=FIRST:LAST`, repeatable. Every window is evaluated during the
+**same streamed pass** over each history -- four regions cost one read of a
+~900 MB archive, not four -- and each keeps its own net, occupation and
+character-evolution response per pass, and its own verdict, under its own name
+in `per_history.csv` (`crossing_B1__BCF_net_per_pass`),
+`episode_per_history.csv` and `run_summary.json`.
+
+**The windows are never pooled.** B1–B4 are four regions of the *same* recycled
+nuclear trajectory: not replicates, not independent samples, not repeat
+measurements. Nothing averages or combines them, here or in the
+across-configuration comparison.
+
+`--control-episode NAME=FIRST:LAST` records a window as an explicit **control**
+-- a range of frames chosen for comparison, **not** an avoided crossing and
+**not** a BCF/PCBM transfer event. Configuration C has no clear
+character-exchange event; its closest-approach window is available only as a
+control.
+
+The single `--episode-window FIRST:LAST` is unchanged and still supported,
+keeping the original unprefixed `episode_*` columns and the run-level
+`episode_verdict`. Levels, and what may be said at each:
+[docs/ensemble_hierarchy.md](docs/ensemble_hierarchy.md).
 
 ## Analyze phonon spectra
 

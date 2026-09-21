@@ -93,6 +93,16 @@ and the summary says outright that these are not charge-transfer events. Where
 it moved the *other* way, it is
 `character_swap_with_unrelated_population_change`.
 
+Where **no fragment population was supplied at all**, the classification is
+`character_swap_population_not_evaluated`. That is a fourth, distinct outcome,
+and it is not a weaker form of the second: a configuration-level scan reads
+`projection_character.csv`, `EIGTXT` and `NATXT`, none of which carries a
+SHPROP population, so the transfer question was never asked. Such a run may
+report neither transfer nor its absence, and the summary refuses to state one.
+`fragment_population_change = null` in `crossing_events.csv` and `report.json`
+means **not evaluated**, never zero; the `population_evaluated` column says so
+in its own cell.
+
 ## Adiabatic states vs physical fragments: two different maps
 
 The campaign uses **two deliberately different groupings**, and they are not
@@ -170,14 +180,22 @@ and says why.
 | it moved, but not that way | `character_swap_with_unrelated_population_change` |
 | occupation did not move at all — the whole change was `ΔP^char` | `character_swap_without_fragment_transfer` |
 | the direction could not be tested | `character_swap_with_undetermined_direction` |
+| **no population was supplied, so nothing was evaluated** | `character_swap_population_not_evaluated` |
 
 The third row is the case the split exists to catch: the *total* fragment
 population can move a long way at a swap while `ΔP^pop` is zero, because the
 weights moved and the occupation did not. Before the split that looked
 identical to transfer.
 
-The last row is an honest verdict, not a fallback. It covers three cases: only
-a total was available; the character changed without any band's dominant
+The **last** row is the one that must never be merged into the third. The
+third is a measured absence — a population was read, and it did not move. The
+last is no measurement at all. A run that produces only the last row has said
+nothing whatever about fragment transfer, and no sentence of the form "no
+transfer accompanied these exchanges" may be written from it.
+
+The `character_swap_with_undetermined_direction` row is an honest verdict, not
+a fallback. It covers three cases: only a total was available; the character
+changed without any band's dominant
 fragment moving, so there is no direction; or the swap names **no single
 direction** — a *simultaneous* symmetric exchange, one band going BCF→PCBM
 while the other goes PCBM→BCF, where occupation moving either way would match

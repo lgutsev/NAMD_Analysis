@@ -3,6 +3,14 @@
 The whole value of this file is in what it refuses to say. A dominant-character
 swap is reported as a swap; it becomes transfer only where the fragment
 population moved with it, and where it did not, the summary says so.
+
+There is a third case, and it is the one easiest to get wrong. A
+configuration-level scan reads ``projection_character.csv``, EIGTXT and NATXT
+and has **no SHPROP populations at all**. Such a run cannot find that no
+transfer occurred; it can only report that fragment population was never
+evaluated. This file keeps "not evaluated" and "evaluated, and nothing moved"
+in separate sentences, separate table rows and separate classifications,
+because only the second is a scientific finding.
 """
 
 from __future__ import annotations
@@ -134,6 +142,15 @@ def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
         e for e in swaps
         if e.classification == "character_swap_with_undetermined_direction"
     ]
+    # The two cases that must never share a sentence: a swap whose fragment
+    # population was never supplied, and one whose population was supplied and
+    # did not move. Only the second licenses "no transfer".
+    not_evaluated = [e for e in swaps if not e.population_evaluated]
+    evaluated = [e for e in swaps if e.population_evaluated]
+    no_transfer = [
+        e for e in evaluated
+        if e.classification == "character_swap_without_fragment_transfer"
+    ]
 
     out: List[str] = [
         "# Adiabatic character events",
@@ -168,9 +185,12 @@ def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
             ["dominant-character exchanges", len(swaps)],
             ["…that coincide with a small gap", len(small_gap_swaps)],
             ["…that coincide with a strong NAC", len(strong_nac_swaps)],
+            ["…whose fragment population was **not evaluated**", len(not_evaluated)],
+            ["…whose fragment population **was** evaluated", len(evaluated)],
             ["…where the population moved the same way the swap did", len(moved)],
             ["…where it moved, but not that way", len(unrelated)],
             ["…where it moved and the swap named no single direction", len(undetermined)],
+            ["…where it was evaluated and did not move", len(no_transfer)],
         ],
     )
     out += ["By classification:", ""]
@@ -179,17 +199,45 @@ def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
         [[name, count] for name, count in counts.most_common()],
     )
 
-    if swaps and not moved and not (unrelated or undetermined):
+    if not_evaluated:
+        # Said first, and said before any sentence about what did or did not
+        # move, so it cannot be read as a qualifier on a finding of absence.
         out += [
-            "**No character exchange in this run was accompanied by a change in "
+            f"**Fragment population was NOT EVALUATED for {len(not_evaluated)} of "
+            f"the {len(swaps)} character exchange(s) below.**"
+            + (
+                " No SHPROP population was supplied with this scan, so for those "
+                "exchanges the analysis has no information about fragment "
+                "population at all."
+                if not evaluated
+                else " No fragment population was available at those steps."
+            ),
+            "",
+            "> This is **not** a finding that no charge moved. A "
+            "configuration-level crossing scan reads `projection_character.csv`, "
+            "`EIGTXT` and `NATXT`; none of them carries a SHPROP population, so "
+            "the question of fragment transfer was never asked. Those exchanges "
+            "are classified `character_swap_population_not_evaluated`, which must "
+            "not be reported as, summarized as, or counted with "
+            "`character_swap_without_fragment_transfer`. **Neither transfer nor "
+            "its absence may be claimed for them.** Rerun with `--shprop` and "
+            "`--state-map` to evaluate fragment population per history.",
+            "",
+        ]
+
+    if evaluated and not moved and not (unrelated or undetermined):
+        out += [
+            f"**Of the {len(evaluated)} character exchange(s) whose fragment "
+            "population WAS evaluated, none was accompanied by a change in "
             "projection-weighted fragment population.** The band labels moved; the "
             "charge did not follow. These are not charge-transfer events, and must "
             "not be described as such.",
             "",
         ]
-    elif swaps and not moved:
+    elif evaluated and not moved:
         out += [
-            "**No character exchange in this run was accompanied by a fragment "
+            f"**Of the {len(evaluated)} character exchange(s) whose fragment "
+            "population WAS evaluated, none was accompanied by a fragment "
             "population change in the direction the swap implies.** Population "
             "did move at some of these steps, but not in a way that supports "
             "calling any of them transfer. None may be described as a "
@@ -202,7 +250,7 @@ def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
             "population change in the corresponding direction** — the fragment the "
             "dominance moved to gained what the one it left lost. Those are the "
             f"ones that support a transfer reading; the remaining "
-            f"{len(swaps) - len(moved)} are not.",
+            f"{len(evaluated) - len(moved)} evaluated exchange(s) are not.",
             "",
         ]
         if unrelated:
@@ -266,13 +314,14 @@ def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
         out += ["## The exchanges themselves", ""]
         out += _table(
             ["frame", "bands", "gap (eV)", "|NAC| (eV)", "band i before → after",
-             "classification"],
+             "population", "classification"],
             [
                 [
                     e.frame, f"{e.band_i}/{e.band_j}",
                     None if e.gap_ev != e.gap_ev else round(e.gap_ev, 5),
                     None if e.nac_ev is None else round(e.nac_ev, 5),
                     f"{e.dominant_i_before} → {e.dominant_i_after}",
+                    "evaluated" if e.population_evaluated else "**not evaluated**",
                     e.classification,
                 ]
                 for e in swaps[:40]
@@ -287,6 +336,10 @@ def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
         "- Synchronization is on the resolved MD frame. A correlation by SHPROP row "
         "index would be wrong wherever histories start at different `NAMDTINI` or "
         "the trajectory wraps cyclically, and would still produce plausible numbers.",
+        "- Where no SHPROP population was supplied, fragment population was **not "
+        "evaluated**, and no statement about fragment transfer — in either "
+        "direction — is made for those events. Absence of evidence was not "
+        "recorded as evidence of absence.",
         "- The fragment weights are projection-weighted diagonal quantities: SHPROP "
         "records no coherences and a PROCAR no cross-band projections, so the "
         "off-diagonal terms of a true diabatic picture are absent from the inputs.",

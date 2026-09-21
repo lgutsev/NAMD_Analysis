@@ -24,6 +24,8 @@ import numpy as np
 
 from namd_analysis.crossings import (
     DEFAULT_THRESHOLDS,
+    NO_TRANSFER,
+    NOT_EVALUATED,
     CrossingError,
     detect_events,
     load_couplings,
@@ -101,11 +103,14 @@ class CharacterSwapWithoutPopulationHopTests(_Crossing):
         self.assertTrue(swaps, "the character exchange must be detected")
         for event in swaps:
             # No fragment population was supplied, so nothing may be called
-            # transfer on the strength of the character alone.
+            # transfer on the strength of the character alone -- and equally,
+            # nothing may be called *not* transfer. The question was not asked.
             self.assertEqual(
-                event.classification, "character_swap_without_fragment_transfer"
+                event.classification, "character_swap_population_not_evaluated"
             )
-            self.assertIn("NOT a charge-transfer event", event.note)
+            self.assertFalse(event.population_evaluated)
+            self.assertIn("NOT EVALUATED", event.note)
+            self.assertIn("nothing here rules one out", event.note)
 
     def test_the_swap_lands_where_theta_crosses_forty_five_degrees(self):
         swapped = np.column_stack([self.weights[:, 1], self.weights[:, 0]])
@@ -130,6 +135,152 @@ class CharacterSwapWithoutPopulationHopTests(_Crossing):
                 event.classification, "character_swap_without_fragment_transfer"
             )
             self.assertEqual(event.fragment_population_change, 0.0)
+
+
+class ConfigurationOnlyScanClaimsNothingTests(_Crossing):
+    """A scan with no SHPROP cannot report the absence of fragment transfer.
+
+    ``character-crossings`` runs on ``projection_character.csv`` + EIGTXT +
+    NATXT alone. None of those carries a SHPROP population, so fragment
+    transfer is **not evaluated** in that mode. The old behaviour collapsed
+    ``fragment_population_change = None`` into "the population did not follow",
+    which turns a missing input into a scientific finding. These pin the
+    separation at every layer it has to survive: the classifier, the event
+    record, the CSV, the JSON report and the referee summary.
+    """
+
+    def _swapping_character(self):
+        swapped = np.column_stack([self.weights[:, 1], self.weights[:, 0]])
+        return self._series({976: self.weights, 977: swapped})
+
+    def _run_cli(self, name):
+        swapped = np.column_stack([self.weights[:, 1], self.weights[:, 0]])
+        character_path = write_character(
+            self.root / "projection_character.csv", self.frames,
+            {976: self.weights, 977: swapped},
+        )
+        eig, nat = write_couplings(self.root, self.energies, self.nac)
+        out = self.root / name
+        code = dispatch_main([
+            "character-crossings",
+            "--projection-character", str(character_path),
+            "--eigtxt", str(eig), "--natxt", str(nat), "--dt-fs", "1.0",
+            "--out", str(out),
+        ])
+        self.assertEqual(code, 0)
+        return out
+
+    def test_an_unsupplied_population_is_not_evaluated_not_zero(self):
+        events = detect_events(
+            self._swapping_character(), self._couplings(), [(976, 977)]
+        )
+        swaps = [e for e in events if e.character_swap]
+        self.assertTrue(swaps)
+        for event in swaps:
+            self.assertIsNone(event.fragment_population_change)
+            self.assertFalse(event.population_evaluated)
+            self.assertEqual(event.classification, NOT_EVALUATED)
+            self.assertNotEqual(event.classification, NO_TRANSFER)
+
+    def test_a_supplied_zero_change_is_still_a_finding_of_no_transfer(self):
+        # The other half of the distinction: a population that WAS read and did
+        # not move is a measured absence, and keeps the stronger label.
+        flat = {int(f): {"BCF": 0.5, "PCBM": 0.5} for f in self.frames}
+        events = detect_events(
+            self._swapping_character(), self._couplings(), [(976, 977)],
+            fragment_population=flat,
+        )
+        swaps = [e for e in events if e.character_swap]
+        self.assertTrue(swaps)
+        for event in swaps:
+            self.assertTrue(event.population_evaluated)
+            self.assertEqual(event.fragment_population_change, 0.0)
+            self.assertEqual(event.classification, NO_TRANSFER)
+            self.assertIn("NOT a charge-transfer event", event.note)
+
+    def test_the_two_cases_never_share_a_classification(self):
+        self.assertNotEqual(NOT_EVALUATED, NO_TRANSFER)
+        flat = {int(f): {"BCF": 0.5, "PCBM": 0.5} for f in self.frames}
+        character = self._swapping_character()
+        without = detect_events(character, self._couplings(), [(976, 977)])
+        with_pop = detect_events(
+            character, self._couplings(), [(976, 977)], fragment_population=flat
+        )
+        labels_without = {e.classification for e in without if e.character_swap}
+        labels_with = {e.classification for e in with_pop if e.character_swap}
+        self.assertEqual(labels_without, {NOT_EVALUATED})
+        self.assertEqual(labels_with, {NO_TRANSFER})
+        self.assertFalse(labels_without & labels_with)
+
+    def test_a_metric_only_event_does_not_claim_the_population_was_flat(self):
+        # The same mistake hides in the non-swap branches: their notes used to
+        # say "no change of character or fragment population" whatever was
+        # supplied.
+        for event in detect_events(
+            self._swapping_character(), self._couplings(), [(976, 977)]
+        ):
+            if event.character_swap:
+                continue
+            self.assertIn("NOT EVALUATED", event.note)
+
+    def test_the_event_table_carries_an_explicit_evaluated_column(self):
+        # A blank CSV cell is ambiguous to a reader; a False is not.
+        out = self._run_cli("not_evaluated_csv")
+        with (out / "crossing_events.csv").open("r", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertIn("population_evaluated", rows[0])
+        for row in rows:
+            self.assertEqual(row["population_evaluated"], "False")
+            self.assertEqual(row["fragment_population_change"], "")
+        swaps = [r for r in rows if r["character_swap"] == "True"]
+        self.assertTrue(swaps)
+        for row in swaps:
+            self.assertEqual(row["classification"], NOT_EVALUATED)
+
+    def test_the_report_states_that_population_was_not_evaluated(self):
+        out = self._run_cli("not_evaluated_json")
+        report = json.loads((out / "report.json").read_text(encoding="utf-8"))
+        block = report["fragment_population"]
+        self.assertFalse(block["evaluated"])
+        self.assertEqual(block["n_events_population_evaluated"], 0)
+        self.assertEqual(block["n_events_population_not_evaluated"], report["n_events"])
+        self.assertIn("NOT EVALUATED", block["meaning_of_null"])
+        self.assertEqual(block["not_evaluated_classification"], NOT_EVALUATED)
+        self.assertNotIn(NO_TRANSFER, report["event_counts"])
+
+    def test_the_summary_refuses_to_announce_an_absence_it_never_measured(self):
+        out = self._run_cli("not_evaluated_summary")
+        text = (out / "crossing_summary.md").read_text(encoding="utf-8")
+        # The exact sentences the old report produced from a no-SHPROP run.
+        self.assertNotIn(
+            "No character exchange in this run was accompanied by a change in "
+            "projection-weighted fragment population.",
+            text,
+        )
+        self.assertNotIn(
+            "No character exchange in this run was accompanied by a fragment "
+            "population change in the direction the swap implies.",
+            text,
+        )
+        self.assertNotIn(NO_TRANSFER + "` |", text)
+        self.assertIn("NOT EVALUATED", text)
+        self.assertIn("not** a finding that no charge moved", text)
+        self.assertIn("Neither transfer nor its absence may be claimed", text)
+
+    def test_an_evaluated_run_may_still_state_the_absence(self):
+        # The guard must not have silenced the real finding: with a population
+        # supplied, the summary says plainly that nothing moved.
+        from namd_analysis.crossing_summary import render
+
+        flat = {int(f): {"BCF": 0.5, "PCBM": 0.5} for f in self.frames}
+        events = detect_events(
+            self._swapping_character(), self._couplings(), [(976, 977)],
+            fragment_population=flat,
+        )
+        text = render({"n_events": len(events)}, events)
+        self.assertIn("none was accompanied by a change in", text)
+        self.assertIn("not charge-transfer events", text)
+        self.assertNotIn("NOT EVALUATED", text)
 
 
 class PopulationHopWithStableCharacterTests(_Crossing):
@@ -845,7 +996,9 @@ class CrossingCliTests(_Crossing):
             "not** a diabatization",
             "not performed anywhere in this package",
             "changes** the fragment identity",
-            "not charge-transfer events",
+            # No SHPROP was supplied here, so the summary must report the
+            # transfer question as unasked rather than answered.
+            "NOT EVALUATED",
         ):
             self.assertIn(phrase, text)
 

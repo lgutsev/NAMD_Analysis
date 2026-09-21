@@ -18,6 +18,9 @@ import numpy as np
 from .crossings import (
     DEFAULT_THRESHOLDS,
     EVENT_HEADER,
+    NO_TRANSFER,
+    NOT_EVALUATED,
+    NOT_EVALUATED_NOTE,
     CrossingError,
     aggregate_histories,
     compare_event_windows,
@@ -414,6 +417,32 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             ),
             "shprop_alignment": args.shprop_alignment,
         },
+        # Said at the top level, not buried: a reader who takes only one block
+        # out of this file must still be told whether fragment population was
+        # ever looked at.
+        "fragment_population": {
+            "evaluated": bool(args.shprop),
+            "source": (
+                "per-history SHPROP populations contracted with the PROCAR "
+                "weights, P_g(t) = sum_i P_i(t) w_ig[f(t)]"
+                if args.shprop
+                else None
+            ),
+            "n_events_population_evaluated": sum(
+                1 for e in events if e.population_evaluated
+            ),
+            "n_events_population_not_evaluated": sum(
+                1 for e in events if not e.population_evaluated
+            ),
+            "meaning_of_null": (
+                "fragment_population_change = null means NOT EVALUATED. It never "
+                "means a change of zero, and no count, sentence or figure derived "
+                "from this run may read it as one"
+            ),
+            "not_evaluated_classification": NOT_EVALUATED,
+            "no_transfer_classification": NO_TRANSFER,
+            "note": NOT_EVALUATED_NOTE,
+        },
         "population_change_decomposition": {
             "identity": (
                 "dP_g = sum_i [P_i(t) - P_i(t-1)] w_ig[f(t)] + "
@@ -498,6 +527,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                   f"late {window_comparison['late_total']}")
     for name, count in counts.most_common():
         print(f"  {count:5d}  {name}")
+    if not args.shprop:
+        print("  no SHPROP supplied: fragment population was NOT EVALUATED, "
+              "which is not the same as no transfer")
     print(f"threshold sensitivity: totals {[r['total_events'] for r in sweep['rows']]} "
           f"across factors {list(sweep['factors'])}")
     print("  a character swap is not a surface hop; neither is automatically transfer")

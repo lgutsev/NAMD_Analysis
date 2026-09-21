@@ -102,13 +102,101 @@ class ConfigurationLanguageTests(unittest.TestCase):
         self.assertIn("comparison, not a statistical level", doc)
 
 
+class ScientificWordingTests(unittest.TestCase):
+    """The distinctions the shipped text must keep, checked at the source.
+
+    Each of these is a sentence somebody will be tempted to shorten. They are
+    pinned as strings because the whole point is the wording: a summary that
+    says "no transfer" where it means "not evaluated", or "replicates" where it
+    means "different physical systems", is wrong in a way no numeric test
+    catches.
+    """
+
+    def test_a_character_swap_is_not_a_surface_hop(self):
+        from namd_analysis import crossings
+
+        # Wrapped across lines in the source, so compare on normalized text.
+        prose = " ".join(crossings.__doc__.split())
+        self.assertIn("a character swap is not a surface hop", prose)
+        self.assertIn("a surface hop is not charge transfer", prose)
+
+    def test_a_character_swap_is_not_automatically_charge_transfer(self):
+        from namd_analysis.crossings import _classify
+
+        label, note = _classify(True, True, True, 0.0, 1.0e-3)
+        self.assertEqual(label, "character_swap_without_fragment_transfer")
+        self.assertIn("NOT a charge-transfer event", note)
+
+    def test_a_configuration_only_scan_cannot_determine_population_transfer(self):
+        from namd_analysis.crossings import NO_TRANSFER, NOT_EVALUATED, _classify
+
+        label, note = _classify(True, True, True, None, 1.0e-3)
+        self.assertEqual(label, NOT_EVALUATED)
+        self.assertNotEqual(label, NO_TRANSFER)
+        self.assertIn("NOT EVALUATED", note)
+        self.assertIn("nothing here rules one out", note)
+
+    def test_the_decomposition_is_called_bookkeeping_not_a_mechanism(self):
+        from namd_analysis.ensemble import BOOKKEEPING_NOTE
+
+        self.assertIn("exact", BOOKKEEPING_NOTE)
+        self.assertIn("one of infinitely many exact splits", BOOKKEEPING_NOTE)
+        self.assertIn("bookkeeping convention", BOOKKEEPING_NOTE)
+        self.assertIn("NOT physical branching fractions", BOOKKEEPING_NOTE)
+
+    def test_repeated_passes_are_not_independent(self):
+        from namd_analysis.ensemble import HIERARCHY_NOTE
+
+        self.assertIn(
+            "re-traversals of one recycled nuclear trajectory", HIERARCHY_NOTE)
+        self.assertIn("not independent samples", HIERARCHY_NOTE)
+        self.assertIn("No standard error is quoted over passes", HIERARCHY_NOTE)
+
+    def test_configurations_are_not_statistical_replicates(self):
+        from namd_analysis.ensemble import HIERARCHY_NOTE
+
+        self.assertIn("DISTINCT INTERFACE CONFIGURATIONS", HIERARCHY_NOTE)
+        self.assertIn("not statistical replicates", HIERARCHY_NOTE)
+        self.assertIn("never averaged or pooled", HIERARCHY_NOTE)
+
+    def test_several_windows_in_one_configuration_are_not_samples_either(self):
+        from namd_analysis.ensemble import EPISODES_NOTE
+
+        self.assertIn("NOT independent samples", EPISODES_NOTE)
+        self.assertIn("NOT replicates of one another", EPISODES_NOTE)
+        self.assertIn("a mean over B1..B4", EPISODES_NOTE)
+
+    def test_a_control_window_is_never_called_a_crossing(self):
+        from namd_analysis.ensemble import EPISODE_ROLES
+
+        control = EPISODE_ROLES["control"]
+        self.assertIn("NOT an avoided crossing", control)
+        self.assertIn("NOT a BCF/PCBM transfer event", control)
+
+
 def _bash_array(text, name):
-    """Read a ``declare -A NAME=( [k]=v ... )`` block into a dict."""
-    block = re.search(r"declare -A %s=\((.*?)\n\)" % name, text, re.S)
+    """Read a ``declare -A NAME=( [k]=v ... )`` block into a dict.
+
+    Values may be quoted and may contain spaces -- one episode array entry
+    holds several ``NAME=FIRST:LAST`` specs -- so a quoted value is matched
+    whole rather than up to the first space.
+    """
+    # Single-line form first. A multi-line search would otherwise run past the
+    # closing paren of a one-line array and swallow the next declaration.
+    block = re.search(r"declare -A %s=\(([^()\n]*)\)" % name, text)
     if block is None:
-        block = re.search(r"declare -A %s=\((.*?)\)" % name, text, re.S)
-    entries = re.findall(r"\[(\d+)\]=(\S*)", block.group(1))
-    return {key: value.strip('"') for key, value in entries}
+        block = re.search(r"declare -A %s=\((.*?)\n\)" % name, text, re.S)
+    entries = re.findall(r'\[(\d+)\]=(?:"([^"]*)"|(\S*))', block.group(1))
+    return {key: (quoted if quoted else bare) for key, quoted, bare in entries}
+
+
+def _episode_specs(value):
+    """``"a=1:2 b=3:4"`` into ``{"a": "1:2", "b": "3:4"}``."""
+    out = {}
+    for item in value.split():
+        name, _, window = item.partition("=")
+        out[name] = window
+    return out
 
 
 class ProductionProfileTests(unittest.TestCase):
@@ -172,11 +260,68 @@ class ProductionProfileTests(unittest.TestCase):
                     f"{label} points at A's {field}; reference products do not transfer",
                 )
             self.assertIsNone(other["episode_window"], f"{label} carries a crossing window")
+            self.assertFalse(
+                set(a["episodes"]) & set(other["episodes"]),
+                f"{label} shares a named crossing window with A; windows are "
+                "located per configuration and do not transfer",
+            )
+            self.assertFalse(
+                set(a["episodes"].values()) & set(other["episodes"].values()),
+                f"{label} reuses one of A's frame ranges",
+            )
             self.assertIsNone(
                 other["history_count_observed"],
                 f"{label} carries a history count it has not been counted for",
             )
             self.assertFalse(other["preset_registered"])
+
+    def test_configuration_b_carries_its_four_distinct_mixing_regions(self):
+        episodes = self.configs["B"]["episodes"]
+        self.assertEqual(
+            episodes,
+            {
+                "crossing_B1": "1488:1492",
+                "crossing_B2": "1687:1696",
+                "crossing_B3": "1801:1811",
+                "crossing_B4": "1846:1855",
+            },
+        )
+        # None of the four is promoted to "the" window: they are four regions
+        # of one recycled trajectory, and picking one would have no basis.
+        self.assertIsNone(self.configs["B"]["episode_window"])
+        windows = sorted(tuple(int(x) for x in w.split(":")) for w in episodes.values())
+        for earlier, later in zip(windows, windows[1:]):
+            self.assertLess(earlier[1], later[0], "B's regions must be disjoint")
+
+    def test_configuration_c_has_no_crossing_episode(self):
+        self.assertEqual(self.configs["C"]["episodes"], {})
+        self.assertIsNone(self.configs["C"]["episode_window"])
+
+    def test_the_c_closest_approach_window_is_recorded_only_as_a_control(self):
+        entry = self.configs["C"]
+        self.assertEqual(
+            entry["control_episodes"], {"closest_approach_C": "1628:1632"}
+        )
+        self.assertNotIn("closest_approach_C", entry["episodes"])
+        notes = " ".join(entry["notes"]).lower()
+        self.assertIn("control window", notes)
+        self.assertIn("not an avoided crossing", notes)
+        self.assertIn("not a bcf/pcbm transfer event", notes)
+
+    def test_the_profile_states_that_windows_are_never_pooled(self):
+        conventions = self.profile["episode_conventions"]
+        self.assertIn("never averaged, pooled or combined", conventions["episodes"])
+        self.assertIn("NOT an avoided crossing", conventions["control_episodes"])
+        self.assertIn("same streamed pass", conventions["one_pass"])
+        self.assertIn("no level at which averaging", conventions["not_pooled"])
+
+    def test_b_and_c_are_not_described_as_replicates_of_each_other(self):
+        for label in ("B", "C"):
+            notes = " ".join(self.configs[label]["notes"]).lower()
+            self.assertNotIn("replicate of", notes)
+        b_notes = " ".join(self.configs["B"]["notes"]).lower()
+        self.assertIn("not four replicates", b_notes)
+        self.assertIn("same recycled nuclear trajectory", b_notes)
 
     def test_the_shared_trajectory_is_shared_and_says_why(self):
         shared = self.profile["shared"]
@@ -222,13 +367,46 @@ class ProfileMatchesTheProductionScriptTests(unittest.TestCase):
             self.text,
         )
 
-    def test_the_cycle_lengths_and_windows_agree(self):
+    def test_the_cycle_lengths_agree(self):
         cycles = _bash_array(self.text, "RUN_CYCLE")
-        episodes = _bash_array(self.text, "RUN_EPISODE")
         for index, label in self.labels.items():
             entry = self.profile["configurations"][label]
             self.assertEqual(int(cycles[index]), entry["cycle_length"])
-            self.assertEqual(episodes[index] or None, entry["episode_window"])
+
+    def test_the_named_crossing_windows_agree(self):
+        episodes = _bash_array(self.text, "RUN_EPISODES")
+        for index, label in self.labels.items():
+            entry = self.profile["configurations"][label]
+            self.assertEqual(
+                _episode_specs(episodes[index]), entry["episodes"],
+                f"configuration {label}: the script and the profile disagree "
+                "about which crossing regions it has",
+            )
+
+    def test_the_control_windows_agree_and_stay_separate_from_crossings(self):
+        controls = _bash_array(self.text, "RUN_CONTROL_EPISODES")
+        episodes = _bash_array(self.text, "RUN_EPISODES")
+        for index, label in self.labels.items():
+            entry = self.profile["configurations"][label]
+            self.assertEqual(
+                _episode_specs(controls[index]), entry["control_episodes"],
+                f"configuration {label}: the script and the profile disagree "
+                "about its control windows",
+            )
+            # A control must never be smuggled in as a crossing.
+            self.assertFalse(
+                set(_episode_specs(controls[index]))
+                & set(_episode_specs(episodes[index])),
+                f"configuration {label} declares one window as both a crossing "
+                "and a control",
+            )
+
+    def test_the_legacy_single_window_flag_is_still_wired_up(self):
+        # Backward compatibility: the array and the flag it feeds stay, so an
+        # existing single-window recipe keeps working unchanged.
+        legacy = _bash_array(self.text, "RUN_EPISODE")
+        self.assertEqual(sorted(legacy), sorted(self.labels))
+        self.assertIn("--episode-window", self.text)
 
 
 if __name__ == "__main__":
