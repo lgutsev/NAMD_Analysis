@@ -1,6 +1,6 @@
 {
   "profile": "bcf_pcbm_fapi_2026",
-  "analysis_version": "0.7.1",
+  "analysis_version": "0.7.2",
   "purpose": "The filesystem and study layout of the FAPI/BCF/PCBM A/B/C study, recorded so a production run does not depend on remembering where anything lives. This file carries layout and provenance status only. The scientific content of a configuration -- its state order, band numbers, atom partition -- lives in that configuration's own reference files and in the preset registry, and is never copied between configurations.",
   "study": {
     "name": "FAPI_MD_NAMD_2026",
@@ -8,8 +8,8 @@
     "reference_root": "NuTest",
     "reference_root_role": "The shared reference/control workspace for the whole A/B/C study. It is not configuration A's provenance directory: A's reference products merely happen to have been established there first. Configuration-specific reference files live beneath it, one directory per configuration, on equal footing.",
     "analysis_subdir": "analysis",
-    "analysis_run_prefix": "ensemble_v0.7.1",
-    "analysis_run_pattern": "<data_dir>/analysis/ensemble_v0.7.1_<jobid>/",
+    "analysis_run_prefix": "ensemble_v0.7.2",
+    "analysis_run_pattern": "<data_dir>/analysis/ensemble_v0.7.2_<jobid>/",
     "analysis_output_rule": "Every analysis run writes into a new directory under its own configuration's analysis/ subdirectory. Nothing new is written into the top level of a configuration directory, which holds the archive itself."
   },
   "shared": {
@@ -180,5 +180,6 @@
     "control_episodes": "Named CONTROL windows, NAME -> FIRST:LAST, passed as --control-episode NAME=FIRST:LAST. A control window is a range of frames chosen for comparison. It is NOT an avoided crossing and NOT a BCF/PCBM character-exchange or transfer event, and no output may describe it as one.",
     "one_pass": "All windows of a run are evaluated during the same streamed pass over each SHPROP history. Adding a window does not reread the ~900 MB archive.",
     "not_pooled": "Multiple windows within one configuration are multiple regions of one recycled trajectory, not independent samples. Windows in different configurations are regions of different physical systems. There is no level at which averaging them is defined."
-  }
+  },
+  "analysis_version_basis": "0.7.2. The predecessor v0.7.1-frozen predates the multi-episode windows and the corrected projected-population semantics -- under 0.7.1 a change in P_g carried by character_evolution was classified as 'without fragment transfer', which is wrong -- so results produced by the two are not comparable and must not share an output prefix. Every run also records environment.code in run_summary.json: the package version plus, from an editable checkout, the git commit, branch and a dirty flag. A version names a release; the commit names the implementation, and the A/B/C comparison is only valid across one implementation."
 }

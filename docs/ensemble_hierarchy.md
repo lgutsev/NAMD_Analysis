@@ -142,6 +142,16 @@ for 300; ~1.5 GiB peak, independent of history count, because they stream one
 at a time. Per-history rows are flushed as produced, so a crash late in a run
 keeps everything before it.
 
+**Every run records which implementation produced it.**
+`run_summary.json` carries `environment.code`: the package version and, when
+the package is imported from a git working tree, the commit SHA, branch and a
+`dirty` flag. The A/B/C comparison is only valid if the three configurations
+were analysed by the *same* implementation, and "same version" is a weaker
+claim than "same commit" — an editable checkout can move between array tasks.
+`dirty = true` means uncommitted changes were present, so the commit alone
+does not identify what ran; the production script prints the record and warns
+before it starts.
+
 **B and C need their own provenance.** Required: band mapping, SHPROP state
 order, atom partition, projection character, the nominal fixed state map, and
 the cycle length. The production script refuses to start when any of those is

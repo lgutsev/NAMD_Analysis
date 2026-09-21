@@ -115,10 +115,10 @@ This corrects an earlier reading of this analysis, and the correction matters:
 > **A character-driven change in `P_g` is not "no charge moved".**
 
 If an occupied adiabatic state turns from BCF-like to PCBM-like while its
-population `P_i` is unchanged, its density has moved from one fragment to the
-other in real space. That is the first of the two failure modes above — the
-adiabatic passage through an avoided crossing, no hop anywhere, and the charge
-moved. An earlier
+population `P_i` is unchanged, the change can correspond to a spatial
+redistribution of that state's density between the fragments. That is the first
+of the two failure modes above — adiabatic passage through an avoided crossing,
+with no hop anywhere. An earlier
 version of the classifier called exactly that case "no fragment transfer"
 whenever `ΔP^pop ≈ 0`, on the reasoning that character evolution is a mere
 relabelling. It is not, and that label is gone.
@@ -174,8 +174,15 @@ Each step's change in `P_g` splits exactly, using the symmetric midpoint form:
 `ΔP_g^pop` is occupation moving between states at fixed character.
 `ΔP_g^char` is an occupied state's own character evolving at fixed occupation.
 
-**Both move the occupied density, and for physical reasons.** Neither is "the
-real one" and neither is bookkeeping about labels. They are written to
+**Neither is "the real one" and neither is bookkeeping about labels**, but
+neither is a quantity of charge either. `P_g` is the projection-weighted
+*diagonal* fragment population: SHPROP records no coherences and a PROCAR no
+cross-band projections, so the off-diagonal terms of `Tr[ρ P_g]` are absent
+from the inputs, and projection weight outside the declared fragments is
+unassigned. `P_g` is therefore not exact fragment charge, and neither term of
+the split may be equated with charge motion. What `ΔP^char` is *not* is a
+relabelling — it can reflect a spatial redistribution of the occupied density.
+The two terms are written to
 `per_history_events.csv` as `occupation_redistribution` and
 `character_evolution`, for the fragment the row names in `dominant_fragment`,
 so that `ΔP_g = occupation + character` closes on that one fragment.

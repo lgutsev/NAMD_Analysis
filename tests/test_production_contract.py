@@ -143,7 +143,7 @@ class ScientificWordingTests(unittest.TestCase):
     #: Phrasings that assert a character-driven change moved no charge. Each
     #: was shipped at some point, and each is wrong: P_g sums over the whole
     #: basis, so a relabelling cannot move it, and a state whose character
-    #: turns carries its density with it.
+    #: turns can correspond to a spatial redistribution of its density.
     FORBIDDEN_MECHANISM_CLAIMS = (
         "no charge going anywhere",
         "no charge moved between fragments",
@@ -168,25 +168,126 @@ class ScientificWordingTests(unittest.TestCase):
                     self.assertNotIn(
                         phrase, text,
                         f"{path.name} says {phrase!r}. A change in P_g carried "
-                        "by character evolution is a real movement of the "
-                        "occupied density, not a relabelling",
+                        "by character evolution is not a relabelling; it can "
+                        "correspond to a spatial redistribution of density",
                     )
         self.assertGreater(checked, 10, "the sweep found almost no files")
         readme = (REPO / "README.md").read_text(encoding="utf-8")
         for phrase in self.FORBIDDEN_MECHANISM_CLAIMS:
             self.assertNotIn(phrase, readme)
 
+    def test_no_shipped_text_quotes_the_endpoint_biased_decomposition(self):
+        """Prose must not claim a split the code does not compute.
+
+        ``history_fragment_population`` uses the symmetric midpoint form. The
+        endpoint-biased form is equally exact *in the sum*, so nothing numeric
+        catches the difference -- but it apportions up to half a step's
+        movement differently between the two terms, which is exactly what
+        ``occupation_redistribution`` and ``character_evolution`` report. A
+        document quoting the endpoint form would misdescribe every one of
+        those numbers.
+        """
+        endpoint = [
+            # dP_g^pop written with the weight at one endpoint, not the mean.
+            re.compile(r"P_i\(t\s*[-−]\s*1\)\s*\]\s*[·*]?\s*\{?\s*w_ig"),
+            # dP_g^char written with P_i at one endpoint, not the mean.
+            re.compile(r"P_i\(t\s*[-−]\s*1\)\s*[·*]?\s*[\[{(]\s*w_ig"),
+            re.compile(r"P_i\^?\{?t\}?\s*[·*]\s*[ΔdD]w_i"),
+        ]
+        roots = [REPO / "src" / "namd_analysis", REPO / "docs"]
+        paths = [
+            path
+            for root in roots
+            for path in sorted(root.rglob("*"))
+            if path.suffix in (".py", ".md") and "__pycache__" not in path.parts
+        ] + [REPO / "README.md"]
+        self.assertGreater(len(paths), 10, "the sweep found almost no files")
+        for path in paths:
+            text = path.read_text(encoding="utf-8")
+            for pattern in endpoint:
+                match = pattern.search(text)
+                if match is not None:
+                    self.fail(
+                        f"{path.name} quotes an endpoint-biased decomposition "
+                        f"({match.group(0)!r} at offset {match.start()}). The "
+                        "code computes the symmetric midpoint form; see "
+                        "crossings.DECOMPOSITION_IDENTITY"
+                    )
+
+    def test_the_identity_constant_is_the_midpoint_form(self):
+        from namd_analysis.crossings import DECOMPOSITION_IDENTITY
+
+        for half in (
+            "0.5*(w_ig[f(t)] + w_ig[f(t-1)])",
+            "0.5*(P_i(t) + P_i(t-1))",
+        ):
+            self.assertIn(half, DECOMPOSITION_IDENTITY)
+
+    def test_the_report_quotes_the_constant_rather_than_retyping_it(self):
+        # A retyped formula is one that can drift. The CLI payload must take
+        # the identity from the module, so there is one place to change.
+        source = (
+            REPO / "src" / "namd_analysis" / "crossings_cli.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"identity": DECOMPOSITION_IDENTITY', source)
+
     def test_the_split_is_described_never_used_as_a_mechanism(self):
         from namd_analysis.crossings import PROJECTION_NOTE
 
-        self.assertIn("BOTH terms of the symmetric split move it", PROJECTION_NOTE)
-        self.assertIn("Neither term is the real one", PROJECTION_NOTE)
-        self.assertIn("NOT 'no charge moved'", PROJECTION_NOTE)
+        # The correction that must survive: character_evolution is not a
+        # relabelling and can be spatial redistribution.
+        self.assertIn("NOT mere relabelling", PROJECTION_NOTE)
+        self.assertIn("spatial redistribution of the occupied density", PROJECTION_NOTE)
+        self.assertIn("'no charge moved' is wrong", PROJECTION_NOTE)
+        # And the limit that must travel with it: neither term is charge, and
+        # P_g is a diagonal quantity rather than exact fragment charge.
+        self.assertIn(
+            "Neither term of the split may be equated with charge motion",
+            PROJECTION_NOTE,
+        )
+        self.assertIn("NOT exact fragment charge", PROJECTION_NOTE)
+        self.assertIn("no coherences", PROJECTION_NOTE)
+        self.assertIn("unassigned", PROJECTION_NOTE)
         self.assertIn(
             "bookkeeping convention rather than a branching fraction",
             PROJECTION_NOTE,
         )
         self.assertIn("no surface-hopping record is an input", PROJECTION_NOTE)
+
+    def test_p_g_is_named_a_projection_weighted_diagonal_population(self):
+        from namd_analysis.crossings import PROJECTION_NOTE
+
+        self.assertIn("projection-weighted DIAGONAL fragment population", PROJECTION_NOTE)
+        # And nothing in the crossings family leaves the qualifier off.
+        for name in ("crossings.py", "crossings_cli.py", "crossing_summary.py"):
+            text = (REPO / "src" / "namd_analysis" / name).read_text(encoding="utf-8")
+            self.assertNotIn(
+                "projection-weighted fragment population", text,
+                f"{name} calls P_g a projection-weighted fragment population "
+                "without saying it is diagonal",
+            )
+
+    def test_no_shipped_text_asserts_a_split_term_moves_real_charge(self):
+        forbidden = (
+            "Both terms move real charge",
+            "both terms move real charge",
+            "Both move the occupied density",
+            "displace the occupied density",
+            "moves its density between the fragments in real space",
+        )
+        roots = [REPO / "src" / "namd_analysis", REPO / "docs"]
+        for root in roots:
+            for path in sorted(root.rglob("*")):
+                if path.suffix not in (".py", ".md") or "__pycache__" in path.parts:
+                    continue
+                text = path.read_text(encoding="utf-8")
+                for phrase in forbidden:
+                    self.assertNotIn(
+                        phrase, text,
+                        f"{path.name} says {phrase!r}. P_g is a diagonal "
+                        "quantity; a term of the split is not a quantity of "
+                        "charge that moved",
+                    )
 
     def test_a_configuration_only_scan_cannot_determine_population_transfer(self):
         from namd_analysis.crossings import (

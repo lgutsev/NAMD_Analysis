@@ -394,9 +394,15 @@ class SwapDirectionTests(_Crossing):
         from namd_analysis.crossings import PROJECTION_NOTE
 
         self.assertIn("sum_i P_i w_ig", PROJECTION_NOTE)
-        self.assertIn("EVERY band of the SHPROP basis", PROJECTION_NOTE)
+        self.assertIn("EVERY band of the basis", PROJECTION_NOTE)
         self.assertIn("not a labelling artifact", PROJECTION_NOTE)
-        self.assertIn("NOT 'no charge moved'", PROJECTION_NOTE)
+        # The correction: character evolution is not a relabelling.
+        self.assertIn("NOT mere relabelling", PROJECTION_NOTE)
+        self.assertIn("'no charge moved' is wrong", PROJECTION_NOTE)
+        # And the limit that travels with it: P_g is diagonal, so neither term
+        # is a quantity of charge.
+        self.assertIn("projection-weighted DIAGONAL", PROJECTION_NOTE)
+        self.assertIn("NOT exact fragment charge", PROJECTION_NOTE)
         self.assertIn("one of infinitely many exact splits", PROJECTION_NOTE)
 
 
@@ -679,7 +685,7 @@ class PerHistoryTests(_Crossing):
         note = per["decomposition_descriptor_note"]
         self.assertIn("NOT physical branching fractions", note)
         self.assertIn("NOT mechanisms", note)
-        self.assertIn("exactly as much as an occupation_dominated one did", note)
+        self.assertIn("by exactly as much as an occupation_dominated one did", note)
 
     def test_two_histories_moving_oppositely_do_not_cancel(self):
         # Averaged first, a rise and a matching fall leave a flat population,
@@ -887,6 +893,63 @@ class PerHistoryTests(_Crossing):
         np.testing.assert_array_equal(split.occupation_redistribution[0], 0.0)
         np.testing.assert_array_equal(split.character_evolution[0], 0.0)
 
+    def test_the_split_is_the_symmetric_midpoint_form_not_an_endpoint_one(self):
+        """Which exact split the code uses, pinned against the alternative.
+
+        Both forms sum to the same dP_g, so the closure test above passes
+        either way. They differ in how they *apportion* that change, which is
+        precisely what ``occupation_redistribution`` and ``character_evolution``
+        report -- by up to half a step's movement. This fixture has both P_i
+        and w_ig changing at the same step, so the two forms disagree, and the
+        code must match the midpoint one.
+        """
+        from namd_analysis.crossings import history_fragment_population
+        from namd_analysis.populations import StateMap
+
+        character = read_projection_character(self.character_path)
+        frames = np.array([((t) % self.nframes) + 1 for t in range(24)])
+        state_map = StateMap.from_json(self.state_map_path)
+        split = history_fragment_population(
+            self.histories[0], state_map, character, [976, 977], frames,
+        )
+
+        raw = np.loadtxt(self.histories[0])
+        pops = raw[:, np.asarray(state_map.population_columns, dtype=int)]
+        band_at = character.band_index()
+        frame_at = character.frame_index()
+        rows = np.asarray([frame_at[int(f)] for f in frames], dtype=int)
+        weights = character.weights[:, [band_at[976], band_at[977]], :][rows]
+
+        dP = pops[1:] - pops[:-1]
+        dW = weights[1:] - weights[:-1]
+        midpoint_pop = np.einsum("ts,tsg->tg", dP, 0.5 * (weights[1:] + weights[:-1]))
+        midpoint_char = np.einsum("ts,tsg->tg", 0.5 * (pops[1:] + pops[:-1]), dW)
+        endpoint_pop = np.einsum("ts,tsg->tg", dP, weights[1:])
+        endpoint_char = np.einsum("ts,tsg->tg", pops[:-1], dW)
+
+        # The fixture must actually distinguish them, or this pins nothing.
+        self.assertGreater(
+            float(np.max(np.abs(midpoint_pop - endpoint_pop))), 1e-6,
+            "the fixture cannot tell the two forms apart",
+        )
+        # Both are exact in the sum -- which is why a closure test cannot
+        # choose between them and this test has to.
+        np.testing.assert_allclose(
+            midpoint_pop + midpoint_char, endpoint_pop + endpoint_char, atol=1e-12
+        )
+
+        np.testing.assert_allclose(
+            split.occupation_redistribution[1:], midpoint_pop, rtol=0, atol=1e-12
+        )
+        np.testing.assert_allclose(
+            split.character_evolution[1:], midpoint_char, rtol=0, atol=1e-12
+        )
+        self.assertGreater(
+            float(np.max(np.abs(split.occupation_redistribution[1:] - endpoint_pop))),
+            1e-6,
+            "the code is computing the endpoint-biased split",
+        )
+
     def test_the_split_does_not_depend_on_where_the_chunks_fall(self):
         from namd_analysis.crossings import history_fragment_population
         from namd_analysis.populations import StateMap
@@ -1010,7 +1073,10 @@ class PerHistoryTests(_Crossing):
         ):
             self.assertNotIn(forbidden, text)
         self.assertIn("must not be reported as", text)
-        self.assertIn("moves its density between the fragments in real space", text)
+        self.assertIn("can correspond to a spatial redistribution", text)
+        # And the opposite overstatement is absent too: the descriptor is not
+        # a quantity of charge.
+        self.assertIn("not a scale of how much charge moved", text)
         # And the bookkeeping caveat still travels with it.
         self.assertIn("one of infinitely many exact splits", text)
         self.assertIn("not physical branching fractions", text.lower())

@@ -172,7 +172,7 @@ JOBID=${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-manual}}
 # One dedicated directory per analysis run, under the configuration it belongs
 # to. Nothing is written into the top level of the configuration directory:
 # those already hold the archive itself.
-OUT="${DIR}/analysis/ensemble_v0.7.1_${JOBID}"
+OUT="${DIR}/analysis/ensemble_v0.7.2_${JOBID}"
 
 echo "========================================"
 echo "Ensemble production, configuration ${LABEL}"
@@ -213,6 +213,23 @@ if ! namd-analysis character-ensemble --help >/dev/null 2>&1; then
     echo "ERROR: this build has no 'character-ensemble' subcommand."
     echo "       Update the install from the branch: pip install -e ."
     exit 1
+fi
+
+# WHICH IMPLEMENTATION IS ABOUT TO RUN. The final A/B/C comparison is only
+# valid if all three array tasks used the same code, and "same version" is a
+# weaker claim than "same commit": an editable checkout can move between tasks.
+# The same record is written into run_summary.json under environment.code, so
+# a result can be traced back to its implementation long after the log is gone.
+echo
+echo "========== ANALYSIS CODE =========="
+python -c "import json,namd_analysis.provenance as p; print(json.dumps(p.code_provenance(), indent=2))"
+if python -c "import sys,namd_analysis.provenance as p; sys.exit(0 if p.code_provenance().get('git',{}).get('dirty') else 1)"; then
+    echo
+    echo "WARNING: the analysis package has UNCOMMITTED CHANGES."
+    echo "         The commit above does not identify what ran, and two array"
+    echo "         tasks may not have used the same code. Commit before a"
+    echo "         production run, or A/B/C cannot be attributed to one"
+    echo "         frozen analysis version."
 fi
 
 # The individual electronic histories are SHPROP.<integer> and nothing else.
@@ -305,7 +322,9 @@ echo "                                 crossing_B1__BCF_net_per_pass"
 echo "  ${OUT}/episode_per_history.csv  <- long form: one row per history,"
 echo "                                 episode and fragment, each row naming"
 echo "                                 its own episode and role"
-echo "  ${OUT}/run_summary.json      <- this configuration's ${N} histories"
+echo "  ${OUT}/run_summary.json      <- this configuration's ${N} histories,"
+echo "                                 with environment.code recording the"
+echo "                                 package version and the git commit"
 echo "  ${OUT}/ensemble_curves.json  <- median and quantile band, dynamic and"
 echo "                                 fixed: keys and fixed:<group>"
 echo "  ${OUT}/*.png  ${OUT}/*.pdf   <- populations, fixed-vs-dynamic,"
@@ -319,13 +338,13 @@ echo "not a statistical level):"
 echo
 echo "  cd ${ROOT}"
 echo "  namd-analysis character-ensemble --combine \\"
-echo "      FAPI_001_BCF_PCBM_A/analysis/ensemble_v0.7.1_*/run_summary.json \\"
-echo "      FAPI_001_BCF_PCBM_B/analysis/ensemble_v0.7.1_*/run_summary.json \\"
-echo "      FAPI_001_BCF_PCBM_C/analysis/ensemble_v0.7.1_*/run_summary.json \\"
+echo "      FAPI_001_BCF_PCBM_A/analysis/ensemble_v0.7.2_*/run_summary.json \\"
+echo "      FAPI_001_BCF_PCBM_B/analysis/ensemble_v0.7.2_*/run_summary.json \\"
+echo "      FAPI_001_BCF_PCBM_C/analysis/ensemble_v0.7.2_*/run_summary.json \\"
 echo "      --combine-curves \\"
-echo "          A=FAPI_001_BCF_PCBM_A/analysis/ensemble_v0.7.1_JOBID \\"
-echo "          B=FAPI_001_BCF_PCBM_B/analysis/ensemble_v0.7.1_JOBID \\"
-echo "          C=FAPI_001_BCF_PCBM_C/analysis/ensemble_v0.7.1_JOBID \\"
+echo "          A=FAPI_001_BCF_PCBM_A/analysis/ensemble_v0.7.2_JOBID \\"
+echo "          B=FAPI_001_BCF_PCBM_B/analysis/ensemble_v0.7.2_JOBID \\"
+echo "          C=FAPI_001_BCF_PCBM_C/analysis/ensemble_v0.7.2_JOBID \\"
 echo "      --out analysis_across_configurations"
 echo
 echo "Nothing is pooled across configurations: they are different physical"

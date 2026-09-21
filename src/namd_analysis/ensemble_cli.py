@@ -486,6 +486,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             [Path(args.projection_character), Path(args.state_map)]
         )
         summary["environment"] = environment()
+        # Printed as well as written: an A/B/C comparison is only valid if the
+        # three runs came from one implementation, and the person reading the
+        # Slurm log is the one who can still stop a mismatched run.
+        code = summary["environment"]["code"]
+        git = code.get("git", {})
+        if git.get("available"):
+            print(f"  analysis code: v{code['version']} "
+                  f"commit {git['commit']} ({git.get('describe')})"
+                  + ("  ** DIRTY WORKING TREE **" if git.get("dirty") else ""))
+            if git.get("dirty"):
+                print("  the commit above does NOT identify what ran: "
+                      f"{len(git.get('uncommitted_paths', []))} uncommitted "
+                      "path(s). Commit before a production run, or A/B/C cannot "
+                      "be attributed to one implementation")
+        else:
+            print(f"  analysis code: v{code['version']}, no git commit "
+                  f"available ({git.get('reason')}). The version alone does not "
+                  "identify the implementation")
         summary["late_window_start_ns"] = args.late_window_start_ns
         legacy = next((w for w in episodes if w.legacy), None)
         summary["episode_window"] = [legacy.first, legacy.last] if legacy else None

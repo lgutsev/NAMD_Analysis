@@ -11,16 +11,18 @@ the manuscript's argument depends on the distinction:
     the fragment composition :math:`w_{ig}` of a *fixed* band index changing
     with time. The band index did not move; the orbital it labels did. Note
     what this is **not**: it is not a bookkeeping relabelling with nothing
-    behind it. If that band is occupied, its density has moved between the
-    fragments in real space.
+    behind it. If that band is occupied, the change can correspond to a spatial
+    redistribution of its density between the fragments.
 
 **nonadiabatic hop between adiabatic states**
     population moving from :math:`i` to :math:`j`. Lives in the SHPROP
     populations, not in a PROCAR.
 
-**fragment population**
-    :math:`\\sum_i P_i w_{ig}`, which is what ``character-populations``
-    reports. Closer to a diabatic reading than a band-resolved one.
+**projection-weighted diagonal fragment population**
+    :math:`P_g = \\sum_i P_i w_{ig}`, which is what ``character-populations``
+    reports. Closer to a diabatic reading than a band-resolved one, but
+    **diagonal**: SHPROP records no coherences and a PROCAR no cross-band
+    projections, so it is not exact fragment charge.
 
 **a true diabatic transformation**
     a unitary that removes the derivative coupling. This package does **not**
@@ -37,14 +39,18 @@ The two failure modes worth stating plainly, because they run opposite ways:
 So a character swap is not a surface hop, and a surface hop is not charge
 transfer.
 
-What an event *is* classified on is the projection-weighted fragment
-population :math:`P_g = \\sum_i P_i w_{ig}` -- whether it moved, and nothing
-else. That quantity sums over the whole SHPROP basis, so no re-ordering of
-band labels can move it, and a change in it is a real change in where the
-occupied density sits. Both terms of the symmetric split move it for physical
-reasons, and **a change carried by character evolution is not "no charge
-moved"**: it is the first bullet above. The split describes such a change; it
-does not decide whether one happened, and it never names a mechanism.
+What an event *is* classified on is the projection-weighted **diagonal**
+fragment population :math:`P_g = \\sum_i P_i w_{ig}` -- whether it moved, and
+nothing else. That quantity sums over the whole SHPROP basis, so no
+re-ordering of band labels can move it, and a change in it is therefore not a
+labelling artifact. **A change carried by character evolution is not "no charge
+moved"**: an occupied state whose composition turns can correspond to a spatial
+redistribution of its density, which is the first bullet above. Equally,
+neither term of the split may be equated with charge motion, and :math:`P_g` is
+not exact fragment charge -- it is diagonal, the coherences are absent from the
+inputs, and projection weight outside the declared fragments is unassigned. The
+split describes a change; it does not decide whether one happened, and it never
+names a mechanism.
 
 Two-state picture behind all of it.  Near an avoided crossing between diabatic
 fragment states :math:`|A\\rangle` and :math:`|B\\rangle`,
@@ -107,9 +113,9 @@ NOT_EVALUATED = "character_swap_population_not_evaluated"
 NO_PROJECTED_CHANGE = "character_swap_without_projected_fragment_change"
 
 #: A character swap where ``P_g`` **was** evaluated and did move.  The
-#: projected occupied density shifted between fragments; which microscopic
-#: process did it is not resolved here, and neither bookkeeping term makes it
-#: less real.
+#: projection-weighted diagonal fragment population changed; which microscopic
+#: process produced it is not resolved here, and no bookkeeping term of the
+#: split may be read as deciding that.
 PROJECTED_CHANGE = "character_swap_with_projected_fragment_change"
 
 #: Share of the absolute movement one bookkeeping term must carry before the
@@ -127,28 +133,46 @@ NOT_EVALUATED_NOTE = (
     "and --state-map to evaluate it"
 )
 
-#: Why ``P_g`` is the observable the classification rests on, and why neither
-#: term of the split may be dismissed as bookkeeping about labels.
+#: The **one** place the step decomposition is written down, so a report, a
+#: docstring and the code cannot drift apart.  This is the symmetric midpoint
+#: form, which is what :func:`history_fragment_population` computes.  An
+#: endpoint-biased form is equally exact in the sum but apportions up to half a
+#: step's movement differently between the two terms, and a document quoting it
+#: while the code uses this one would misdescribe every number in the split.
+DECOMPOSITION_IDENTITY = (
+    "dP_g = sum_i [P_i(t) - P_i(t-1)] * 0.5*(w_ig[f(t)] + w_ig[f(t-1)]) "
+    "+ sum_i 0.5*(P_i(t) + P_i(t-1)) * (w_ig[f(t)] - w_ig[f(t-1)])"
+)
+
+#: What ``P_g`` is, what a change in it does and does not establish, and why
+#: neither term of the split may be dismissed as bookkeeping about labels.
 #:
 #: The error this note exists to prevent: reading ``character_evolution`` as
-#: "only a relabelling, no charge moved".  It is not.  If an occupied adiabatic
-#: state turns from BCF-like to PCBM-like while its population is unchanged,
-#: the occupied density has moved from one fragment to the other in real space.
-#: That is charge motion, and it is precisely the adiabatic passage the
-#: two-state picture at the top of this module describes.
+#: "only a relabelling, nothing moved".  It is not.  An occupied adiabatic
+#: state whose own composition turns from BCF-like to PCBM-like can correspond
+#: to a spatial redistribution of the occupied density -- the adiabatic passage
+#: the two-state picture at the top of this module describes.
+#:
+#: The opposite error is equally available, and this note does not commit it:
+#: ``P_g`` is a projection-weighted **diagonal** quantity, so neither term may
+#: be equated with charge motion outright.
 PROJECTION_NOTE = (
-    "P_g = sum_i P_i w_ig is the projection of the occupied density onto "
-    "fragment g, summed over EVERY band of the SHPROP basis. A re-ordering of "
-    "band labels therefore leaves it invariant, and a change in it is not a "
-    "labelling artifact. BOTH terms of the symmetric split move it for physical "
-    "reasons: occupation moving between states of different character, and an "
-    "occupied state's own character evolving at fixed occupation, each shift "
-    "where the occupied density sits. Neither term is the real one and neither "
-    "is bookkeeping about labels -- in particular a character-driven change is "
-    "NOT 'no charge moved'. What the split cannot do is name the microscopic "
-    "process: it is one of infinitely many exact splits, a bookkeeping "
-    "convention rather than a branching fraction, and no surface-hopping record "
-    "is an input here"
+    "P_g = sum_i P_i w_ig is the projection-weighted DIAGONAL fragment "
+    "population: the SHPROP populations contracted with the PROCAR fragment "
+    "weights, summed over EVERY band of the basis. Because the sum runs over "
+    "the whole basis, a re-ordering of band labels leaves it invariant, so a "
+    "change in it is not a labelling artifact. In particular character_evolution "
+    "is NOT mere relabelling: an occupied state whose own composition changes "
+    "can correspond to a spatial redistribution of the occupied density, and "
+    "describing such a change as 'no charge moved' is wrong. Neither term of "
+    "the split may be equated with charge motion either, and P_g is NOT exact "
+    "fragment charge: SHPROP records no coherences and a PROCAR carries no "
+    "cross-band projections, so the off-diagonal terms of Tr[rho P_g] are "
+    "absent from the inputs, and projection weight falling outside the declared "
+    "fragments is unassigned. The split itself is one of infinitely many exact "
+    "splits, a bookkeeping convention rather than a branching fraction, and no "
+    "surface-hopping record is an input here, so neither term names a "
+    "microscopic process"
 )
 
 
@@ -530,8 +554,9 @@ def decomposition_descriptor(
 
     This **describes** an observed change in ``P_g``; it never decides whether
     one occurred, and it is not a branching fraction of the dynamics.  An event
-    described as ``character_dominated`` moved the projected occupied density
-    between fragments exactly as much as an ``occupation_dominated`` one did.
+    described as ``character_dominated`` changed ``P_g`` by exactly as much as
+    an ``occupation_dominated`` one did: the share is a share of the
+    accounting, not a scale of how much charge moved.
     """
     if occupation is None or character is None:
         return None
@@ -572,12 +597,14 @@ def _classify(
     change "no fragment transfer" whenever ``occupation_redistribution`` was
     ~zero, on the reasoning that a character-driven change is a mere
     relabelling.  That reasoning is wrong, and it contradicted this module's
-    own opening paragraph: an occupied adiabatic state turning from BCF-like
-    to PCBM-like at fixed ``P_i`` moves the occupied density between the
-    fragments in real space, with no band-index population hop anywhere.  That
-    is the adiabatic passage the two-state picture describes, and it is charge
-    motion.  ``P_g`` also sums over the whole SHPROP basis, so a relabelling
-    cannot move it at all.  See :data:`PROJECTION_NOTE`.
+    own opening paragraph: an occupied adiabatic state turning from BCF-like to
+    PCBM-like at fixed ``P_i`` can correspond to a spatial redistribution of its
+    density between the fragments, with no band-index population hop anywhere --
+    the adiabatic passage the two-state picture describes.  ``P_g`` also sums
+    over the whole SHPROP basis, so a relabelling cannot move it at all.  What
+    the classification does **not** claim is that either term of the split is
+    charge motion, or that ``P_g`` is exact fragment charge; see
+    :data:`PROJECTION_NOTE`.
 
     ``descriptor`` and ``direction_agrees`` therefore only *describe* a change
     the classification has already established on ``|dP_g|``.
@@ -606,7 +633,7 @@ def _classify(
         label = NOT_EVALUATED
         note = (
             "the dominant fragment of a band index changed. Whether the "
-            "projection-weighted fragment population moved with it is UNKNOWN: "
+            "projection-weighted diagonal fragment population moved with it is UNKNOWN: "
             + NOT_EVALUATED_NOTE
             + ". Nothing here supports saying charge moved, and nothing here "
             "rules it out"
@@ -615,7 +642,7 @@ def _classify(
         label = NO_PROJECTED_CHANGE
         note = (
             "the dominant fragment of a band index changed, and the "
-            "projection-weighted fragment population P_g did not move beyond "
+            "projection-weighted diagonal fragment population P_g did not move beyond "
             "tolerance. Because P_g sums over every band of the basis, this is "
             "a measured statement about where the occupied density sits, not "
             "about labels. It says the projected density stayed put across this "
@@ -626,18 +653,18 @@ def _classify(
         label = PROJECTED_CHANGE
         note = (
             "the dominant fragment of a band index changed AND the "
-            "projection-weighted fragment population moved with it. The "
-            "projected occupied density shifted between fragments. "
+            "projection-weighted diagonal fragment population moved with it. "
             + PROJECTION_NOTE
         )
         if descriptor == "character_dominated":
             note += (
                 ". Here the movement is carried mainly by character evolution: "
                 "the occupied state's own composition changed while its "
-                "population did not. That is an adiabatic passage, and the "
-                "density moved -- it MUST NOT be reported as 'no charge moved' "
-                "or as a relabelling. What it does not establish is a "
-                "nonadiabatic hop, and no hop record is an input"
+                "population did not. That is an adiabatic passage and can "
+                "correspond to a spatial redistribution of the occupied "
+                "density -- it MUST NOT be reported as 'no charge moved' or as "
+                "a relabelling. What it does not establish is a nonadiabatic "
+                "hop, and no hop record is an input"
             )
         elif descriptor == "occupation_dominated":
             note += (
@@ -668,7 +695,7 @@ def _classify(
     elif moved and not character_swap:
         label = "fragment_population_change_without_character_swap"
         note = (
-            "the projection-weighted fragment population moved while every "
+            "the projection-weighted diagonal fragment population moved while every "
             "band kept its dominant character, so the movement is occupation "
             "redistributing among adiabatic states whose characters did not "
             "change. " + PROJECTION_NOTE
@@ -894,18 +921,27 @@ def sensitivity(
 
 @dataclass
 class HistoryPopulation:
-    """One history's fragment population, and what moved it.
+    """One history's projection-weighted diagonal fragment population, and its split.
 
-    Each step's change splits exactly, ``dP_g = dP_g^pop + dP_g^char`` with
+    Each step's change splits exactly, ``dP_g = dP_g^pop + dP_g^char``, using
+    the **symmetric midpoint** form -- this is the form the code implements,
+    and :data:`DECOMPOSITION_IDENTITY` is the single place it is written down:
 
-        dP_g^pop  = sum_i [P_i(t) - P_i(t-1)] w_ig[f(t)]
-        dP_g^char = sum_i P_i(t-1) [w_ig[f(t)] - w_ig[f(t-1)]]
+        dP_g^pop  = sum_i [P_i(t) - P_i(t-1)] * 0.5*(w_ig[f(t)] + w_ig[f(t-1)])
+        dP_g^char = sum_i 0.5*(P_i(t) + P_i(t-1)) * (w_ig[f(t)] - w_ig[f(t-1)])
 
-    The first is occupation moving between states at fixed character; the
+    An endpoint-biased form -- ``dP_g^pop = sum_i dP_i w_ig[f(t)]`` with
+    ``dP_g^char = sum_i P_i(t-1) dw_ig`` -- is equally exact in the sum but
+    assigns up to half a step's movement differently between the two terms, so
+    the symmetric one is used and neither endpoint is privileged.
+
+    The first term is occupation moving between states at fixed character; the
     second is an occupied state's own character evolving at fixed occupation.
-    **Both move the occupied density**, and the second is not a relabelling:
-    ``total`` is summed over the whole basis, so re-ordering band labels leaves
-    it invariant. See :data:`PROJECTION_NOTE`.
+    The second is **not** a relabelling -- ``total`` is summed over the whole
+    basis, so re-ordering band labels leaves it invariant, and a state whose
+    composition changes can correspond to a spatial redistribution of the
+    occupied density.  See :data:`PROJECTION_NOTE` for what ``total`` is and is
+    not.
 
     The split is exact, and it is **one of infinitely many exact splits**. It
     describes how a change in ``total`` is accounted for; it is not a branching
@@ -1276,15 +1312,16 @@ def aggregate_histories(
             "these describe how the exact symmetric split apportions changes "
             "that P_g already established. They are descriptions of a "
             "bookkeeping convention, NOT physical branching fractions and NOT "
-            "mechanisms, and an event described as character_dominated moved "
-            "the projected occupied density exactly as much as an "
-            "occupation_dominated one did. " + PROJECTION_NOTE
+            "mechanisms, and an event described as character_dominated changed "
+            "P_g by exactly as much as an occupation_dominated one did -- the "
+            "share is a share of the accounting, not a scale of how much charge "
+            "moved. " + PROJECTION_NOTE
         ),
         "totals_by_window": by_window,
         "note": (
             "every event was classified on the history that produced it, using "
             "that history's own resolved frame mapping and its own "
-            "projection-weighted fragment population, and only then summed. "
+            "projection-weighted diagonal fragment population, and only then summed. "
             "Histories starting at different NAMDTINI visit different frames at "
             "the same row, so no population was ever correlated by row number "
             "across histories, and nothing was averaged before classification"

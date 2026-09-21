@@ -11,14 +11,14 @@ the question was never asked.
 **Evaluated, and ``P_g`` did not move.** A measured absence, about the
 projected occupied density and about nothing else.
 
-**Evaluated, and ``P_g`` moved.** The occupied density shifted between
-fragments. This holds *whichever* term of the symmetric split carries the
-change: an occupied adiabatic state turning from BCF-like to PCBM-like at fixed
-population has moved its density between the fragments in real space, and
-``P_g`` sums over the whole basis so no relabelling can move it. **A
-character-driven change is never reported here as "no charge moved."** What the
-split cannot do is name the microscopic process, and it is described as a
-description rather than as a branching fraction.
+**Evaluated, and ``P_g`` moved.** The projection-weighted diagonal fragment
+population changed, and that holds *whichever* term of the symmetric split
+carries it: ``P_g`` sums over the whole basis, so no relabelling can move it,
+and an occupied state turning from BCF-like to PCBM-like at fixed population can
+correspond to a spatial redistribution of its density. **A character-driven
+change is never reported here as "no charge moved."** Nor is either term
+reported as charge motion: ``P_g`` is diagonal, the coherences are absent from
+the inputs, and the split names no microscopic process.
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ def _per_history_section(payload: Dict[str, Any]) -> List[str]:
         f"{aggregate['n_histories']} SHPROP histories, starting at "
         f"`NAMDTINI` {aggregate['distinct_namdtini']}. Each was classified on "
         "its **own** resolved frame mapping, carrying its **own** "
-        "projection-weighted fragment population "
+        "projection-weighted diagonal fragment population "
         "`P_g(t) = sum_i P_i(t) w_ig[f(t)]`.",
         "",
     ]
@@ -109,10 +109,11 @@ def _per_history_section(payload: Dict[str, Any]) -> List[str]:
     if changed or unchanged:
         out += [
             f"Across the histories, **{changed}** character exchange(s) moved the "
-            f"projected fragment population and **{unchanged}** did not. Where "
-            "`P_g` moved, the occupied density shifted between fragments — "
-            "`P_g` sums over every band of the basis, so no re-ordering of "
-            "labels can move it.",
+            f"projected fragment population and **{unchanged}** did not. `P_g` "
+            "sums over every band of the basis, so no re-ordering of labels can "
+            "move it and a change in it is not a labelling artifact. It is a "
+            "**diagonal** quantity and not exact fragment charge: the "
+            "coherences are absent from the inputs.",
             "",
         ]
     if descriptors:
@@ -125,11 +126,12 @@ def _per_history_section(payload: Dict[str, Any]) -> List[str]:
             out += [
                 f"> **{descriptors['character_dominated']}** are carried mainly "
                 "by character evolution: an occupied state's own composition "
-                "changed while its population did not. That still **moves its "
-                "density between the fragments in real space** — it is the "
-                "adiabatic passage named at the top of this file, and it **must "
+                "changed while its population did not. That **can correspond to "
+                "a spatial redistribution of the occupied density** — the "
+                "adiabatic passage named at the top of this file — and it **must "
                 "not be reported as \"no charge moved\"** or as a relabelling. "
-                "What it does not establish is a nonadiabatic *hop*.",
+                "What it does not establish is a nonadiabatic *hop*, nor is the "
+                "term itself a measure of charge that moved.",
                 "",
             ]
         out += [
@@ -204,7 +206,7 @@ def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
         "| adiabatic state population | `P_i = rho_ii` — which eigenstate is occupied |",
         "| adiabatic character exchange | the fragment composition of a **fixed band index** changing |",
         "| nonadiabatic hop | population moving between adiabatic states; lives in SHPROP, not in a PROCAR |",
-        "| fragment population | `sum_i P_i w_ig` — closer to a diabatic reading, but **not** a diabatization |",
+        "| projection-weighted diagonal fragment population | `P_g = sum_i P_i w_ig` — closer to a diabatic reading, but **diagonal** and **not** a diabatization |",
         "| true diabatic transformation | **not performed anywhere in this package** |",
         "",
         "> Staying on one adiabatic state through an avoided crossing **changes** "
@@ -268,9 +270,13 @@ def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
         out += [
             "### What the projected fragment population did",
             "",
-            "`P_g = sum_i P_i w_ig` sums over **every** band of the basis, so no "
-            "re-ordering of band labels can move it. A change in it is a change "
-            "in where the occupied density sits.",
+            "`P_g = sum_i P_i w_ig` is the projection-weighted **diagonal** "
+            "fragment population, summed over **every** band of the basis, so "
+            "no re-ordering of band labels can move it and a change in it is "
+            "not a labelling artifact. It is **not** exact fragment charge: "
+            "SHPROP records no coherences and a PROCAR no cross-band "
+            "projections, so the off-diagonal terms are absent from the inputs "
+            "and weight outside the declared fragments is unassigned.",
             "",
         ]
 
@@ -287,9 +293,9 @@ def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
     elif moved:
         out += [
             f"**{len(moved)} character exchange(s) moved the projected fragment "
-            f"population**, and {len(unchanged)} did not. Where `P_g` moved, the "
-            "occupied density shifted between fragments. **This holds whichever "
-            "bookkeeping term carries the change.**",
+            f"population**, and {len(unchanged)} did not. **This holds whichever "
+            "bookkeeping term carries the change** — `P_g` is invariant to band "
+            "relabelling, so neither term can be dismissed as one.",
             "",
         ]
         if by_descriptor:
@@ -304,10 +310,11 @@ def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
                 "carried mainly by character evolution: the occupied state's own "
                 "composition changed while its population did not. **That is not "
                 "a relabelling and it must not be reported as \"no charge "
-                "moved\".** An occupied adiabatic state turning from BCF-like to "
-                "PCBM-like moves its density between the fragments in real space "
-                "— the adiabatic passage named at the top of this file. What it "
-                "does not establish is a nonadiabatic *hop*.",
+                "moved\".** An occupied state turning from BCF-like to PCBM-like "
+                "can correspond to a spatial redistribution of its density — the "
+                "adiabatic passage named at the top of this file. What it does "
+                "not establish is a nonadiabatic *hop*, and the term is not "
+                "itself a measure of charge that moved.",
                 "",
             ]
         out += [
@@ -417,8 +424,9 @@ def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
         "bookkeeping split**, one of infinitely many, and the "
         "`decomposition_descriptor` column describes that convention. Neither "
         "term is a physical branching fraction or a mechanism, and a change "
-        "described as `character_dominated` moved the projected occupied density "
-        "exactly as much as an `occupation_dominated` one did.",
+        "described as `character_dominated` changed `P_g` by exactly as much as "
+        "an `occupation_dominated` one did — the share is a share of the "
+        "accounting, not a scale of how much charge moved.",
         "- No hop record is an input. Nothing here counts hops, and no statement "
         "about hopping rates follows from any classification or descriptor above.",
         "- The fragment weights are projection-weighted diagonal quantities: SHPROP "

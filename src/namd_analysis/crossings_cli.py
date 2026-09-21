@@ -16,6 +16,7 @@ from typing import List, Optional, Sequence, Tuple
 import numpy as np
 
 from .crossings import (
+    DECOMPOSITION_IDENTITY,
     DEFAULT_THRESHOLDS,
     EVENT_HEADER,
     NO_PROJECTED_CHANGE,
@@ -190,7 +191,7 @@ def build_parser(prog: str = "namd-analysis character-crossings") -> argparse.Ar
         help=(
             "original SHPROP histories. With these, every event is classified on "
             "the history that produced it, using that history's own resolved frame "
-            "mapping and its own projection-weighted fragment population, and only "
+            "mapping and its own projection-weighted diagonal fragment population, and only "
             "then aggregated. Required when the histories start at different "
             "NAMDTINI, because there is then no ensemble population per frame"
         ),
@@ -453,20 +454,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "projection_note": PROJECTION_NOTE,
         },
         "population_change_decomposition": {
-            "identity": (
-                "dP_g = sum_i [P_i(t) - P_i(t-1)] w_ig[f(t)] + "
-                "sum_i P_i(t-1) [w_ig[f(t)] - w_ig[f(t-1)]]"
+            # Taken from the module constant, never retyped: a report quoting
+            # an endpoint-biased form while the code computes the symmetric
+            # midpoint one would misdescribe every number in the split.
+            "identity": DECOMPOSITION_IDENTITY,
+            "identity_form": (
+                "symmetric midpoint. An endpoint-biased split is equally exact "
+                "in the sum but apportions up to half a step's movement "
+                "differently between the two terms; neither endpoint is "
+                "privileged here"
             ),
             "occupation_redistribution": (
-                "occupation moving between states at fixed character. A real "
-                "contribution to the movement of the occupied density, not a "
-                "measurement of hopping: no hop record is an input"
+                "occupation moving between states at fixed character. One term "
+                "of an exact bookkeeping split, not a measurement of hopping: "
+                "no hop record is an input"
             ),
             "character_evolution": (
                 "an occupied state's own character evolving at fixed occupation. "
-                "ALSO a real contribution: the density of that state has moved "
-                "between the fragments in real space. This is NOT a relabelling "
-                "and NOT 'no charge moved'"
+                "NOT mere relabelling -- it can correspond to a spatial "
+                "redistribution of that state's density between the fragments, "
+                "so it must NOT be reported as 'no charge moved'. Equally it is "
+                "not itself a measure of charge that moved"
             ),
             "role_in_classification": (
                 "none. The classification rests on |dP_g| alone. These two terms "

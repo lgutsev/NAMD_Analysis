@@ -59,8 +59,13 @@ Replace the first sentence with:
 > they name. To test this, the ion-projected character of each state in the
 > NAMD basis was evaluated at every molecular-dynamics frame and combined with
 > the surface-hopping populations of each individual trajectory, giving the
-> projection-weighted fragment population
-> P_g^(r)(t) = Σ_i P_i^(r)(t) w_ig[f_r(t)] for history *r*. Each history was
+> projection-weighted **diagonal** fragment population
+> P_g^(r)(t) = Σ_i P_i^(r)(t) w_ig[f_r(t)] for history *r*. This quantity is
+> diagonal in the adiabatic basis and is not exact fragment charge: the
+> surface-hopping output records no electronic coherences and the ion
+> projection carries no cross-band terms, so the off-diagonal contributions to
+> Tr[ρ P̂_g] are absent from the inputs, and projection weight falling outside
+> the declared fragments is unassigned. Each history was
 > analysed on its own resolved frame mapping and classified before any ensemble
 > average was taken, because histories initiated at different frames occupy
 > different geometries at the same trajectory step.
@@ -83,24 +88,29 @@ Replace the first sentence with:
 > independent crossing events.
 >
 > Because P_g is summed over the full adiabatic basis, it is invariant to any
-> re-ordering of state labels, and a change in it therefore reflects a change in
-> where the occupied density resides rather than a change of labelling. **A
-> change in P_g was accordingly taken as the observable**, and BCF-to-PCBM
-> movement of projected population was identified from concomitant BCF loss and
-> PCBM gain in P_g.
+> re-ordering of state labels, so a change in it is not an artefact of
+> labelling. **A change in P_g was accordingly taken as the observable**, and
+> BCF-to-PCBM movement of projected population was identified from concomitant
+> BCF loss and PCBM gain in P_g, subject to the diagonal approximation noted
+> above.
 >
-> For transparency the change at each step was additionally decomposed exactly
-> into an occupation-driven contribution,
-> ΔP_g^pop = Σ_i [P_i(t) − P_i(t−1)] w_ig[f(t)], and a character-driven
-> contribution, ΔP_g^char = Σ_i P_i(t−1) {w_ig[f(t)] − w_ig[f(t−1)]}, with
-> ΔP_g = ΔP_g^pop + ΔP_g^char. **Both contributions displace the occupied
-> density**: the second corresponds to adiabatic passage, in which a state
-> occupied throughout changes its fragment composition and carries its density
-> with it. This decomposition is one of infinitely many exact decompositions
-> and is reported as a bookkeeping description of the observed change, **not as
-> a branching fraction between distinct physical mechanisms**. Because no
-> surface-hopping trajectory record was used, no statement is made about
-> nonadiabatic hop counts or hopping rates.
+> For transparency the change at each step was additionally decomposed exactly,
+> using a symmetric midpoint form, into an occupation-driven contribution,
+> ΔP_g^pop = Σ_i [P_i(t) − P_i(t−1)] · ½{w_ig[f(t)] + w_ig[f(t−1)]}, and a
+> character-driven contribution,
+> ΔP_g^char = Σ_i ½{P_i(t) + P_i(t−1)} · {w_ig[f(t)] − w_ig[f(t−1)]}, with
+> ΔP_g = ΔP_g^pop + ΔP_g^char. The midpoint form is endpoint-unbiased; an
+> endpoint-weighted split is equally exact in the sum but apportions up to half
+> a step's change differently between the two terms. **The character-driven
+> contribution is not a relabelling**: it corresponds to adiabatic passage, in
+> which a state occupied throughout changes its fragment composition, and can
+> therefore reflect a spatial redistribution of the occupied density. The
+> decomposition is one of infinitely many exact decompositions and is reported
+> as a bookkeeping description of the observed change, **not as a branching
+> fraction between distinct physical mechanisms**, and neither contribution is
+> equated with a quantity of charge transferred. Because no surface-hopping
+> trajectory record was used, no statement is made about nonadiabatic hop
+> counts or hopping rates.
 >
 > In addition, transfer events were counted using donor/acceptor population
 > thresholds, following the operational definitions used in the surface-hopping
@@ -154,9 +164,10 @@ without touching the one the mechanism actually uses.
 > BCF and PCBM weight across these frames is characteristic of passage through
 > an avoided crossing. (**c**) Decomposition of the change in
 > projection-weighted fragment population into occupation-driven (ΔP^pop) and
-> character-driven (ΔP^char) contributions; both displace the occupied density,
-> and the decomposition is an exact bookkeeping description rather than a
-> branching fraction between mechanisms. (**d**) Threshold-defined BCF→PCBM
+> character-driven (ΔP^char) contributions, using an endpoint-unbiased
+> symmetric midpoint split; the decomposition is an exact bookkeeping
+> description rather than a branching fraction between mechanisms, and
+> ΔP^char is not a relabelling. (**d**) Threshold-defined BCF→PCBM
 > transfer counts for donor/acceptor cutoffs (0.9, 0.1), (0.8, 0.2) and
 > (0.7, 0.3), evaluated on the occupation-driven component and shown with the
 > continuous change in projection-weighted fragment population; the cutoff is
@@ -183,11 +194,14 @@ without touching the one the mechanism actually uses.
 > change as the observable, and identified BCF-to-PCBM movement from
 > concomitant BCF loss and PCBM gain in it. We additionally decomposed the
 > change at each step exactly into occupation-driven and character-driven
-> contributions. Both displace the occupied density — the second corresponds to
+> contributions, using an endpoint-unbiased symmetric midpoint split. The
+> character-driven contribution is not a relabelling — it corresponds to
 > adiabatic passage, where a continuously occupied state changes its fragment
-> composition — so we report the decomposition as an exact bookkeeping
+> composition, and can therefore reflect a spatial redistribution of the
+> occupied density. We report the decomposition as an exact bookkeeping
 > description of the observed change rather than as a branching fraction
-> between mechanisms, and we make no claim about hop counts, since no
+> between mechanisms, we do not equate either contribution with a quantity of
+> charge transferred, and we make no claim about hop counts, since no
 > surface-hopping trajectory record enters the analysis. We
 > additionally report threshold-based transfer counts following the operational
 > definitions used in the surface-hopping literature (Toldo *et al.*, *Phys.

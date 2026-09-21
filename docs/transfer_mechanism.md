@@ -44,8 +44,8 @@ Only 1–3 are accessible here. Only 4 involves the field.
 
 ## The decomposition, and what it does and does not license
 
-The reported quantity is the projection-weighted **diagonal** subsystem
-population, per history *r*:
+The reported quantity is the projection-weighted **diagonal** fragment
+(subsystem) population, per history *r*:
 
 ```
 P_g^(r)(t) = sum_i P_i^(r)(t) w_ig[f_r(t)]
@@ -55,9 +55,18 @@ This is **the observable**. It moves for two reasons, and the split below
 separates them for transparency — not to decide whether it moved:
 
 ```
-dP_g  =  dP_g^pop                                  +  dP_g^char
-      =  sum_i [P_i(t) - P_i(t-1)] w_ig[f(t)]      +  sum_i P_i(t-1) [w_ig[f(t)] - w_ig[f(t-1)]]
+dP_g  =  dP_g^pop
+      +  dP_g^char
+
+dP_g^pop   =  sum_i [P_i(t) - P_i(t-1)] * 0.5*( w_ig[f(t)] + w_ig[f(t-1)] )
+dP_g^char  =  sum_i 0.5*( P_i(t) + P_i(t-1) ) * ( w_ig[f(t)] - w_ig[f(t-1)] )
 ```
+
+This is the **symmetric midpoint** form, and it is what the code computes. An
+endpoint-biased split — `dP^pop = sum_i dP_i w_ig[f(t)]` with
+`dP^char = sum_i P_i(t-1) dw_ig` — is equally exact in the sum but apportions
+up to half a step's movement differently between the two terms, so neither
+endpoint is privileged here.
 
 - `dP_g^pop` — **occupation-driven**: population moving between states at fixed
   character.
@@ -68,12 +77,19 @@ The split is exact, is computed during the streaming pass, and is **one of
 infinitely many exact splits**. Its two terms are a bookkeeping convention, not
 physical branching fractions and not mechanisms.
 
-> **Both terms move real charge.** `dP_g^char` is not a relabelling: `P_g`
-> sums over the whole basis, so re-ordering band labels cannot move it at all.
-> When an occupied state turns from BCF-like to PCBM-like at fixed `P_i`, its
-> density has moved between the fragments in real space — the adiabatic passage
-> through an avoided crossing, no hop anywhere, and the charge moved. A
-> character-driven change must never be described as "no charge moved".
+> **`dP_g^char` is not a relabelling.** `P_g` sums over the whole basis, so
+> re-ordering band labels cannot move it at all, and when an occupied state
+> turns from BCF-like to PCBM-like at fixed `P_i` the change can correspond to
+> a spatial redistribution of its density between the fragments — the adiabatic
+> passage through an avoided crossing, with no hop anywhere. A character-driven
+> change must never be described as "no charge moved".
+>
+> Equally, **neither term may be equated with charge motion**. `P_g` is the
+> projection-weighted *diagonal* fragment population: SHPROP records no
+> coherences and a PROCAR no cross-band projections, so the off-diagonal terms
+> of `Tr[rho P_g]` are absent from the inputs, and projection weight falling
+> outside the declared fragments is unassigned. `P_g` is therefore not exact
+> fragment charge, and a change in it is not a measured quantity of charge.
 
 **`character-crossings` classifies on `|dP_g|` alone**, and uses the split only
 to *describe* a change it has already established. What follows is a different

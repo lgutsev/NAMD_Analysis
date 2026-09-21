@@ -6,7 +6,7 @@ fit windows, and input provenance. This package is independent of
 and runs calculations; this package reads their output. Existing manually
 prepared campaigns work too.
 
-Version 0.6.0 provides:
+Version 0.7.2 provides:
 
 - Campaign inventory and identification of failed historical single-exponential fits.
 - EIGTXT/NATXT dimension and run-setting audits, energy-gap statistics, and
@@ -218,6 +218,17 @@ modification time, row and column counts and its own conservation
 diagnostics, plus the exact averaging rule, the state-map fingerprint, the
 software version, the CLI arguments and any launcher manifests found beside
 the inputs.
+
+`environment.code` identifies the **implementation**, not just the release.
+A version string names a release; it does not distinguish the commit that
+release was cut from, still less an editable checkout that has moved on since.
+When the package is imported from a git working tree — which is what
+`pip install -e .` gives — the commit SHA, branch, `git describe` and a
+`dirty` flag are recorded beside the version. `dirty` is the one that matters:
+it says uncommitted changes were present, so the commit alone does not
+identify what ran. Comparing configurations analysed by different commits is
+comparing two implementations, and the record is there so that can be checked
+rather than assumed.
 
 Between-file SEM goes to `population_sem.csv`, not into `SHPROP.master`, which
 stays SHPROP-compatible. Grouped SEM sums states into the physical group
