@@ -155,6 +155,74 @@ class ScientificWordingTests(unittest.TestCase):
         "character_swap_without_fragment_transfer",
     )
 
+    #: The overstatement in the other direction, and the one likeliest to creep
+    #: back: the two-state picture is a *model*, and narrating it as settled
+    #: fact about charge slides straight past everything P_g cannot establish.
+    #: P_g is diagonal, the coherences are absent from the inputs, and no hop
+    #: record is read anywhere, so "the physical charge moved" is a claim this
+    #: package is not in a position to make. The qualified form -- the occupied
+    #: density *can* have redistributed -- says the same thing truthfully.
+    FORBIDDEN_CATEGORICAL_CHARGE_CLAIMS = (
+        "physical charge moved",
+        "physical charge did not move",
+        "the physical charge",
+        "physical transfer",
+        "charge has physically moved",
+        "the charge stayed put",
+        "no hop, but the charge moved",
+        "hop, but the charge did not move",
+        "No hop, transfer occurred",
+        "A hop occurred, no transfer",
+    )
+
+    def test_no_shipped_text_narrates_the_model_as_settled_charge_motion(self):
+        """The two failure modes may be described, but not overclaimed.
+
+        Both bullets are statements about an idealized two-state picture. The
+        package measures ``P_g``, a projection-weighted *diagonal* quantity
+        with the coherences missing and no hop record anywhere, so it cannot
+        certify "the physical charge moved" in either direction. The
+        distinction the bullets exist to draw survives entirely in the
+        qualified wording, which is what :data:`PROJECTION_NOTE` uses.
+        """
+        roots = [REPO / "src" / "namd_analysis", REPO / "docs"]
+        paths = [
+            path
+            for root in roots
+            for path in sorted(root.rglob("*"))
+            if path.suffix in (".py", ".md") and "__pycache__" not in path.parts
+        ] + [REPO / "README.md"]
+        self.assertGreater(len(paths), 10, "the sweep found almost no files")
+        for path in paths:
+            text = path.read_text(encoding="utf-8")
+            for phrase in self.FORBIDDEN_CATEGORICAL_CHARGE_CLAIMS:
+                self.assertNotIn(
+                    phrase, text,
+                    f"{path.name} says {phrase!r}. P_g is a diagonal quantity "
+                    "and no hop record is an input, so charge motion is not "
+                    "certified here; say the occupied density *can* have "
+                    "redistributed, as PROJECTION_NOTE does",
+                )
+
+    def test_the_two_failure_modes_survive_in_qualified_form(self):
+        # Removing the overclaim must not remove the distinction it carried.
+        from namd_analysis import crossings
+
+        prose = " ".join(crossings.__doc__.split())
+        self.assertIn("can nonetheless have redistributed", prose)
+        self.assertIn("need not have redistributed", prose)
+        self.assertIn("No hop occurred", prose)
+        self.assertIn("A hop occurred", prose)
+        # And the same pair reaches the rendered report, checked on the text a
+        # referee actually sees rather than on the source that builds it.
+        from namd_analysis.crossing_summary import render
+
+        report = render({"n_events": 0}, [])
+        self.assertIn("can nonetheless have redistributed", report)
+        self.assertIn("need not have redistributed at all", report)
+        for phrase in self.FORBIDDEN_CATEGORICAL_CHARGE_CLAIMS:
+            self.assertNotIn(phrase, report)
+
     def test_no_shipped_text_says_a_character_driven_change_moved_no_charge(self):
         roots = [REPO / "src" / "namd_analysis", REPO / "docs"]
         checked = 0
@@ -412,6 +480,55 @@ class ProductionProfileTests(unittest.TestCase):
             self.assertEqual(set(provenance), items, f"{label} tracks different items")
             for item, state in provenance.items():
                 self.assertIn(state, states, f"{label}.{item} has state {state!r}")
+
+    #: Established from each configuration's own files before production.
+    ESTABLISHED_FOR_ALL = (
+        "population_column_order", "band_numbers", "fixed_state_map",
+        "projection_character", "trajectory_coverage", "namdtini",
+    )
+
+    def test_b_and_c_provenance_records_what_has_been_established(self):
+        for label in ("B", "C"):
+            provenance = self.configs[label]["provenance"]
+            for item in self.ESTABLISHED_FOR_ALL:
+                self.assertEqual(
+                    provenance[item], "established",
+                    f"{label}.{item} is recorded as not established",
+                )
+
+    def test_the_atom_partition_stays_unestablished_without_evidence(self):
+        """The one item that must not be flipped on plausibility.
+
+        A partition applied to a different atom ordering mislabels every
+        projection weight and fails nothing: the run completes, the numbers
+        look reasonable, and the fragments are wrong. So it stays
+        ``not_established`` until this configuration's own files confirm the
+        indexing, and the profile says why rather than leaving a bare flag.
+        """
+        for label in ("B", "C"):
+            entry = self.configs[label]
+            self.assertEqual(
+                entry["provenance"]["atom_partition"], "not_established",
+                f"{label} claims its atom partition is established; that needs "
+                "explicit confirmation that the atom indexing is preserved",
+            )
+            notes = " ".join(entry["notes"]).lower()
+            self.assertIn("atom_partition remains not_established", notes)
+            self.assertIn("atom indexing", notes)
+
+    def test_configuration_a_provenance_is_untouched(self):
+        provenance = self.configs["A"]["provenance"]
+        self.assertEqual(
+            set(provenance.values()), {"established"},
+            "A was fully established and nothing here should have changed it",
+        )
+
+    def test_not_established_means_this_configuration_has_not_shown_it(self):
+        # Wording matters: the state is about evidence from this configuration,
+        # not about whether the value looks right or holds elsewhere.
+        state = self.profile["provenance_states"]["not_established"]
+        self.assertIn("nothing is borrowed from another configuration", state)
+        self.assertIn("not the same as established", state)
 
     def test_no_campaign_a_value_is_carried_into_b_or_c(self):
         a = self.configs["A"]

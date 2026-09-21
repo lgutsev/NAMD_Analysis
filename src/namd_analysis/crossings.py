@@ -32,9 +32,11 @@ the manuscript's argument depends on the distinction:
 The two failure modes worth stating plainly, because they run opposite ways:
 
 * Staying on one adiabatic state through an avoided crossing **changes** the
-  fragment identity. No hop occurred; the physical charge moved.
+  fragment identity. No hop occurred, and the occupied density can nonetheless
+  have redistributed between the fragments.
 * Hopping between two adiabatic states at a crossing can **preserve** the
-  fragment identity. A hop occurred; the physical charge did not move.
+  fragment identity. A hop occurred, and the occupied density need not have
+  redistributed at all.
 
 So a character swap is not a surface hop, and a surface hop is not charge
 transfer.
@@ -66,8 +68,8 @@ crossing :math:`\\theta \\to \\pi/4` and each is an even mixture.  A PROCAR
 projection onto the fragment's atoms measures approximately
 :math:`\\cos^2\\theta` and :math:`\\sin^2\\theta`, so the character curves this
 module reads track :math:`\\theta(t)` sweeping through the crossing.  That is
-why a fixed band label obscures physical transfer: the label is constant while
-:math:`\\theta` is not.
+why a fixed band label obscures such a redistribution: the label is constant
+while :math:`\\theta` is not.
 """
 
 from __future__ import annotations

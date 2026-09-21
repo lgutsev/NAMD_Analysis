@@ -98,8 +98,9 @@ threshold — and the choice made there is stated as a choice, not as physics.
 
 > A character swap is not a surface hop, and a surface hop is not charge
 > transfer. Staying on one adiabatic state through an avoided crossing
-> **changes** the fragment identity — no hop, but the charge moved. Hopping
-> between two at the crossing can **preserve** it — a hop, but no transfer.
+> **changes** the fragment identity — no hop, and the occupied density can
+> nonetheless have redistributed. Hopping between two at the crossing can
+> **preserve** it — a hop, and the density need not have redistributed at all.
 
 ## Operational threshold counting
 

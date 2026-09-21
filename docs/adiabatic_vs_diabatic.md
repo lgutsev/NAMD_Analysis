@@ -55,7 +55,7 @@ As nuclear motion sweeps the diabatic detuning `E_A − E_B` through zero:
 A PROCAR projection onto A's atoms measures approximately `cos²θ` for `φ₁` and
 `sin²θ` for `φ₂`. So the character curves this workflow reads are tracking
 `θ(t)` sweeping through the crossing — which is exactly why a fixed band label
-obscures physical transfer: **the label is constant while `θ` is not.**
+obscures such a redistribution: **the label is constant while `θ` is not.**
 
 That is the rigorous basis for the manuscript's claim. A fixed-column state map
 assigns "band 978 = PCBM" for the whole trajectory. If `θ` sweeps, band 978 is
@@ -69,13 +69,13 @@ This is the part that is easy to get backwards.
 
 **Staying on one adiabatic state through the crossing changes the fragment
 identity.** The trajectory never hops; `P₁` stays at 1. But `φ₁` was A-like
-before and is B-like after, so the charge has physically moved from BCF to
-PCBM. *No hop, transfer occurred.*
+before and is B-like after, so the occupied density has redistributed from BCF
+to PCBM. *No hop, and the density moved.*
 
 **Hopping between the two adiabatic states at the crossing can preserve the
 fragment identity.** Population moves from `φ₁` to `φ₂` exactly where both are
-even mixtures. In the diabatic picture the charge stayed put. *A hop occurred,
-no transfer.*
+even mixtures. In the diabatic picture the density need not have redistributed
+at all. *A hop, and the density need not have moved.*
 
 So:
 

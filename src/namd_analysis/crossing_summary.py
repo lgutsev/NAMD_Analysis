@@ -210,10 +210,12 @@ def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
         "| true diabatic transformation | **not performed anywhere in this package** |",
         "",
         "> Staying on one adiabatic state through an avoided crossing **changes** "
-        "the fragment identity: no hop, but the charge moved. Hopping between two "
-        "adiabatic states at a crossing can **preserve** the fragment identity: a "
-        "hop, but the charge did not move. **A character swap is not a surface "
-        "hop, and neither is automatically charge transfer.**",
+        "the fragment identity: no hop, and the occupied density can nonetheless "
+        "have redistributed between the fragments. Hopping between two adiabatic "
+        "states at a crossing can **preserve** the fragment identity: a hop, and "
+        "the occupied density need not have redistributed at all. **A character "
+        "swap is not a surface hop, and neither is automatically charge "
+        "transfer.**",
         "",
         "## Counts",
         "",
