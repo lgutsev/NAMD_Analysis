@@ -124,7 +124,7 @@
       "provenance": {
         "population_column_order": "established",
         "band_numbers": "established",
-        "atom_partition": "not_established",
+        "atom_partition": "established",
         "fixed_state_map": "established",
         "projection_character": "established",
         "trajectory_coverage": "established",
@@ -134,7 +134,7 @@
         "B's reference products are prepared from B's own archive and live at the paths above. An absent file is an absent file: the ensemble run refuses rather than falling back to another configuration's.",
         "B has FOUR distinct BCF/PCBM mixing regions, so episode_window is null: none of the four is 'the' window, and promoting one would be a choice with no basis. They are passed by name through --episode and reported separately under those names.",
         "B1-B4 are four regions of the SAME recycled nuclear trajectory. They are not four replicates, not four independent samples, and not repeat measurements of one quantity. Nothing averages or pools them, and a mean over them would describe no region at all.",
-        "atom_partition remains not_established. Nothing on record confirms that B's atom indexing is the ordering the partition was written against, and a partition applied to a different ordering mislabels every projection weight without failing. Confirm the indexing against B's own POSCAR/PROCAR before treating the fragment assignment as established.",
+        "atom_partition is established. B preserves the same atom ordering and indexing as A; only coordinates/orientation differ, so the validated fragment-index partition remains applicable to B.",
         "history_count_observed is null until B's archive is counted. Count it; do not assume A's."
       ]
     },
@@ -161,7 +161,7 @@
       "provenance": {
         "population_column_order": "established",
         "band_numbers": "established",
-        "atom_partition": "not_established",
+        "atom_partition": "established",
         "fixed_state_map": "established",
         "projection_character": "established",
         "trajectory_coverage": "established",
@@ -171,7 +171,7 @@
         "C's reference products are prepared from C's own archive and live at the paths above. An absent file is an absent file: the ensemble run refuses rather than falling back to another configuration's.",
         "C has NO clear BCF/PCBM character-exchange event, so it has no crossing episode. episodes is empty deliberately, and that emptiness is the finding, not a gap waiting to be filled.",
         "closest_approach_C = 1628:1632 is a CONTROL window: the frames where the two fragments come closest. It is NOT an avoided crossing, NOT a character-exchange region and NOT a BCF/PCBM transfer event, and it must never be reported as one. It is carried as control_episodes so that every output labels it role=control.",
-        "atom_partition remains not_established. Nothing on record confirms that C's atom indexing is the ordering the partition was written against, and a partition applied to a different ordering mislabels every projection weight without failing. Confirm the indexing against C's own POSCAR/PROCAR before treating the fragment assignment as established.",
+        "atom_partition is established. C preserves the same atom ordering and indexing as A; only coordinates/orientation differ, so the validated fragment-index partition remains applicable to C.",
         "history_count_observed is null until C's archive is counted. Count it; do not assume A's."
       ]
     }
