@@ -134,7 +134,10 @@ class ClassificationTests(unittest.TestCase):
         )
         self.assertEqual(ep.classification, "no_net_fragment_transfer")
         self.assertEqual(ep.direction, "no_net_transfer")
-        self.assertIn("charge did not", ep.note)
+        self.assertIn("ended the episode where it began", ep.note)
+        # A net of zero over the episode is not a claim that nothing moved
+        # inside it, and the note must not be readable as one.
+        self.assertIn("may have moved and returned within it", ep.note)
 
     def test_the_reverse_direction_is_reported(self):
         ep = classify_episode(

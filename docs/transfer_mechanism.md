@@ -42,7 +42,7 @@ A revision is at risk of eliding these, and a referee will not be.
 
 Only 1–3 are accessible here. Only 4 involves the field.
 
-## The decomposition, and why the total cannot be used
+## The decomposition, and what it does and does not license
 
 The reported quantity is the projection-weighted **diagonal** subsystem
 population, per history *r*:
@@ -51,8 +51,8 @@ population, per history *r*:
 P_g^(r)(t) = sum_i P_i^(r)(t) w_ig[f_r(t)]
 ```
 
-This moves for two independent reasons, and they must be separated before any
-direction is assigned:
+This is **the observable**. It moves for two reasons, and the split below
+separates them for transparency — not to decide whether it moved:
 
 ```
 dP_g  =  dP_g^pop                                  +  dP_g^char
@@ -60,15 +60,25 @@ dP_g  =  dP_g^pop                                  +  dP_g^char
 ```
 
 - `dP_g^pop` — **occupation-driven**: population moving between states at fixed
-  character. This is the part that can mean charge transfer.
-- `dP_g^char` — **character-driven**: the character moving under fixed
-  occupation. A band-index relabelling produces this *mechanically*, with no
-  charge going anywhere.
+  character.
+- `dP_g^char` — **character-driven**: an occupied state's own character
+  evolving at fixed occupation.
 
-The split is exact and is computed during the streaming pass. **A transfer
-direction may be assigned only from `dP^pop`.** Using the total would report
-transfer at essentially every avoided crossing, because the crossing itself
-moves the weights.
+The split is exact, is computed during the streaming pass, and is **one of
+infinitely many exact splits**. Its two terms are a bookkeeping convention, not
+physical branching fractions and not mechanisms.
+
+> **Both terms move real charge.** `dP_g^char` is not a relabelling: `P_g`
+> sums over the whole basis, so re-ordering band labels cannot move it at all.
+> When an occupied state turns from BCF-like to PCBM-like at fixed `P_i`, its
+> density has moved between the fragments in real space — the adiabatic passage
+> through an avoided crossing, no hop anywhere, and the charge moved. A
+> character-driven change must never be described as "no charge moved".
+
+**`character-crossings` classifies on `|dP_g|` alone**, and uses the split only
+to *describe* a change it has already established. What follows is a different
+question — counting discrete donor→acceptor *events* against a population
+threshold — and the choice made there is stated as a choice, not as physics.
 
 > A character swap is not a surface hop, and a surface hop is not charge
 > transfer. Staying on one adiabatic state through an avoided crossing
@@ -98,8 +108,14 @@ population on one fragment and so never registers a transition at all.
 - **The raw continuous change is primary.** Net donor loss, net acceptor gain,
   and the concomitant overlap of the two are reported whether or not any
   threshold is ever crossed. The counts are a *secondary diagnostic*.
-- **Only occupation is consumed.** Every entry point takes the occupation-driven
-  trajectory. A relabelling cannot register as transfer, structurally.
+- **Only the occupation-driven trajectory is consumed.** Every entry point of
+  `namd_analysis.transfer` takes `dP^pop`, so an event is counted only where
+  occupation crossed the thresholds. This is a **deliberate narrowing of the
+  event-counting question**, not a claim that character-driven movement is
+  unreal: a passage that moves the projected density entirely through
+  `dP^char` will not be counted here, and that is a limitation of the counter
+  rather than a finding about the physics. Read the counts beside the
+  continuous `dP_g` above, never instead of it.
 
 The acceptor must confirm: a donor emptying into some third fragment is not
 counted as transfer into this one. Re-arming is required, so jitter around the
@@ -115,8 +131,10 @@ that still works.
   — *on tier-1 kinetics*.
 - The instantaneous adiabatic states exchange BCF and PCBM character along the
   trajectory, with avoided-crossing-like behaviour.
-- Where `dP^pop` shows BCF loss with concomitant PCBM gain, that is BCF→PCBM
-  population transfer consistent with charge transfer.
+- Where `P_g` shows BCF loss with concomitant PCBM gain, that is BCF→PCBM
+  movement of projected fragment population consistent with charge transfer.
+  This holds whichever term of the split carries it — `P_g` is summed over the
+  whole basis, so the movement is not a labelling artifact either way.
 - Extended BCF residence provides repeated opportunities for population to
   enter the PCBM manifold.
 - Under operating bias, the device field can favour further separation and
@@ -128,7 +146,14 @@ that still works.
   adiabatic NAMD trajectories. Coherences are absent from the inputs and an
   explicit diabatic Hamiltonian is never constructed. Do not write
   "diabatic states", "diabatized", or "diabatic populations".
-- **No character swap called charge transfer.** Not without `dP^pop`.
+- **No character swap called charge transfer on its own.** The projected
+  fragment population must have moved, and with no SHPROP population supplied
+  it was not evaluated at all.
+- **No character-driven change called "no charge moved".** `dP^char` displaces
+  the occupied density as surely as `dP^pop` does; only the accounting differs.
+- **No decomposition share reported as a mechanism** or as a branching
+  fraction. It describes one of infinitely many exact splits.
+- **No hop, hop count or hopping rate claimed.** No hop record is an input.
 - **No transfer rate** from event counts. These are flagged events against an
   arbitrary cutoff, not a rate.
 - **No field effect claimed as simulated.** The NAMD is zero-field.

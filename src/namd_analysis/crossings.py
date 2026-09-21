@@ -9,7 +9,10 @@ the manuscript's argument depends on the distinction:
 
 **adiabatic-state character exchange**
     the fragment composition :math:`w_{ig}` of a *fixed* band index changing
-    with time. The band did not move; the orbital it labels did.
+    with time. The band index did not move; the orbital it labels did. Note
+    what this is **not**: it is not a bookkeeping relabelling with nothing
+    behind it. If that band is occupied, its density has moved between the
+    fragments in real space.
 
 **nonadiabatic hop between adiabatic states**
     population moving from :math:`i` to :math:`j`. Lives in the SHPROP
@@ -32,8 +35,16 @@ The two failure modes worth stating plainly, because they run opposite ways:
   fragment identity. A hop occurred; the physical charge did not move.
 
 So a character swap is not a surface hop, and a surface hop is not charge
-transfer. An event here is only called transfer when the fragment population
-actually changes in the corresponding direction.
+transfer.
+
+What an event *is* classified on is the projection-weighted fragment
+population :math:`P_g = \\sum_i P_i w_{ig}` -- whether it moved, and nothing
+else. That quantity sums over the whole SHPROP basis, so no re-ordering of
+band labels can move it, and a change in it is a real change in where the
+occupied density sits. Both terms of the symmetric split move it for physical
+reasons, and **a change carried by character evolution is not "no charge
+moved"**: it is the first bullet above. The split describes such a change; it
+does not decide whether one happened, and it never names a mechanism.
 
 Two-state picture behind all of it.  Near an avoided crossing between diabatic
 fragment states :math:`|A\\rangle` and :math:`|B\\rangle`,
@@ -87,21 +98,57 @@ SENSITIVITY_FACTORS = (0.5, 0.75, 1.0, 1.5, 2.0)
 #: never *evaluated and found to be zero*, and the two must not share a label:
 #: a configuration-level scan (``projection_character.csv`` + EIGTXT + NATXT,
 #: with no SHPROP) cannot say anything at all about fragment population, and a
-#: report that said "no transfer accompanied this swap" from such a run would
-#: be claiming an absence it never measured.
+#: report that said "nothing moved" from such a run would be claiming an
+#: absence it never measured.
 NOT_EVALUATED = "character_swap_population_not_evaluated"
 
-#: The classification given to a character swap where a fragment population
-#: **was** supplied and did not move.  This one is a measured absence.
-NO_TRANSFER = "character_swap_without_fragment_transfer"
+#: A character swap where ``P_g`` **was** evaluated and did not move beyond
+#: tolerance.  A measured absence, and a statement about ``P_g`` alone.
+NO_PROJECTED_CHANGE = "character_swap_without_projected_fragment_change"
+
+#: A character swap where ``P_g`` **was** evaluated and did move.  The
+#: projected occupied density shifted between fragments; which microscopic
+#: process did it is not resolved here, and neither bookkeeping term makes it
+#: less real.
+PROJECTED_CHANGE = "character_swap_with_projected_fragment_change"
+
+#: Share of the absolute movement one bookkeeping term must carry before the
+#: event is *described* as dominated by it.  Matches
+#: :data:`namd_analysis.episodes.DOMINANCE_SPLIT`, so a frame and an episode
+#: are described on the same convention.
+DOMINANCE_SHARE = 0.7
 
 NOT_EVALUATED_NOTE = (
-    "no fragment population was supplied with this scan, so whether charge "
-    "moved between fragments was NOT EVALUATED. This is not a finding of zero "
-    "transfer: a configuration-level crossing scan reads "
+    "no fragment population was supplied with this scan, so whether the "
+    "projected fragment population moved was NOT EVALUATED. This is not a "
+    "finding of zero movement: a configuration-level crossing scan reads "
     "projection_character.csv, EIGTXT and NATXT, none of which carries a SHPROP "
     "population, and the question cannot be asked of them. Rerun with --shprop "
     "and --state-map to evaluate it"
+)
+
+#: Why ``P_g`` is the observable the classification rests on, and why neither
+#: term of the split may be dismissed as bookkeeping about labels.
+#:
+#: The error this note exists to prevent: reading ``character_evolution`` as
+#: "only a relabelling, no charge moved".  It is not.  If an occupied adiabatic
+#: state turns from BCF-like to PCBM-like while its population is unchanged,
+#: the occupied density has moved from one fragment to the other in real space.
+#: That is charge motion, and it is precisely the adiabatic passage the
+#: two-state picture at the top of this module describes.
+PROJECTION_NOTE = (
+    "P_g = sum_i P_i w_ig is the projection of the occupied density onto "
+    "fragment g, summed over EVERY band of the SHPROP basis. A re-ordering of "
+    "band labels therefore leaves it invariant, and a change in it is not a "
+    "labelling artifact. BOTH terms of the symmetric split move it for physical "
+    "reasons: occupation moving between states of different character, and an "
+    "occupied state's own character evolving at fixed occupation, each shift "
+    "where the occupied density sits. Neither term is the real one and neither "
+    "is bookkeeping about labels -- in particular a character-driven change is "
+    "NOT 'no charge moved'. What the split cannot do is name the microscopic "
+    "process: it is one of infinitely many exact splits, a bookkeeping "
+    "convention rather than a branching fraction, and no surface-hopping record "
+    "is an input here"
 )
 
 
@@ -342,20 +389,41 @@ class CrossingEvent:
     fragment_population_change: Optional[float]
     classification: str
     note: str
-    #: The exact split of ``fragment_population_change`` into occupation moving
-    #: at fixed character, and character moving at fixed occupation. Only a
-    #: single history carries the per-band populations this needs, so both are
-    #: ``None`` on the ensemble path. See :class:`HistoryPopulation`.
+    #: The exact split of this step's change in ``P_g`` for
+    #: :attr:`dominant_fragment`, into occupation moving at fixed character and
+    #: character moving at fixed occupation. Signed, and they sum to that
+    #: fragment's signed change. Only a single history carries the per-band
+    #: populations this needs, so both are ``None`` on the ensemble path. See
+    #: :class:`HistoryPopulation`.
+    #:
+    #: **Neither is a mechanism.** Both move the projected occupied density,
+    #: and a large ``character_evolution`` does not mean nothing moved: see
+    #: :data:`PROJECTION_NOTE`. They describe the change; they do not explain
+    #: it, and they are never used to decide :attr:`classification`.
     occupation_redistribution: Optional[float] = None
     character_evolution: Optional[float] = None
+    #: The fragment whose ``|dP_g|`` was largest at this step, and therefore
+    #: the fragment the three numbers above refer to.
+    dominant_fragment: Optional[str] = None
+    #: ``occupation_dominated`` / ``character_dominated`` / ``mixed`` /
+    #: ``no_movement``, from the share of absolute movement each term carries.
+    #: A **description** of the bookkeeping split, not a physical branching
+    #: fraction and not a mechanism. ``None`` where the split is unavailable.
+    decomposition_descriptor: Optional[str] = None
+    #: Did ``P_g`` move the way the dominance swap points -- the fragment the
+    #: dominance moved to gaining what the one it left lost? Tested on the
+    #: **projected population itself**, never on one term of the split.
+    #: ``None`` where the question is not well posed.
+    swap_direction_matches_projected_change: Optional[bool] = None
 
     @property
     def population_evaluated(self) -> bool:
         """Was fragment population available to be tested at this event?
 
-        A blank ``fragment_population_change`` cell in a CSV is ambiguous to
-        the eye, so this travels beside it as its own column: ``False`` means
-        the question was never asked, not that the answer was zero.
+        A blank ``projected_fragment_population_change`` cell in a CSV is
+        ambiguous to the eye, so this travels beside it as its own column:
+        ``False`` means the question was never asked, not that the answer was
+        zero.
         """
         return self.fragment_population_change is not None
 
@@ -368,7 +436,10 @@ class CrossingEvent:
             self.small_gap, self.strong_nac, self.character_swap,
             self.population_evaluated,
             self.fragment_population_change,
+            self.dominant_fragment,
             self.occupation_redistribution, self.character_evolution,
+            self.decomposition_descriptor,
+            self.swap_direction_matches_projected_change,
             self.classification,
         ]
 
@@ -380,8 +451,11 @@ EVENT_HEADER = [
     "dominant_j_before", "dominant_j_after",
     "small_gap", "strong_nac", "character_swap",
     "population_evaluated",
-    "fragment_population_change",
+    "projected_fragment_population_change",
+    "dominant_fragment",
     "occupation_redistribution", "character_evolution",
+    "decomposition_descriptor",
+    "swap_direction_matches_projected_change",
     "classification",
 ]
 
@@ -398,42 +472,38 @@ def _swap_moves(
     return moves
 
 
-CONFOUND_NOTE = (
-    "a change in total fragment population cannot say whether charge moved: "
-    "P_g = sum_i P_i w_ig moves when the *weights* move, so a band-index swap "
-    "shifts it mechanically, at fixed occupation. Only the population-driven "
-    "part of the change can be tested against the swap direction, and that "
-    "needs the per-band populations, which only a single SHPROP history has"
-)
-
-
 def _direction_agrees(
     moves: Sequence[Tuple[str, str]],
     delta: Optional[Dict[str, float]],
     tolerance: float,
 ) -> Optional[bool]:
-    """Did *occupation* move the way the dominance swap did?
+    """Did the **projected fragment population** move the way the swap points?
 
-    ``delta`` must be the **population-driven** part of the change,
-    ``sum_i [P_i(t) - P_i(t-1)] w_ig[f(t)]``, not the total.  The total is
-    confounded: see :data:`CONFOUND_NOTE`.
+    ``delta`` is the per-fragment change in ``P_g`` itself -- the observable --
+    and never one term of the symmetric split.  Testing the occupation term
+    alone would ask whether *occupation* followed the swap and then report the
+    answer as though it were about charge, which it is not: a change carried
+    entirely by ``character_evolution`` moves the occupied density just as
+    surely.  See :data:`PROJECTION_NOTE`.
 
-    Agreement means the fragment the dominance moved *to* gained occupation
-    while the one it left lost it.  A magnitude alone cannot say this -- a
-    population can move at the same step as a swap and have nothing to do with
-    it, and calling that transfer would read co-occurrence as cause.
+    Agreement means the fragment the dominance moved *to* gained projected
+    population while the one it left lost it.
+
+    This is a **descriptor**, not a classification.  A swap and a population
+    change can co-occur without one causing the other, so agreement here is not
+    evidence of a mechanism and disagreement is not evidence against one; the
+    classification rests on ``|dP_g|`` alone.
 
     ``None`` where the question is not well posed, and the caller must not read
     that as either answer:
 
-    * no population-driven change was supplied (the caller has only a total);
+    * no per-fragment change was supplied;
     * the character changed without any band's dominant fragment moving, so
       there is no swap direction at all;
     * the swap names **no single direction** -- the usual two-state avoided
       crossing, where one band goes BCF->PCBM while the other goes PCBM->BCF.
-      The pair exchanged character, so occupation moving either way would
-      "agree" with one of the two bands.  That case cannot be decided, and is
-      reported as undecided rather than resolved in favour of transfer.
+      The pair exchanged character, so movement either way would "agree" with
+      one of the two bands.  That case cannot be decided, and is left undecided.
     """
     if delta is None or not moves:
         return None
@@ -447,6 +517,35 @@ def _direction_agrees(
     return all(delta.get(source, 0.0) < -tolerance for source in sources)
 
 
+def decomposition_descriptor(
+    occupation: Optional[float],
+    character: Optional[float],
+    tolerance: float,
+    dominance: float = DOMINANCE_SHARE,
+) -> Optional[str]:
+    """Which bookkeeping term carries the movement -- a description, not a cause.
+
+    ``occupation_dominated``, ``character_dominated``, ``mixed``, or
+    ``no_movement``; ``None`` when the split was not available.
+
+    This **describes** an observed change in ``P_g``; it never decides whether
+    one occurred, and it is not a branching fraction of the dynamics.  An event
+    described as ``character_dominated`` moved the projected occupied density
+    between fragments exactly as much as an ``occupation_dominated`` one did.
+    """
+    if occupation is None or character is None:
+        return None
+    total = abs(occupation) + abs(character)
+    if total <= tolerance:
+        return "no_movement"
+    share = abs(occupation) / total
+    if share >= dominance:
+        return "occupation_dominated"
+    if share <= 1.0 - dominance:
+        return "character_dominated"
+    return "mixed"
+
+
 def _classify(
     small_gap: bool,
     strong_nac: bool,
@@ -454,20 +553,40 @@ def _classify(
     population_change: Optional[float],
     population_tolerance: float,
     direction_agrees: Optional[bool] = None,
-    occupation_redistribution: Optional[float] = None,
+    descriptor: Optional[str] = None,
 ) -> Tuple[str, str]:
     """Name what happened, and refuse to name what the data do not show.
 
-    ``charge transfer`` is reserved for the case where the *fragment*
-    population actually moved.  A character swap on its own is a relabelling of
-    which orbital a band index points at; a population redistribution on its
-    own moved occupation between adiabatic states that may share a fragment.
+    The classification rests on **one observable**: the projection-weighted
+    fragment population ``P_g = sum_i P_i w_ig``, and whether it moved beyond
+    tolerance.  Three cases for a character swap, and no others:
+
+    ``P_g`` not supplied
+        :data:`NOT_EVALUATED` -- the question was never asked.
+    ``|dP_g| <= tolerance``
+        :data:`NO_PROJECTED_CHANGE` -- a measured absence, about ``P_g``.
+    ``|dP_g| > tolerance``
+        :data:`PROJECTED_CHANGE` -- the projected occupied density moved.
+
+    **The symmetric split never decides this.** An earlier version called a
+    change "no fragment transfer" whenever ``occupation_redistribution`` was
+    ~zero, on the reasoning that a character-driven change is a mere
+    relabelling.  That reasoning is wrong, and it contradicted this module's
+    own opening paragraph: an occupied adiabatic state turning from BCF-like
+    to PCBM-like at fixed ``P_i`` moves the occupied density between the
+    fragments in real space, with no band-index population hop anywhere.  That
+    is the adiabatic passage the two-state picture describes, and it is charge
+    motion.  ``P_g`` also sums over the whole SHPROP basis, so a relabelling
+    cannot move it at all.  See :data:`PROJECTION_NOTE`.
+
+    ``descriptor`` and ``direction_agrees`` therefore only *describe* a change
+    the classification has already established on ``|dP_g|``.
 
     ``population_change is None`` is **not evaluated**, and is kept apart from
     an evaluated zero.  A configuration-level scan has no SHPROP populations at
-    all, so it cannot find that no transfer occurred -- it can only report that
-    the question was not asked.  Collapsing the two would turn a missing input
-    into a scientific claim.
+    all, so it cannot find that nothing moved -- it can only report that the
+    question was not asked.  Collapsing the two would turn a missing input into
+    a scientific claim.
     """
     evaluated = population_change is not None
     moved = evaluated and abs(population_change) > population_tolerance
@@ -479,76 +598,80 @@ def _classify(
     if character_swap:
         parts.append("character swap")
     if moved:
-        parts.append("fragment population change")
+        parts.append("projected fragment population change")
     if not evaluated:
-        parts.append("fragment population not evaluated")
+        parts.append("projected fragment population not evaluated")
 
     if character_swap and not evaluated:
         label = NOT_EVALUATED
         note = (
             "the dominant fragment of a band index changed. Whether the "
-            "projection-weighted fragment population followed is UNKNOWN: "
+            "projection-weighted fragment population moved with it is UNKNOWN: "
             + NOT_EVALUATED_NOTE
-            + ". Nothing here supports calling this a charge-transfer event, "
-            "and nothing here rules one out"
+            + ". Nothing here supports saying charge moved, and nothing here "
+            "rules it out"
         )
     elif character_swap and not moved:
-        label = NO_TRANSFER
+        label = NO_PROJECTED_CHANGE
         note = (
-            "the dominant fragment of a band index changed, but the "
-            "projection-weighted fragment population did not follow. The band "
-            "label now points at a different orbital; no charge moved between "
-            "fragments. This is NOT a charge-transfer event"
-        )
-    elif (
-        character_swap
-        and moved
-        and occupation_redistribution is not None
-        and abs(occupation_redistribution) <= population_tolerance
-    ):
-        # The total moved, but every bit of it was the weights moving.
-        label = "character_swap_without_fragment_transfer"
-        note = (
-            "the dominant fragment of a band index changed and the total "
-            "fragment population moved with it, but the occupation did not: "
-            "the whole change is character-driven, sum_i P_i dw_ig at fixed "
-            "P_i. The band label now points at a different orbital; no charge "
-            "moved between fragments. This is NOT a charge-transfer event"
-        )
-    elif character_swap and moved and direction_agrees is False:
-        label = "character_swap_with_unrelated_population_change"
-        note = (
-            "the character changed and the fragment population moved, but NOT "
-            "in the direction the dominance swap implies: the fragment the "
-            "dominance moved to did not gain what the one it left lost. The two "
-            "co-occurred at this step, which is not evidence of transfer "
-            "between the fragments the swap names"
-        )
-    elif character_swap and moved and direction_agrees is None:
-        label = "character_swap_with_undetermined_direction"
-        note = (
-            "the character changed and the fragment population moved, but the "
-            "direction could not be tested: either no band's dominant fragment "
-            "moved, or the two bands exchanged character so movement either "
-            "way would match one of them, or only a total population was "
-            "available -- " + CONFOUND_NOTE + ". This is co-occurrence; it is "
-            "not by itself transfer"
+            "the dominant fragment of a band index changed, and the "
+            "projection-weighted fragment population P_g did not move beyond "
+            "tolerance. Because P_g sums over every band of the basis, this is "
+            "a measured statement about where the occupied density sits, not "
+            "about labels. It says the projected density stayed put across this "
+            "step; it is not by itself a statement about nonadiabatic hops, for "
+            "which no hop record is an input"
         )
     elif character_swap and moved:
-        label = "character_swap_with_fragment_population_change"
+        label = PROJECTED_CHANGE
         note = (
-            "the band's dominant fragment changed AND the fragment population "
-            "moved in the corresponding direction -- the fragment the dominance "
-            "moved to gained population, and the one it left lost it. This is "
-            "the combination that supports calling it transfer; the character "
-            "alone would not"
+            "the dominant fragment of a band index changed AND the "
+            "projection-weighted fragment population moved with it. The "
+            "projected occupied density shifted between fragments. "
+            + PROJECTION_NOTE
         )
+        if descriptor == "character_dominated":
+            note += (
+                ". Here the movement is carried mainly by character evolution: "
+                "the occupied state's own composition changed while its "
+                "population did not. That is an adiabatic passage, and the "
+                "density moved -- it MUST NOT be reported as 'no charge moved' "
+                "or as a relabelling. What it does not establish is a "
+                "nonadiabatic hop, and no hop record is an input"
+            )
+        elif descriptor == "occupation_dominated":
+            note += (
+                ". Here the movement is carried mainly by occupation moving "
+                "between states of differing character. That is a description "
+                "of the split, not evidence that a hop occurred: no hop record "
+                "is an input"
+            )
+        elif descriptor == "mixed":
+            note += (
+                ". Here neither term of the split carries the movement on its "
+                "own, which is a description of the bookkeeping and not a "
+                "statement that two mechanisms ran in that proportion"
+            )
+        if direction_agrees is True:
+            note += (
+                ". The projected population moved in the direction the "
+                "dominance swap points -- the fragment it moved to gained what "
+                "the one it left lost. The two agreeing is a description of "
+                "this step, not evidence that one caused the other"
+            )
+        elif direction_agrees is False:
+            note += (
+                ". The projected population did NOT move in the direction the "
+                "dominance swap points. The change is real either way; it "
+                "simply does not line up with the fragments the swap names"
+            )
     elif moved and not character_swap:
         label = "fragment_population_change_without_character_swap"
         note = (
-            "occupation moved between fragments while every band kept its "
-            "dominant character. Population was redistributed among adiabatic "
-            "states whose characters did not change"
+            "the projection-weighted fragment population moved while every "
+            "band kept its dominant character, so the movement is occupation "
+            "redistributing among adiabatic states whose characters did not "
+            "change. " + PROJECTION_NOTE
         )
     elif small_gap and strong_nac:
         label = "close_and_coupled_without_character_swap"
@@ -557,7 +680,7 @@ def _classify(
             "not change at this frame. A coupling is an opportunity, not an "
             "event"
         ) + (
-            ", and the fragment population did not change either"
+            ", and the projected fragment population did not move either"
             if evaluated
             else ". " + NOT_EVALUATED_NOTE
         )
@@ -567,7 +690,7 @@ def _classify(
             "one or more raw metrics crossed its threshold without any change "
             "of character"
         ) + (
-            " or fragment population"
+            " or of projected fragment population"
             if evaluated
             else ". " + NOT_EVALUATED_NOTE
         )
@@ -646,25 +769,33 @@ def detect_events(
                 continue
 
             change = None
-            before = after = None
+            dominant_group = None
+            delta: Optional[Dict[str, float]] = None
             if fragment_population is not None:
                 before = fragment_population.get(previous)
                 after = fragment_population.get(frame)
                 if before and after:
-                    change = float(
-                        max(
-                            abs(after.get(g, 0.0) - before.get(g, 0.0))
-                            for g in character.groups
-                        )
-                    )
+                    delta = {
+                        g: float(after.get(g, 0.0) - before.get(g, 0.0))
+                        for g in character.groups
+                    }
+                    dominant_group = max(delta, key=lambda g: abs(delta[g]))
+                    change = float(abs(delta[dominant_group]))
 
-            # A caller of detect_events supplies only a *total* fragment
-            # population, which cannot be split into its population-driven and
-            # character-driven parts, so no direction is claimed here. The
-            # per-history path, which has the per-band populations, does the
-            # real test.
+            # This path has only the contracted P_g, not the per-band
+            # populations, so the split is unavailable and no descriptor is
+            # produced. That costs nothing the classification needs: it rests
+            # on |dP_g| alone, which is exactly what is in hand here.
             label, note = _classify(
-                small_gap, strong_nac, swap or exchanged, change, population_tolerance
+                small_gap, strong_nac, swap or exchanged, change,
+                population_tolerance,
+                _direction_agrees(
+                    _swap_moves(
+                        dom_i_before, dom_i_after, dom_j_before, dom_j_after
+                    ),
+                    delta,
+                    population_tolerance,
+                ),
             )
             events.append(
                 CrossingEvent(
@@ -683,6 +814,14 @@ def detect_events(
                     strong_nac=strong_nac,
                     character_swap=bool(swap or exchanged),
                     fragment_population_change=change,
+                    dominant_fragment=dominant_group,
+                    swap_direction_matches_projected_change=_direction_agrees(
+                        _swap_moves(
+                            dom_i_before, dom_i_after, dom_j_before, dom_j_after
+                        ),
+                        delta,
+                        population_tolerance,
+                    ),
                     classification=label,
                     note=note,
                 )
@@ -763,10 +902,15 @@ class HistoryPopulation:
         dP_g^char = sum_i P_i(t-1) [w_ig[f(t)] - w_ig[f(t-1)]]
 
     The first is occupation moving between states at fixed character; the
-    second is the character moving under fixed occupation.  **A band-index swap
-    produces the second mechanically**, which is why the total on its own
-    cannot say whether charge moved -- and why the direction test runs on
-    ``occupation_redistribution`` alone.  Row 0 has no previous step and is zero in
+    second is an occupied state's own character evolving at fixed occupation.
+    **Both move the occupied density**, and the second is not a relabelling:
+    ``total`` is summed over the whole basis, so re-ordering band labels leaves
+    it invariant. See :data:`PROJECTION_NOTE`.
+
+    The split is exact, and it is **one of infinitely many exact splits**. It
+    describes how a change in ``total`` is accounted for; it is not a branching
+    fraction, it names no mechanism, and nothing decides whether a change
+    occurred except ``total`` itself.  Row 0 has no previous step and is zero in
     both.
     """
 
@@ -796,6 +940,26 @@ class HistoryEvents:
             if window is not None and which != window:
                 continue
             out[event.classification] = out.get(event.classification, 0) + 1
+        return out
+
+    def descriptor_counts(self, window: Optional[str] = None) -> Dict[str, int]:
+        """How the split *describes* the events that moved ``P_g``.
+
+        Counted only over :data:`PROJECTED_CHANGE` events, because a descriptor
+        describes a change and there is nothing to describe otherwise. These
+        are descriptions of a bookkeeping convention, never mechanisms: see
+        :data:`PROJECTION_NOTE`.
+        """
+        out: Dict[str, int] = {}
+        for event, which in zip(self.events, self.window_of_event):
+            if window is not None and which != window:
+                continue
+            if event.classification != PROJECTED_CHANGE:
+                continue
+            if event.decomposition_descriptor:
+                out[event.decomposition_descriptor] = (
+                    out.get(event.decomposition_descriptor, 0) + 1
+                )
         return out
 
 
@@ -943,7 +1107,21 @@ def detect_history_events(
             continue
         bi_index_before = frame_at[before_frame]
         bi_index_after = frame_at[after_frame]
-        change = float(np.max(np.abs(population[step] - population[step - 1])))
+        # The observable the classification rests on: the signed per-fragment
+        # change in P_g, and the fragment that moved furthest. The split terms
+        # are read for the SAME fragment, so the three numbers on the event
+        # refer to one quantity and dP = occupation + character holds on it.
+        step_delta = population[step] - population[step - 1]
+        dominant_index = int(np.argmax(np.abs(step_delta)))
+        dominant_group = character.groups[dominant_index]
+        change = float(abs(step_delta[dominant_index]))
+        delta_by_group = dict(zip(character.groups, (float(x) for x in step_delta)))
+        occupation_term = float(split.occupation_redistribution[step, dominant_index])
+        character_term = float(split.character_evolution[step, dominant_index])
+        # A description of the change, never a test of whether one happened.
+        descriptor = decomposition_descriptor(
+            occupation_term, character_term, population_tolerance
+        )
 
         for bi, bj in band_pairs:
             if bi not in band_at or bj not in band_at:
@@ -975,29 +1153,30 @@ def detect_history_events(
 
             if not (swap or exchanged or small_gap or strong_nac):
                 continue
+            # The direction test runs on dP_g, the observable -- not on the
+            # occupation term, which would ask about occupation and answer as
+            # though the question had been about charge.
+            agrees = _direction_agrees(
+                _swap_moves(dom_i_before, dom_i_after, dom_j_before, dom_j_after),
+                delta_by_group,
+                population_tolerance,
+            )
             label, note = _classify(
                 small_gap,
                 strong_nac,
                 swap or exchanged,
                 change,
                 population_tolerance,
-                _direction_agrees(
-                    _swap_moves(
-                        dom_i_before, dom_i_after, dom_j_before, dom_j_after
-                    ),
-                    dict(zip(character.groups, split.occupation_redistribution[step])),
-                    population_tolerance,
-                ),
-                float(np.max(np.abs(split.occupation_redistribution[step]))),
+                agrees,
+                descriptor,
             )
             events.append(
                 CrossingEvent(
-                    occupation_redistribution=float(
-                        np.max(np.abs(split.occupation_redistribution[step]))
-                    ),
-                    character_evolution=float(
-                        np.max(np.abs(split.character_evolution[step]))
-                    ),
+                    occupation_redistribution=occupation_term,
+                    character_evolution=character_term,
+                    dominant_fragment=dominant_group,
+                    decomposition_descriptor=descriptor,
+                    swap_direction_matches_projected_change=agrees,
                     frame=after_frame,
                     band_i=bi,
                     band_j=bj,
@@ -1063,6 +1242,7 @@ def aggregate_histories(
             "last_frame": int(h.frames[-1]),
             "n_events": len(h.events),
             "by_classification": h.counts(),
+            "by_decomposition_descriptor": h.descriptor_counts(),
             "by_window": {name: h.counts(name) for name in window_names} if window_names else {},
         }
         for h in histories
@@ -1071,6 +1251,11 @@ def aggregate_histories(
     for record in per_history:
         for label, count in record["by_classification"].items():
             totals[label] = totals.get(label, 0) + count
+
+    descriptors: Dict[str, int] = {}
+    for record in per_history:
+        for label, count in record["by_decomposition_descriptor"].items():
+            descriptors[label] = descriptors.get(label, 0) + count
 
     by_window: Dict[str, Dict[str, int]] = {}
     for name in window_names:
@@ -1086,6 +1271,15 @@ def aggregate_histories(
         "distinct_namdtini": starts,
         "per_history": per_history,
         "totals_by_classification": totals,
+        "totals_by_decomposition_descriptor": descriptors,
+        "decomposition_descriptor_note": (
+            "these describe how the exact symmetric split apportions changes "
+            "that P_g already established. They are descriptions of a "
+            "bookkeeping convention, NOT physical branching fractions and NOT "
+            "mechanisms, and an event described as character_dominated moved "
+            "the projected occupied density exactly as much as an "
+            "occupation_dominated one did. " + PROJECTION_NOTE
+        ),
         "totals_by_window": by_window,
         "note": (
             "every event was classified on the history that produced it, using "

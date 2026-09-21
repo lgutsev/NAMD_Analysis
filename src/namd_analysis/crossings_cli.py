@@ -18,9 +18,11 @@ import numpy as np
 from .crossings import (
     DEFAULT_THRESHOLDS,
     EVENT_HEADER,
-    NO_TRANSFER,
+    NO_PROJECTED_CHANGE,
     NOT_EVALUATED,
     NOT_EVALUATED_NOTE,
+    PROJECTED_CHANGE,
+    PROJECTION_NOTE,
     CrossingError,
     aggregate_histories,
     compare_event_windows,
@@ -435,13 +437,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 1 for e in events if not e.population_evaluated
             ),
             "meaning_of_null": (
-                "fragment_population_change = null means NOT EVALUATED. It never "
-                "means a change of zero, and no count, sentence or figure derived "
-                "from this run may read it as one"
+                "projected_fragment_population_change = null means NOT EVALUATED. "
+                "It never means a change of zero, and no count, sentence or "
+                "figure derived from this run may read it as one"
+            ),
+            "classification_rests_on": (
+                "|dP_g| alone, against the population tolerance. The symmetric "
+                "split never decides whether a change occurred; it only "
+                "describes one"
             ),
             "not_evaluated_classification": NOT_EVALUATED,
-            "no_transfer_classification": NO_TRANSFER,
+            "no_projected_change_classification": NO_PROJECTED_CHANGE,
+            "projected_change_classification": PROJECTED_CHANGE,
             "note": NOT_EVALUATED_NOTE,
+            "projection_note": PROJECTION_NOTE,
         },
         "population_change_decomposition": {
             "identity": (
@@ -449,20 +458,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "sum_i P_i(t-1) [w_ig[f(t)] - w_ig[f(t-1)]]"
             ),
             "occupation_redistribution": (
-                "occupation moving between states at fixed character -- the part "
-                "that can mean charge transfer"
+                "occupation moving between states at fixed character. A real "
+                "contribution to the movement of the occupied density, not a "
+                "measurement of hopping: no hop record is an input"
             ),
             "character_evolution": (
-                "the character moving under fixed occupation -- what a band-index "
-                "swap produces on its own, with no charge going anywhere"
+                "an occupied state's own character evolving at fixed occupation. "
+                "ALSO a real contribution: the density of that state has moved "
+                "between the fragments in real space. This is NOT a relabelling "
+                "and NOT 'no charge moved'"
             ),
-            "note": (
-                "P_g = sum_i P_i w_ig moves when the weights move, so a swap "
-                "shifts the total mechanically. Only the population-driven part "
-                "is tested against the swap direction, and it needs the per-band "
-                "populations that only a single SHPROP history carries. Without "
-                "--shprop, no direction is claimed"
+            "role_in_classification": (
+                "none. The classification rests on |dP_g| alone. These two terms "
+                "only describe a change that dP_g has already established, via "
+                "the decomposition_descriptor column"
             ),
+            "note": PROJECTION_NOTE,
             "available": bool(args.shprop),
         },
         "thresholds": {
@@ -528,8 +539,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     for name, count in counts.most_common():
         print(f"  {count:5d}  {name}")
     if not args.shprop:
-        print("  no SHPROP supplied: fragment population was NOT EVALUATED, "
-              "which is not the same as no transfer")
+        print("  no SHPROP supplied: projected fragment population was NOT "
+              "EVALUATED, which is not the same as finding it did not move")
     print(f"threshold sensitivity: totals {[r['total_events'] for r in sweep['rows']]} "
           f"across factors {list(sweep['factors'])}")
     print("  a character swap is not a surface hop; neither is automatically transfer")

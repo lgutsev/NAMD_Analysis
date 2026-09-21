@@ -121,20 +121,85 @@ class ScientificWordingTests(unittest.TestCase):
         self.assertIn("a surface hop is not charge transfer", prose)
 
     def test_a_character_swap_is_not_automatically_charge_transfer(self):
-        from namd_analysis.crossings import _classify
+        from namd_analysis.crossings import NO_PROJECTED_CHANGE, _classify
 
         label, note = _classify(True, True, True, 0.0, 1.0e-3)
-        self.assertEqual(label, "character_swap_without_fragment_transfer")
-        self.assertIn("NOT a charge-transfer event", note)
+        self.assertEqual(label, NO_PROJECTED_CHANGE)
+        self.assertIn("did not move beyond tolerance", note)
+
+    def test_a_character_driven_change_is_never_called_no_charge_moved(self):
+        from namd_analysis.crossings import PROJECTED_CHANGE, _classify
+
+        # Occupation flat, character carrying everything: the label must still
+        # record that P_g moved, and the note must say so in words.
+        label, note = _classify(
+            True, True, True, 0.5, 1.0e-3, None, "character_dominated"
+        )
+        self.assertEqual(label, PROJECTED_CHANGE)
+        self.assertIn("MUST NOT be reported as 'no charge moved'", note)
+        self.assertIn("adiabatic passage", note)
+        self.assertNotIn("no charge moved between fragments", note)
+
+    #: Phrasings that assert a character-driven change moved no charge. Each
+    #: was shipped at some point, and each is wrong: P_g sums over the whole
+    #: basis, so a relabelling cannot move it, and a state whose character
+    #: turns carries its density with it.
+    FORBIDDEN_MECHANISM_CLAIMS = (
+        "no charge going anywhere",
+        "no charge moved between fragments",
+        "with no charge going anywhere",
+        "classified as state relabelling",
+        "only the former corresponds to charge motion",
+        "moves no charge",
+        "most of it is relabelling",
+        "character_swap_without_fragment_transfer",
+    )
+
+    def test_no_shipped_text_says_a_character_driven_change_moved_no_charge(self):
+        roots = [REPO / "src" / "namd_analysis", REPO / "docs"]
+        checked = 0
+        for root in roots:
+            for path in sorted(root.rglob("*")):
+                if path.suffix not in (".py", ".md") or "__pycache__" in path.parts:
+                    continue
+                checked += 1
+                text = path.read_text(encoding="utf-8")
+                for phrase in self.FORBIDDEN_MECHANISM_CLAIMS:
+                    self.assertNotIn(
+                        phrase, text,
+                        f"{path.name} says {phrase!r}. A change in P_g carried "
+                        "by character evolution is a real movement of the "
+                        "occupied density, not a relabelling",
+                    )
+        self.assertGreater(checked, 10, "the sweep found almost no files")
+        readme = (REPO / "README.md").read_text(encoding="utf-8")
+        for phrase in self.FORBIDDEN_MECHANISM_CLAIMS:
+            self.assertNotIn(phrase, readme)
+
+    def test_the_split_is_described_never_used_as_a_mechanism(self):
+        from namd_analysis.crossings import PROJECTION_NOTE
+
+        self.assertIn("BOTH terms of the symmetric split move it", PROJECTION_NOTE)
+        self.assertIn("Neither term is the real one", PROJECTION_NOTE)
+        self.assertIn("NOT 'no charge moved'", PROJECTION_NOTE)
+        self.assertIn(
+            "bookkeeping convention rather than a branching fraction",
+            PROJECTION_NOTE,
+        )
+        self.assertIn("no surface-hopping record is an input", PROJECTION_NOTE)
 
     def test_a_configuration_only_scan_cannot_determine_population_transfer(self):
-        from namd_analysis.crossings import NO_TRANSFER, NOT_EVALUATED, _classify
+        from namd_analysis.crossings import (
+            NO_PROJECTED_CHANGE,
+            NOT_EVALUATED,
+            _classify,
+        )
 
         label, note = _classify(True, True, True, None, 1.0e-3)
         self.assertEqual(label, NOT_EVALUATED)
-        self.assertNotEqual(label, NO_TRANSFER)
+        self.assertNotEqual(label, NO_PROJECTED_CHANGE)
         self.assertIn("NOT EVALUATED", note)
-        self.assertIn("nothing here rules one out", note)
+        self.assertIn("nothing here rules it out", note)
 
     def test_the_decomposition_is_called_bookkeeping_not_a_mechanism(self):
         from namd_analysis.ensemble import BOOKKEEPING_NOTE

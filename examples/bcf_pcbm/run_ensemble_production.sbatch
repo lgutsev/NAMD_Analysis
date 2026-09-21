@@ -215,11 +215,34 @@ if ! namd-analysis character-ensemble --help >/dev/null 2>&1; then
     exit 1
 fi
 
-N=$(ls -1 SHPROP.* 2>/dev/null | wc -l)
-echo "SHPROP histories found: ${N}"
+# The individual electronic histories are SHPROP.<integer> and nothing else.
+# A bare SHPROP.* glob also matches SHPROP.master, SHPROP.avg, SHPROP.1.bak and
+# whatever else happens to sit in the archive. An averaged or derived file
+# ingested as though it were one history would inflate the denominator and
+# contribute a row that is not an electronic initial condition at all. So
+# select by the exact pattern, and pass the SAME list that was counted: the
+# denominator and the analysed set then cannot differ.
+HISTORIES=()
+while IFS= read -r history; do
+    HISTORIES+=("${history}")
+done < <(ls -1 2>/dev/null | grep -E '^SHPROP\.[0-9]+$' | sort -t. -k2 -n)
+
+N=${#HISTORIES[@]}
+MATCHED=$(ls -1 2>/dev/null | grep -c '^SHPROP\.' || true)
+echo "SHPROP.<integer> histories found: ${N}"
 if [[ "${N}" -lt 1 ]]; then
-    echo "ERROR: no SHPROP histories in ${DIR}"
+    echo "ERROR: no SHPROP.<integer> histories in ${DIR}"
+    echo "       Files named SHPROP.* that are not SHPROP.<integer> are not"
+    echo "       individual electronic histories and are never analysed as one."
     exit 1
+fi
+if [[ "${MATCHED}" -ne "${N}" ]]; then
+    echo "NOTE: $(( MATCHED - N )) file(s) match SHPROP.* but are NOT"
+    echo "      SHPROP.<integer>, and are excluded. They are not individual"
+    echo "      electronic histories; analysing an averaged or derived file as"
+    echo "      one would inflate the denominator. Excluded:"
+    ls -1 2>/dev/null | grep -E '^SHPROP\.' | grep -vE '^SHPROP\.[0-9]+$' \
+        | sed 's/^/        /'
 fi
 echo "This configuration's denominator is therefore N = ${N}."
 echo "Gaps in the numbering are not filled in: a history that was never"
@@ -260,7 +283,7 @@ echo "========== PER HISTORY + PER CONFIGURATION =========="
 
 /usr/bin/time -v namd-analysis character-ensemble \
     --run-label "${LABEL}" \
-    --shprop 'SHPROP.*' \
+    --shprop "${HISTORIES[@]}" \
     --projection-character "${CHAR}" \
     --state-map "${STATE_MAP}" \
     --fixed-state-map "${FIXED_MAP}" \

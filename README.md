@@ -596,9 +596,9 @@ Run this way -- `projection_character.csv`, `EIGTXT` and `NATXT`, with no
 SHPROP -- there is **no fragment population to test**, so the analysis reports
 that it was *not evaluated* rather than that nothing moved. Those exchanges are
 classified `character_swap_population_not_evaluated`, the event table carries a
-`population_evaluated` column, and `fragment_population_change = null` means
-**not evaluated**, never zero. No statement about fragment transfer -- in
-either direction -- is made from such a run.
+`population_evaluated` column, and a null
+`projected_fragment_population_change` means **not evaluated**, never zero. No
+statement about `P_g` -- in either direction -- is made from such a run.
 
 For counting donor→acceptor transfer events against the arbitrary population
 thresholds used in the surface-hopping literature — swept, never single, and
@@ -624,10 +624,22 @@ histories exchanging character in opposite directions would cancel to nothing.
 `--early-window` defaults to `0:0.1` ns; **`--late-window` is required and never
 defaulted**, so without it no early-vs-late comparison is produced.
 
-With `--shprop` the fragment population **is** evaluated, and a swap whose
-population was read and did not move keeps the stronger
-`character_swap_without_fragment_transfer` -- a measured absence, which the
-configuration-level run cannot produce.
+With `--shprop` the projected fragment population `P_g = sum_i P_i w_ig` **is**
+evaluated, and the classification rests on it alone:
+`character_swap_without_projected_fragment_change` where it did not move (a
+measured absence, which the configuration-level run cannot produce) and
+`character_swap_with_projected_fragment_change` where it did.
+
+`P_g` sums over every band of the basis, so no re-ordering of band labels can
+move it and a change in it is a real change in where the occupied density sits.
+**Both** terms of the symmetric split move it for physical reasons, so a change
+carried by `character_evolution` -- an occupied state turning from BCF-like to
+PCBM-like at fixed `P_i` -- is **not** "no charge moved"; it is an adiabatic
+passage that carried the density with it. The split is reported alongside as a
+`decomposition_descriptor` (`occupation_dominated` / `character_dominated` /
+`mixed`), which describes an exact bookkeeping convention and is **not** a
+physical branching fraction, not a mechanism, and never what decides the
+classification. No hop record is an input, so nothing here counts hops.
 
 Theory and conventions: [docs/state_character.md](docs/state_character.md).
 Generating the configuration: [docs/campaign_preparation.md](docs/campaign_preparation.md). A worked campaign: [examples/bcf_pcbm/FAPI_001_A](examples/bcf_pcbm/FAPI_001_A).

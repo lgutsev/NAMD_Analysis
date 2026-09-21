@@ -24,8 +24,9 @@ import numpy as np
 
 from namd_analysis.crossings import (
     DEFAULT_THRESHOLDS,
-    NO_TRANSFER,
+    NO_PROJECTED_CHANGE,
     NOT_EVALUATED,
+    PROJECTED_CHANGE,
     CrossingError,
     detect_events,
     load_couplings,
@@ -110,7 +111,7 @@ class CharacterSwapWithoutPopulationHopTests(_Crossing):
             )
             self.assertFalse(event.population_evaluated)
             self.assertIn("NOT EVALUATED", event.note)
-            self.assertIn("nothing here rules one out", event.note)
+            self.assertIn("nothing here rules it out", event.note)
 
     def test_the_swap_lands_where_theta_crosses_forty_five_degrees(self):
         swapped = np.column_stack([self.weights[:, 1], self.weights[:, 0]])
@@ -132,7 +133,7 @@ class CharacterSwapWithoutPopulationHopTests(_Crossing):
         )
         for event in (e for e in events if e.character_swap):
             self.assertEqual(
-                event.classification, "character_swap_without_fragment_transfer"
+                event.classification, NO_PROJECTED_CHANGE
             )
             self.assertEqual(event.fragment_population_change, 0.0)
 
@@ -180,11 +181,11 @@ class ConfigurationOnlyScanClaimsNothingTests(_Crossing):
             self.assertIsNone(event.fragment_population_change)
             self.assertFalse(event.population_evaluated)
             self.assertEqual(event.classification, NOT_EVALUATED)
-            self.assertNotEqual(event.classification, NO_TRANSFER)
+            self.assertNotEqual(event.classification, NO_PROJECTED_CHANGE)
 
-    def test_a_supplied_zero_change_is_still_a_finding_of_no_transfer(self):
-        # The other half of the distinction: a population that WAS read and did
-        # not move is a measured absence, and keeps the stronger label.
+    def test_a_supplied_zero_change_is_still_a_measured_absence(self):
+        # The other half of the distinction: a P_g that WAS read and did not
+        # move is a measured absence, and keeps the stronger label.
         flat = {int(f): {"BCF": 0.5, "PCBM": 0.5} for f in self.frames}
         events = detect_events(
             self._swapping_character(), self._couplings(), [(976, 977)],
@@ -195,11 +196,12 @@ class ConfigurationOnlyScanClaimsNothingTests(_Crossing):
         for event in swaps:
             self.assertTrue(event.population_evaluated)
             self.assertEqual(event.fragment_population_change, 0.0)
-            self.assertEqual(event.classification, NO_TRANSFER)
-            self.assertIn("NOT a charge-transfer event", event.note)
+            self.assertEqual(event.classification, NO_PROJECTED_CHANGE)
+            self.assertIn("did not move beyond tolerance", event.note)
+            self.assertIn("sums over every band of the basis", event.note)
 
     def test_the_two_cases_never_share_a_classification(self):
-        self.assertNotEqual(NOT_EVALUATED, NO_TRANSFER)
+        self.assertNotEqual(NOT_EVALUATED, NO_PROJECTED_CHANGE)
         flat = {int(f): {"BCF": 0.5, "PCBM": 0.5} for f in self.frames}
         character = self._swapping_character()
         without = detect_events(character, self._couplings(), [(976, 977)])
@@ -209,7 +211,7 @@ class ConfigurationOnlyScanClaimsNothingTests(_Crossing):
         labels_without = {e.classification for e in without if e.character_swap}
         labels_with = {e.classification for e in with_pop if e.character_swap}
         self.assertEqual(labels_without, {NOT_EVALUATED})
-        self.assertEqual(labels_with, {NO_TRANSFER})
+        self.assertEqual(labels_with, {NO_PROJECTED_CHANGE})
         self.assertFalse(labels_without & labels_with)
 
     def test_a_metric_only_event_does_not_claim_the_population_was_flat(self):
@@ -231,7 +233,7 @@ class ConfigurationOnlyScanClaimsNothingTests(_Crossing):
         self.assertIn("population_evaluated", rows[0])
         for row in rows:
             self.assertEqual(row["population_evaluated"], "False")
-            self.assertEqual(row["fragment_population_change"], "")
+            self.assertEqual(row["projected_fragment_population_change"], "")
         swaps = [r for r in rows if r["character_swap"] == "True"]
         self.assertTrue(swaps)
         for row in swaps:
@@ -246,7 +248,7 @@ class ConfigurationOnlyScanClaimsNothingTests(_Crossing):
         self.assertEqual(block["n_events_population_not_evaluated"], report["n_events"])
         self.assertIn("NOT EVALUATED", block["meaning_of_null"])
         self.assertEqual(block["not_evaluated_classification"], NOT_EVALUATED)
-        self.assertNotIn(NO_TRANSFER, report["event_counts"])
+        self.assertNotIn(NO_PROJECTED_CHANGE, report["event_counts"])
 
     def test_the_summary_refuses_to_announce_an_absence_it_never_measured(self):
         out = self._run_cli("not_evaluated_summary")
@@ -262,10 +264,10 @@ class ConfigurationOnlyScanClaimsNothingTests(_Crossing):
             "population change in the direction the swap implies.",
             text,
         )
-        self.assertNotIn(NO_TRANSFER + "` |", text)
+        self.assertNotIn(NO_PROJECTED_CHANGE + "` |", text)
         self.assertIn("NOT EVALUATED", text)
         self.assertIn("not** a finding that no charge moved", text)
-        self.assertIn("Neither transfer nor its absence may be claimed", text)
+        self.assertIn("Neither a change nor its absence may be claimed", text)
 
     def test_an_evaluated_run_may_still_state_the_absence(self):
         # The guard must not have silenced the real finding: with a population
@@ -278,8 +280,8 @@ class ConfigurationOnlyScanClaimsNothingTests(_Crossing):
             fragment_population=flat,
         )
         text = render({"n_events": len(events)}, events)
-        self.assertIn("none was accompanied by a change in", text)
-        self.assertIn("not charge-transfer events", text)
+        self.assertIn("none moved `P_g` beyond tolerance", text)
+        self.assertIn("projected occupied density stayed where it was", text)
         self.assertNotIn("NOT EVALUATED", text)
 
 
@@ -321,12 +323,13 @@ class PopulationHopWithStableCharacterTests(_Crossing):
 
 
 class SwapDirectionTests(_Crossing):
-    """A population that moves at the same step is not yet transfer."""
+    """The direction test is a descriptor, and it runs on ``P_g`` itself."""
 
-    def test_a_total_population_cannot_decide_a_direction(self):
-        # detect_events receives only a total fragment population. That total
-        # moves when the *weights* move, so a swap shifts it mechanically at
-        # fixed occupation; no direction may be claimed from it.
+    def test_a_symmetric_exchange_leaves_the_direction_undecided(self):
+        # detect_events receives the contracted P_g. That is the observable the
+        # classification rests on, so a change in it IS classified as a change;
+        # what stays undecided is only which fragment the swap points at, when
+        # both bands exchange character at once.
         moving = np.array([[0.9, 0.1]] * 20 + [[0.1, 0.9]] * 21)
         stable = np.tile([[0.05, 0.95]], (self.nframes, 1))
         character = self._series({976: moving, 977: stable})
@@ -341,16 +344,15 @@ class SwapDirectionTests(_Crossing):
         moved = [e for e in events if e.character_swap and e.fragment_population_change]
         self.assertTrue(moved)
         for event in moved:
-            self.assertEqual(
-                event.classification, "character_swap_with_undetermined_direction"
-            )
-            self.assertIn("only a total population was available", event.note)
-            self.assertIn("moves when the *weights* move", event.note)
-            # The split is not available on this path, and is not guessed.
+            self.assertEqual(event.classification, PROJECTED_CHANGE)
+            self.assertIsNotNone(event.dominant_fragment)
+            # The split is not available on this path, and is not guessed --
+            # which costs the classification nothing, because it never used it.
             self.assertIsNone(event.occupation_redistribution)
             self.assertIsNone(event.character_evolution)
+            self.assertIsNone(event.decomposition_descriptor)
 
-    def test_the_helper_tests_the_population_driven_delta(self):
+    def test_the_helper_tests_the_projected_population_not_the_split(self):
         from namd_analysis.crossings import _direction_agrees, _swap_moves
 
         # One band moves BCF -> PCBM, the other stands still: a single direction.
@@ -361,7 +363,7 @@ class SwapDirectionTests(_Crossing):
         self.assertIs(
             _direction_agrees(moves, {"BCF": 0.4, "PCBM": -0.4}, 1e-3), False
         )
-        # Occupation did not move at all: the swap was character-driven only.
+        # P_g did not move at all: nothing went the way the swap points.
         self.assertIs(
             _direction_agrees(moves, {"BCF": 0.0, "PCBM": 0.0}, 1e-3), False
         )
@@ -376,15 +378,26 @@ class SwapDirectionTests(_Crossing):
         self.assertIsNone(_direction_agrees(both, delta, 1e-3))
         # No band moved its dominant fragment: no direction to test.
         self.assertIsNone(_direction_agrees([], delta, 1e-3))
-        # No population-driven delta supplied: the caller has only a total.
+        # No per-fragment change supplied.
         self.assertIsNone(_direction_agrees(both, None, 1e-3))
 
-    def test_the_confound_is_stated_where_it_applies(self):
-        from namd_analysis.crossings import CONFOUND_NOTE
+    def test_the_direction_test_never_decides_the_classification(self):
+        # A change in P_g that runs opposite to the swap is still a change in
+        # P_g. The descriptor records the mismatch; the label does not downgrade.
+        from namd_analysis.crossings import _classify
 
-        self.assertIn("sum_i P_i w_ig", CONFOUND_NOTE)
-        self.assertIn("at fixed occupation", CONFOUND_NOTE)
-        self.assertIn("per-band populations", CONFOUND_NOTE)
+        for agrees in (True, False, None):
+            label, _ = _classify(True, True, True, 0.5, 1e-3, agrees)
+            self.assertEqual(label, PROJECTED_CHANGE)
+
+    def test_the_projection_note_says_why_p_g_is_the_observable(self):
+        from namd_analysis.crossings import PROJECTION_NOTE
+
+        self.assertIn("sum_i P_i w_ig", PROJECTION_NOTE)
+        self.assertIn("EVERY band of the SHPROP basis", PROJECTION_NOTE)
+        self.assertIn("not a labelling artifact", PROJECTION_NOTE)
+        self.assertIn("NOT 'no charge moved'", PROJECTION_NOTE)
+        self.assertIn("one of infinitely many exact splits", PROJECTION_NOTE)
 
 
 class SimultaneousEventTests(_Crossing):
@@ -652,35 +665,62 @@ class PerHistoryTests(_Crossing):
         self.assertIn("correlated by row number", per["note"])
         self.assertIn("opposite directions", per["why_not_averaged"])
 
-    def test_a_per_history_population_is_what_allows_the_transfer_label(self):
-        # With no per-history population nothing could be called transfer.  A
-        # swap that coincides with a population change now gets the label.
+    def test_a_per_history_population_is_what_allows_any_verdict_at_all(self):
+        # Without a per-history P_g nothing could be said either way. With one,
+        # a swap whose P_g moved is recorded as having moved it.
         _, report = self._run()
-        totals = report["per_history"]["totals_by_classification"]
-        self.assertIn("character_swap_with_fragment_population_change", totals)
-        self.assertGreater(totals["character_swap_with_fragment_population_change"], 0)
+        per = report["per_history"]
+        totals = per["totals_by_classification"]
+        self.assertIn(PROJECTED_CHANGE, totals)
+        self.assertGreater(totals[PROJECTED_CHANGE], 0)
+        self.assertNotIn(NOT_EVALUATED, totals)
+        # And the split describes those changes without claiming a mechanism.
+        self.assertTrue(per["totals_by_decomposition_descriptor"])
+        note = per["decomposition_descriptor_note"]
+        self.assertIn("NOT physical branching fractions", note)
+        self.assertIn("NOT mechanisms", note)
+        self.assertIn("exactly as much as an occupation_dominated one did", note)
 
     def test_two_histories_moving_oppositely_do_not_cancel(self):
         # Averaged first, a rise and a matching fall leave a flat population,
         # no population change at all, and therefore no transfer anywhere.
         rising = write_history(self.root, "SHPROP.1", self.nframes + 1, 24, 0.0, 1.0)
         falling = write_history(self.root, "SHPROP.5", self.nframes + 1, 24, 1.0, 0.0)
-        _, report = self._run(histories=[rising, falling])
+        out, report = self._run(histories=[rising, falling])
         by_name = {
             r["file"]: r["by_classification"]
             for r in report["per_history"]["per_history"]
         }
-        agrees = "character_swap_with_fragment_population_change"
-        disagrees = "character_swap_with_unrelated_population_change"
-        # 976's dominance moves to PCBM at one step of the cycle and back to
-        # BCF at the wrap. The rising history's *occupation* follows the first
-        # and contradicts the second; the falling history is the mirror image.
-        # Either way both labels must appear, and each history must differ from
-        # the other -- which an average taken first could not show.
-        self.assertGreater(by_name["SHPROP.1"].get(agrees, 0), 0)
-        self.assertGreater(by_name["SHPROP.1"].get(disagrees, 0), 0)
-        self.assertGreater(by_name["SHPROP.5"].get(agrees, 0), 0)
-        self.assertGreater(by_name["SHPROP.5"].get(disagrees, 0), 0)
+        # Each history moves P_g at its own steps. Both must record changes of
+        # their own -- which an average taken first could not show.
+        self.assertGreater(by_name["SHPROP.1"].get(PROJECTED_CHANGE, 0), 0)
+        self.assertGreater(by_name["SHPROP.5"].get(PROJECTED_CHANGE, 0), 0)
+
+        # They share a nuclear trajectory, so at a given frame the character
+        # term is common to both; what runs oppositely is the occupation. That
+        # difference must survive to the event table -- and, crucially, must
+        # NOT change either history's classification. A change whose occupation
+        # runs the other way is still a change in P_g.
+        with (out / "per_history_events.csv").open("r", encoding="utf-8") as handle:
+            rows = [
+                r for r in csv.DictReader(handle)
+                if r["classification"] == PROJECTED_CHANGE
+            ]
+        signs = {}
+        for row in rows:
+            key = (row["frame"], row["dominant_fragment"])
+            signs.setdefault(key, {})[row["file"]] = np.sign(
+                float(row["occupation_redistribution"])
+            )
+        opposed = [
+            key for key, per_file in signs.items()
+            if len(per_file) == 2 and len(set(per_file.values())) == 2
+        ]
+        self.assertTrue(
+            opposed,
+            "the two histories redistribute occupation oppositely at a shared "
+            "frame; an average taken first would have shown neither",
+        )
         # The mean of the two is flat, so an average taken first would have
         # shown neither.
         mean = 0.5 * (np.linspace(0.0, 1.0, 24) + np.linspace(1.0, 0.0, 24))
@@ -889,10 +929,22 @@ class PerHistoryTests(_Crossing):
         self.assertLess(float(np.max(np.abs(split.occupation_redistribution))), 1e-12)
         self.assertGreater(float(np.max(np.abs(split.character_evolution))), 0.1)
 
-    def test_a_purely_character_evolution_is_not_called_transfer(self):
-        # Same history: the total fragment population moves a long way, but
-        # only because the weights moved. No occupation went anywhere, so no
-        # swap here may be called transfer.
+    def test_a_purely_character_driven_change_is_a_real_projected_change(self):
+        """The correction this test exists to hold.
+
+        This history keeps every adiabatic population dead flat at 0.5/0.5, so
+        ``occupation_redistribution`` is exactly zero and the whole movement of
+        ``P_g`` is ``character_evolution``. An earlier version of the
+        classifier called that ``character_swap_without_fragment_transfer`` --
+        "the band label now points at a different orbital; no charge moved
+        between fragments". That is wrong. ``P_g`` sums over the whole basis,
+        so a relabelling cannot move it at all; what moved it here is an
+        occupied state's own composition turning from one fragment to the
+        other, which carries its density with it.
+
+        So the change must be **retained as a real projected fragment-population
+        change**, and the mechanism must be left unresolved rather than denied.
+        """
         path = self.root / "SHPROP.9"
         with path.open("w", encoding="utf-8") as handle:
             print(f"# NSW = {self.nframes + 1}", file=handle)
@@ -902,20 +954,90 @@ class PerHistoryTests(_Crossing):
 
         out, report = self._run(histories=[path])
         counts = report["per_history"]["totals_by_classification"]
-        self.assertGreater(counts.get("character_swap_without_fragment_transfer", 0), 0)
-        self.assertNotIn("character_swap_with_fragment_population_change", counts)
-        self.assertNotIn("character_swap_with_unrelated_population_change", counts)
+        self.assertGreater(counts.get(PROJECTED_CHANGE, 0), 0)
+        # The label that used to be produced here, and must not be any more.
+        self.assertNotIn(NO_PROJECTED_CHANGE, counts)
+        self.assertNotIn("character_swap_without_fragment_transfer", counts)
+
         with (out / "per_history_events.csv").open("r", encoding="utf-8") as handle:
             rows = [r for r in csv.DictReader(handle) if r["character_swap"] == "True"]
         self.assertTrue(rows)
         for row in rows:
+            # Occupation is exactly flat; character carries all of it.
             self.assertLess(abs(float(row["occupation_redistribution"])), 1e-9)
             self.assertGreater(abs(float(row["character_evolution"])), 0.1)
-            self.assertEqual(
-                row["classification"], "character_swap_without_fragment_transfer"
+            # And P_g moved, which is what the classification rests on.
+            self.assertGreater(
+                abs(float(row["projected_fragment_population_change"])), 0.1)
+            self.assertEqual(row["classification"], PROJECTED_CHANGE)
+            # Described, not explained.
+            self.assertEqual(row["decomposition_descriptor"], "character_dominated")
+            self.assertTrue(row["dominant_fragment"])
+
+    def test_the_split_terms_close_on_the_fragment_they_are_reported_for(self):
+        # dP_g = occupation + character, for the fragment the row names, so the
+        # descriptor is a share of one quantity rather than of two unrelated
+        # maxima.
+        out, _ = self._run()
+        with (out / "per_history_events.csv").open("r", encoding="utf-8") as handle:
+            rows = [r for r in csv.DictReader(handle) if r["occupation_redistribution"]]
+        self.assertTrue(rows)
+        for row in rows:
+            total = (float(row["occupation_redistribution"])
+                     + float(row["character_evolution"]))
+            self.assertAlmostEqual(
+                abs(total),
+                float(row["projected_fragment_population_change"]),
+                places=9,
+                msg=f"frame {row['frame']}: the split does not close on "
+                    f"{row['dominant_fragment']}",
             )
-            # The total did move -- it is the occupation that did not.
-            self.assertGreater(abs(float(row["fragment_population_change"])), 0.1)
+
+    def test_a_character_driven_change_is_never_called_no_charge_moved(self):
+        path = self.root / "SHPROP.9"
+        with path.open("w", encoding="utf-8") as handle:
+            print(f"# NSW = {self.nframes + 1}", file=handle)
+            for index in range(24):
+                values = [(index + 1) * 10000.0, -0.8, 0.5, 0.5]
+                print(" ".join(f"{v:.10E}" for v in values), file=handle)
+
+        out, _ = self._run(histories=[path])
+        text = (out / "crossing_summary.md").read_text(encoding="utf-8")
+        for forbidden in (
+            "no charge moved between fragments",
+            "The band labels moved; the charge did not follow",
+            "the whole change is character-driven",
+        ):
+            self.assertNotIn(forbidden, text)
+        self.assertIn("must not be reported as", text)
+        self.assertIn("moves its density between the fragments in real space", text)
+        # And the bookkeeping caveat still travels with it.
+        self.assertIn("one of infinitely many exact splits", text)
+        self.assertIn("not physical branching fractions", text.lower())
+
+    def test_the_descriptor_never_decides_whether_a_change_occurred(self):
+        from namd_analysis.crossings import _classify, decomposition_descriptor
+
+        # Character carries everything, occupation nothing.
+        self.assertEqual(
+            decomposition_descriptor(0.0, 0.5, 1e-3), "character_dominated")
+        self.assertEqual(
+            decomposition_descriptor(0.5, 0.0, 1e-3), "occupation_dominated")
+        self.assertEqual(decomposition_descriptor(0.25, 0.25, 1e-3), "mixed")
+        self.assertEqual(decomposition_descriptor(0.0, 0.0, 1e-3), "no_movement")
+        self.assertIsNone(decomposition_descriptor(None, 0.5, 1e-3))
+        # Whatever the descriptor says, |dP_g| decides the label.
+        for descriptor in (
+            "character_dominated", "occupation_dominated", "mixed", None,
+        ):
+            self.assertEqual(
+                _classify(True, True, True, 0.5, 1e-3, None, descriptor)[0],
+                PROJECTED_CHANGE,
+            )
+            self.assertEqual(
+                _classify(True, True, True, 0.0, 1e-3, None, descriptor)[0],
+                NO_PROJECTED_CHANGE,
+            )
 
 
 class CrossingCliTests(_Crossing):
