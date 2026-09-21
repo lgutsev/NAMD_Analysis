@@ -483,8 +483,8 @@ class ProductionProfileTests(unittest.TestCase):
 
     #: Established from each configuration's own files before production.
     ESTABLISHED_FOR_ALL = (
-        "population_column_order", "band_numbers", "fixed_state_map",
-        "projection_character", "trajectory_coverage", "namdtini",
+        "population_column_order", "band_numbers", "atom_partition",
+        "fixed_state_map", "projection_character", "trajectory_coverage", "namdtini",
     )
 
     def test_b_and_c_provenance_records_what_has_been_established(self):
@@ -496,25 +496,19 @@ class ProductionProfileTests(unittest.TestCase):
                     f"{label}.{item} is recorded as not established",
                 )
 
-    def test_the_atom_partition_stays_unestablished_without_evidence(self):
-        """The one item that must not be flipped on plausibility.
+    def test_b_and_c_atom_partition_is_established_from_preserved_indexing(self):
+        """B and C keep A's atom ordering while changing coordinates/orientation.
 
-        A partition applied to a different atom ordering mislabels every
-        projection weight and fails nothing: the run completes, the numbers
-        look reasonable, and the fragments are wrong. So it stays
-        ``not_established`` until this configuration's own files confirm the
-        indexing, and the profile says why rather than leaving a bare flag.
+        The fragment-index partition is therefore applicable to all three
+        configurations. The profile records that explicit construction
+        provenance rather than inferring it from plausible projection results.
         """
         for label in ("B", "C"):
             entry = self.configs[label]
-            self.assertEqual(
-                entry["provenance"]["atom_partition"], "not_established",
-                f"{label} claims its atom partition is established; that needs "
-                "explicit confirmation that the atom indexing is preserved",
-            )
+            self.assertEqual(entry["provenance"]["atom_partition"], "established")
             notes = " ".join(entry["notes"]).lower()
-            self.assertIn("atom_partition remains not_established", notes)
-            self.assertIn("atom indexing", notes)
+            self.assertIn("same atom ordering and indexing as a", notes)
+            self.assertIn("coordinates/orientation differ", notes)
 
     def test_configuration_a_provenance_is_untouched(self):
         provenance = self.configs["A"]["provenance"]
