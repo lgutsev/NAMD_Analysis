@@ -54,6 +54,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "frame-resolved fragment character, and classify crossing events "
             "without calling a character swap a hop "
             "(alias: adiabatic-character-events)\n"
+            "  character-ensemble     per-history and per-configuration ensemble "
+            "summary, curves and figures (alias: ensemble-analysis)\n"
             "\nRun 'namd-analysis character-populations --help' for their options.\n"
         )
         print(text)
