@@ -34,6 +34,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         from . import ensemble_cli
 
         return ensemble_cli.main(args[1:])
+    if args and args[0] in ("character-robustness", "projection-robustness"):
+        from . import robustness_cli
+
+        return robustness_cli.main(args[1:])
+    if args and args[0] == "character-fullspace-prepare":
+        from . import fullspace_cli
+
+        return fullspace_cli.prepare_main(args[1:])
+    if args and args[0] == "character-fullspace-compare":
+        from . import fullspace_cli
+
+        return fullspace_cli.compare_main(args[1:])
     if args in (["--help"], ["-h"]):
         parser = cli.build_parser()
         text = parser.format_help().rstrip()
@@ -56,6 +68,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "(alias: adiabatic-character-events)\n"
             "  character-ensemble     per-history and per-configuration ensemble "
             "summary, curves and figures (alias: ensemble-analysis)\n"
+            "  character-robustness   audit whether apparent fragment mixing survives "
+            "the absolute, unnormalized projection weights "
+            "(alias: projection-robustness)\n"
+            "  character-fullspace-prepare  choose frames and write the VASP/Bader "
+            "inputs for an independent full-space check of PROCAR fragment fractions\n"
+            "  character-fullspace-compare  compare those full-space fractions with "
+            "the PROCAR normalized and raw weights\n"
             "\nRun 'namd-analysis character-populations --help' for their options.\n"
         )
         print(text)

@@ -178,6 +178,16 @@ class ProjectionSeries:
     def band_index(self) -> Dict[int, int]:
         return {int(band): i for i, band in enumerate(self.bands)}
 
+    def raw_weights(self) -> np.ndarray:
+        """``W_ig``, each declared group's PAW-projector weight before normalization.
+
+        ``weights`` were formed as ``W_ig / captured``, so multiplying back
+        recovers the raw weight to rounding.  It is the band's share on that
+        group as a fraction of the whole band, not of the captured part, and
+        it is what :mod:`namd_analysis.projection_robustness` audits.
+        """
+        return self.weights * self.captured_projection[..., None]
+
     def cycle_wrap_status(self) -> Dict[str, Any]:
         """Whether the ``period -> 1`` step is examined, and if not, why not.
 
