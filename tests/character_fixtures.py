@@ -28,8 +28,14 @@ def _ion_table(
     scientific: bool = False,
     pad: str = "   ",
     include_tot_row: bool = True,
+    decimals: int = 6,
 ) -> str:
-    """One ionic projection table: header, one row per ion, then a tot row."""
+    """One ionic projection table: header, one row per ion, then a tot row.
+
+    ``decimals=3`` reproduces VASP's F7.3 printing: each value is rounded on
+    its own, while the tot row carries the sum of the *unrounded* values, as
+    VASP accumulates it before printing.
+    """
     columns = list(orbitals)
     header = f"{pad}ion" + "".join(f"{pad}{name}" for name in columns) + "\n"
     lines = [header]
@@ -40,13 +46,13 @@ def _ion_table(
         if scientific:
             rendered = "".join(f"{pad}{value:.6E}" for value in values)
         else:
-            rendered = "".join(f"{pad}{value:.6f}" for value in values)
+            rendered = "".join(f"{pad}{value:.{decimals}f}" for value in values)
         lines.append(f"{pad}{index}{rendered}\n")
     if include_tot_row:
         grand = float(np.sum(ion_totals))
         share = grand / max(1, len(columns) - 1)
         values = [share] * (len(columns) - 1) + [grand]
-        rendered = "".join(f"{pad}{value:.6f}" for value in values)
+        rendered = "".join(f"{pad}{value:.{decimals}f}" for value in values)
         lines.append(f"{pad}tot{rendered}\n")
     return "".join(lines)
 
@@ -67,6 +73,7 @@ def write_procar(
     truncate_after: Optional[int] = None,
     duplicate_ion: bool = False,
     drop_tot_row: bool = False,
+    decimals: int = 6,
 ) -> Path:
     """Write a PROCAR in a chosen dialect.
 
@@ -105,6 +112,7 @@ def write_procar(
                         scientific=scientific,
                         pad=pad,
                         include_tot_row=not drop_tot_row,
+                        decimals=decimals,
                     )
                     if duplicate_ion and table == 0:
                         rows = body.splitlines(keepends=True)

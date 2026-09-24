@@ -18,7 +18,7 @@ unused bands are held in memory.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
@@ -59,6 +59,15 @@ class ProcarProjection:
     bands_seen: int = 0
     #: Bands declared by the counts header.
     bands_declared: int = 0
+    #: The grand total VASP prints on the ``tot`` row under each retained
+    #: band's first ionic table, when the file has one.  VASP accumulates it
+    #: before the per-ion values are rounded for printing, so comparing it
+    #: with the sum of the printed per-ion values measures the rounding loss.
+    #: Recorded only; nothing in the character analysis reads it.
+    tot_rows: Dict[int, float] = field(default_factory=dict)
+    #: Decimal places of the per-ion ``tot`` field as printed (3 for VASP's
+    #: F7.3), or ``None`` for scientific notation or when no row was kept.
+    tot_decimals: Optional[int] = None
 
     def band_index(self) -> Dict[int, int]:
         return {int(band): i for i, band in enumerate(self.bands)}
@@ -107,6 +116,9 @@ def read_procar_ion_totals(
     row_values: List[float] = []
     keep_current = False
     expect_overflow_after: Optional[int] = None
+    overflow_band_kept = False
+    tot_rows: Dict[int, float] = {}
+    tot_decimals: Optional[int] = None
 
     with path.open("r", errors="replace") as handle:
         for lineno, raw in enumerate(handle, start=1):
@@ -189,12 +201,15 @@ def read_procar_ion_totals(
                             "non-negative number"
                         )
                     row_values.append(max(0.0, value))
+                    if tot_decimals is None and not kept_bands and len(row_values) == 1:
+                        tot_decimals = _decimals(fields[tot_column])
                 rows_read += 1
                 if rows_read == nions:
                     if keep_current:
                         kept_bands.append(table_band)
                         kept_weights.append(row_values)
                     finished_band = table_band
+                    overflow_band_kept = keep_current
                     table_band = None
                     row_values = []
                     rows_read = 0
@@ -219,6 +234,11 @@ def read_procar_ion_totals(
                             "Reading only the first "
                             f"{nions} would silently drop the rest of the projection."
                         )
+                    if overflow_band_kept and overflow[0].lower() == "tot" and len(overflow) > 1:
+                        try:
+                            tot_rows[expect_overflow_after] = _numeric(overflow[-1])
+                        except ValueError:
+                            pass
                 expect_overflow_after = None
 
             band_match = _BAND.match(line)
@@ -303,7 +323,17 @@ def read_procar_ion_totals(
         nions=nions,
         bands_seen=len(seen_bands),
         bands_declared=nbands_declared,
+        tot_rows=tot_rows,
+        tot_decimals=tot_decimals,
     )
+
+
+def _decimals(text: str) -> Optional[int]:
+    """Digits after the decimal point of a fixed-point field, else ``None``."""
+    if any(marker in text for marker in "EeDd"):
+        return None
+    _, dot, fraction = text.partition(".")
+    return len(fraction) if dot else 0
 
 
 def procar_structure(path) -> Dict[str, object]:

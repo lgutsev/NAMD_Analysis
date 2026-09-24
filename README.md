@@ -513,6 +513,27 @@ below your `min_projection_weight`. These are **diagnostics**: nothing is
 discarded, repaired or reweighted on their basis. Decide for yourself whether
 a band with poor capture belongs in the analysis.
 
+To help decide, `character-robustness` audits whether apparent two-fragment
+mixing survives the *absolute* weights `W_g = w_g × captured`. It reports
+the dominant fragment before and after normalization, a worst/normalized/
+best-case bracket over every allocation of the uncaptured weight, and
+mixed-sample counts over a grid of normalized, capture and raw thresholds.
+`--focus-band` writes a dedicated report for one band.
+`character-fullspace-prepare` and `character-fullspace-compare` set up and
+read back an independent check: a band-resolved PARCHG integrated over Bader
+basins covering the whole cell. None of them changes
+`projection_character.csv`. See
+[projection robustness](docs/projection_robustness.md), which also covers
+why an RWIGS sweep tests nothing when `LORBIT >= 10`.
+
+```bash
+namd-analysis character-robustness \
+  --projection-character results/character/projection_character.csv \
+  --focus-band 981 --mark issue4_low_capture=1273,1286,1302 \
+  --profile examples/bcf_pcbm/production_profile.json --configuration A \
+  --out results/robustness_981
+```
+
 ### What a character swap is and is not
 
 `character_swaps.csv` records where a band's dominant subsystem changes from

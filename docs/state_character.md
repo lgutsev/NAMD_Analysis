@@ -303,6 +303,15 @@ All of these are diagnostics.  No sample is discarded, repaired or reweighted on
 account of them.  A captured projection of exactly zero is the one exception: it
 would divide by zero, so it is a loud error naming the file and the bands.
 
+Whether a band's apparent mixing survives its absolute weights -- rather than
+existing only in the ratio of a small captured fraction -- is audited by
+`character-robustness`, and checked independently against a full-space
+partition of the band density by `character-fullspace-prepare` and
+`character-fullspace-compare`.  Both read this module's outputs and change none
+of them; see [projection robustness](projection_robustness.md).
+`ProjectionSeries.raw_weights()` returns `W_ig = w_ig * captured_projection`
+for a live run.
+
 ## Outputs
 
 `character_populations.csv` contains the projection-weighted diagonal

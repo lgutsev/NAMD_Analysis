@@ -206,6 +206,10 @@ class CharacterSeries:
     #: ``w_ig * captured`` recovers the raw PAW-sphere weight, which is
     #: what a normalization-artifact check needs.
     captured: Optional[np.ndarray] = None  # (nframe, nband)
+    #: The sum over every PROCAR ion, when the table carries it.  Equal to
+    #: ``captured`` for a complete atom partition; ``1 - total`` is the band
+    #: weight outside every ion's projection.
+    total: Optional[np.ndarray] = None  # (nframe, nband)
 
     def frame_index(self) -> Dict[int, int]:
         return {int(f): i for i, f in enumerate(self.frames)}
@@ -224,6 +228,7 @@ def read_projection_character(path) -> CharacterSeries:
     path = Path(path)
     rows: Dict[Tuple[int, int], Dict[str, float]] = {}
     captured_rows: Dict[Tuple[int, int], float] = {}
+    total_rows: Dict[Tuple[int, int], float] = {}
     groups: List[str] = []
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -243,6 +248,8 @@ def read_projection_character(path) -> CharacterSeries:
             rows.setdefault((frame, band), {})[group] = float(record["normalized_weight"])
             if record.get("captured_projection") not in (None, ""):
                 captured_rows[(frame, band)] = float(record["captured_projection"])
+            if record.get("total_projection") not in (None, ""):
+                total_rows[(frame, band)] = float(record["total_projection"])
     if not rows:
         raise CrossingError(f"{path}: no rows")
 
@@ -266,6 +273,11 @@ def read_projection_character(path) -> CharacterSeries:
         captured = np.empty((len(frames), len(bands)), dtype=float)
         for (frame, band), value in captured_rows.items():
             captured[frame_at[frame], band_at[band]] = value
+    total = None
+    if len(total_rows) == len(rows):
+        total = np.empty((len(frames), len(bands)), dtype=float)
+        for (frame, band), value in total_rows.items():
+            total[frame_at[frame], band_at[band]] = value
 
     return CharacterSeries(
         frames=np.asarray(frames, dtype=int),
@@ -273,6 +285,7 @@ def read_projection_character(path) -> CharacterSeries:
         groups=groups,
         weights=weights,
         captured=captured,
+        total=total,
     )
 
 
