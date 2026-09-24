@@ -18,16 +18,33 @@ count that collapses across :data:`DEFAULT_THRESHOLD_PAIRS` is a count the
 threshold chose.  The raw continuous change is reported alongside and is the
 primary quantity; the counts are a secondary diagnostic.
 
-**Only occupation may define a transfer direction.**  The projection-weighted
-fragment population ``P_g = sum_i P_i w_ig`` moves when the *weights* move, so
-a band-index relabelling shifts it with no charge going anywhere.  Every
+**The counter consumes occupation only, and that is a narrowing.**  Every
 function here consumes the **occupation-driven** component
 
-    dP_g^pop(t) = sum_i [P_i(t) - P_i(t-1)] w_ig[f(t)]
+    dP_g^pop(t) = sum_i [P_i(t) - P_i(t-1)] * 0.5*(w_ig[f(t)] + w_ig[f(t-1)])
 
-accumulated into a trajectory, never the total.  See
-:class:`~namd_analysis.crossings.HistoryPopulation` for the split, which is
-exact.
+-- the symmetric midpoint form the code computes, not an endpoint-biased one;
+see :data:`~namd_analysis.crossings.DECOMPOSITION_IDENTITY` -- accumulated into
+a trajectory, never the total.  The reason is that a
+threshold-crossing *count* is meant to pick out discrete donor-to-acceptor
+events, and running it on the total would register one wherever a crossing
+swept the weights across the cutoff, whether or not anything discrete happened.
+
+That is a property of the counter, and it must not be restated as physics.  In
+particular the character-driven component is **not** mere relabelling:
+``P_g = sum_i P_i w_ig`` is summed over the whole basis, so a relabelling
+cannot move it at all, and an occupied state whose own character turns from
+donor-like to acceptor-like can correspond to a spatial redistribution of its
+density between the fragments.  A passage carried entirely by ``dP_g^char``
+will simply not be counted here, which is a limitation of this operational
+definition rather than a finding about the trajectory.  The continuous
+``dP_g`` reported by ``character-crossings`` is the observable; these counts
+are a secondary diagnostic and are read beside it, never instead of it.
+
+See :class:`~namd_analysis.crossings.HistoryPopulation` for the split, which is
+exact and is one of infinitely many exact splits, and
+:data:`~namd_analysis.crossings.PROJECTION_NOTE` for why neither of its terms
+is a mechanism.
 """
 
 from __future__ import annotations

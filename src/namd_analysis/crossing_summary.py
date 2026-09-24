@@ -1,8 +1,24 @@
 """``crossing_summary.md`` -- adiabatic character events, stated for a referee.
 
-The whole value of this file is in what it refuses to say. A dominant-character
-swap is reported as a swap; it becomes transfer only where the fragment
-population moved with it, and where it did not, the summary says so.
+The whole value of this file is in what it refuses to say, and there are three
+states it must keep apart rather than two.
+
+**Not evaluated.** A configuration-level scan reads
+``projection_character.csv``, EIGTXT and NATXT and has **no SHPROP populations
+at all**. Such a run cannot find that nothing moved; it can only report that
+the question was never asked.
+
+**Evaluated, and ``P_g`` did not move.** A measured absence, about the
+projected occupied density and about nothing else.
+
+**Evaluated, and ``P_g`` moved.** The projection-weighted diagonal fragment
+population changed, and that holds *whichever* term of the symmetric split
+carries it: ``P_g`` sums over the whole basis, so no relabelling can move it,
+and an occupied state turning from BCF-like to PCBM-like at fixed population can
+correspond to a spatial redistribution of its density. **A character-driven
+change is never reported here as "no charge moved."** Nor is either term
+reported as charge motion: ``P_g`` is diagonal, the coherences are absent from
+the inputs, and the split names no microscopic process.
 """
 
 from __future__ import annotations
@@ -10,6 +26,8 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
+
+from .crossings import NO_PROJECTED_CHANGE, PROJECTED_CHANGE
 
 
 def _table(header: List[str], rows: List[List[Any]]) -> List[str]:
@@ -41,7 +59,7 @@ def _per_history_section(payload: Dict[str, Any]) -> List[str]:
         f"{aggregate['n_histories']} SHPROP histories, starting at "
         f"`NAMDTINI` {aggregate['distinct_namdtini']}. Each was classified on "
         "its **own** resolved frame mapping, carrying its **own** "
-        "projection-weighted fragment population "
+        "projection-weighted diagonal fragment population "
         "`P_g(t) = sum_i P_i(t) w_ig[f(t)]`.",
         "",
     ]
@@ -85,6 +103,45 @@ def _per_history_section(payload: Dict[str, Any]) -> List[str]:
             ],
         )
 
+    changed = aggregate["totals_by_classification"].get(PROJECTED_CHANGE, 0)
+    unchanged = aggregate["totals_by_classification"].get(NO_PROJECTED_CHANGE, 0)
+    descriptors = aggregate.get("totals_by_decomposition_descriptor") or {}
+    if changed or unchanged:
+        out += [
+            f"Across the histories, **{changed}** character exchange(s) moved the "
+            f"projected fragment population and **{unchanged}** did not. `P_g` "
+            "sums over every band of the basis, so no re-ordering of labels can "
+            "move it and a change in it is not a labelling artifact. It is a "
+            "**diagonal** quantity and not exact fragment charge: the "
+            "coherences are absent from the inputs.",
+            "",
+        ]
+    if descriptors:
+        out += ["How the symmetric split *describes* the changes:", ""]
+        out += _table(
+            ["description", "count"],
+            sorted(descriptors.items(), key=lambda kv: -kv[1]),
+        )
+        if descriptors.get("character_dominated"):
+            out += [
+                f"> **{descriptors['character_dominated']}** are carried mainly "
+                "by character evolution: an occupied state's own composition "
+                "changed while its population did not. That **can correspond to "
+                "a spatial redistribution of the occupied density** — the "
+                "adiabatic passage named at the top of this file — and it **must "
+                "not be reported as \"no charge moved\"** or as a relabelling. "
+                "What it does not establish is a nonadiabatic *hop*, nor is the "
+                "term itself a measure of charge that moved.",
+                "",
+            ]
+        out += [
+            "> The split is **exact bookkeeping and one of infinitely many exact "
+            "splits**. These are descriptions of that convention, not physical "
+            "branching fractions and not mechanisms, and no hop record is an "
+            "input here.",
+            "",
+        ]
+
     comparison = payload.get("early_vs_late_events")
     if comparison:
         out += [
@@ -120,20 +177,21 @@ def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
     swaps = [e for e in events if e.character_swap]
     small_gap_swaps = [e for e in swaps if e.small_gap]
     strong_nac_swaps = [e for e in swaps if e.strong_nac]
-    # Only a swap whose population moved *the way the swap did* supports a
-    # transfer reading.  A magnitude alone is co-occurrence.
-    moved = [
-        e for e in swaps
-        if e.classification == "character_swap_with_fragment_population_change"
-    ]
-    unrelated = [
-        e for e in swaps
-        if e.classification == "character_swap_with_unrelated_population_change"
-    ]
-    undetermined = [
-        e for e in swaps
-        if e.classification == "character_swap_with_undetermined_direction"
-    ]
+    # Three cases, on one observable. Whether P_g moved is the whole test; the
+    # symmetric split only describes a change already established.
+    not_evaluated = [e for e in swaps if not e.population_evaluated]
+    evaluated = [e for e in swaps if e.population_evaluated]
+    moved = [e for e in swaps if e.classification == PROJECTED_CHANGE]
+    unchanged = [e for e in swaps if e.classification == NO_PROJECTED_CHANGE]
+    by_descriptor = Counter(
+        e.decomposition_descriptor for e in moved if e.decomposition_descriptor
+    )
+    direction_matches = sum(
+        1 for e in moved if e.swap_direction_matches_projected_change is True
+    )
+    direction_differs = sum(
+        1 for e in moved if e.swap_direction_matches_projected_change is False
+    )
 
     out: List[str] = [
         "# Adiabatic character events",
@@ -148,14 +206,16 @@ def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
         "| adiabatic state population | `P_i = rho_ii` — which eigenstate is occupied |",
         "| adiabatic character exchange | the fragment composition of a **fixed band index** changing |",
         "| nonadiabatic hop | population moving between adiabatic states; lives in SHPROP, not in a PROCAR |",
-        "| fragment population | `sum_i P_i w_ig` — closer to a diabatic reading, but **not** a diabatization |",
+        "| projection-weighted diagonal fragment population | `P_g = sum_i P_i w_ig` — closer to a diabatic reading, but **diagonal** and **not** a diabatization |",
         "| true diabatic transformation | **not performed anywhere in this package** |",
         "",
         "> Staying on one adiabatic state through an avoided crossing **changes** "
-        "the fragment identity: no hop, but the charge moved. Hopping between two "
-        "adiabatic states at a crossing can **preserve** the fragment identity: a "
-        "hop, but the charge did not move. **A character swap is not a surface "
-        "hop, and neither is automatically charge transfer.**",
+        "the fragment identity: no hop, and the occupied density can nonetheless "
+        "have redistributed between the fragments. Hopping between two adiabatic "
+        "states at a crossing can **preserve** the fragment identity: a hop, and "
+        "the occupied density need not have redistributed at all. **A character "
+        "swap is not a surface hop, and neither is automatically charge "
+        "transfer.**",
         "",
         "## Counts",
         "",
@@ -168,9 +228,11 @@ def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
             ["dominant-character exchanges", len(swaps)],
             ["…that coincide with a small gap", len(small_gap_swaps)],
             ["…that coincide with a strong NAC", len(strong_nac_swaps)],
-            ["…where the population moved the same way the swap did", len(moved)],
-            ["…where it moved, but not that way", len(unrelated)],
-            ["…where it moved and the swap named no single direction", len(undetermined)],
+            ["…whose projected fragment population was **not evaluated**",
+             len(not_evaluated)],
+            ["…whose projected fragment population **was** evaluated", len(evaluated)],
+            ["…where `P_g` moved", len(moved)],
+            ["…where `P_g` was evaluated and did not move", len(unchanged)],
         ],
     )
     out += ["By classification:", ""]
@@ -179,46 +241,110 @@ def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
         [[name, count] for name, count in counts.most_common()],
     )
 
-    if swaps and not moved and not (unrelated or undetermined):
+    if not_evaluated:
+        # Said first, and said before any sentence about what did or did not
+        # move, so it cannot be read as a qualifier on a finding of absence.
         out += [
-            "**No character exchange in this run was accompanied by a change in "
-            "projection-weighted fragment population.** The band labels moved; the "
-            "charge did not follow. These are not charge-transfer events, and must "
-            "not be described as such.",
+            f"**Projected fragment population was NOT EVALUATED for "
+            f"{len(not_evaluated)} of the {len(swaps)} character exchange(s) "
+            "below.**"
+            + (
+                " No SHPROP population was supplied with this scan, so for those "
+                "exchanges the analysis has no information about fragment "
+                "population at all."
+                if not evaluated
+                else " No fragment population was available at those steps."
+            ),
+            "",
+            "> This is **not** a finding that no charge moved. A "
+            "configuration-level crossing scan reads `projection_character.csv`, "
+            "`EIGTXT` and `NATXT`; none of them carries a SHPROP population, so "
+            "the question was never asked. Those exchanges are classified "
+            "`character_swap_population_not_evaluated`, which must not be "
+            "reported as, summarized as, or counted with "
+            "`character_swap_without_projected_fragment_change`. **Neither a "
+            "change nor its absence may be claimed for them.** Rerun with "
+            "`--shprop` and `--state-map` to evaluate `P_g` per history.",
             "",
         ]
-    elif swaps and not moved:
+
+    if evaluated:
         out += [
-            "**No character exchange in this run was accompanied by a fragment "
-            "population change in the direction the swap implies.** Population "
-            "did move at some of these steps, but not in a way that supports "
-            "calling any of them transfer. None may be described as a "
-            "charge-transfer event.",
+            "### What the projected fragment population did",
+            "",
+            "`P_g = sum_i P_i w_ig` is the projection-weighted **diagonal** "
+            "fragment population, summed over **every** band of the basis, so "
+            "no re-ordering of band labels can move it and a change in it is "
+            "not a labelling artifact. It is **not** exact fragment charge: "
+            "SHPROP records no coherences and a PROCAR no cross-band "
+            "projections, so the off-diagonal terms are absent from the inputs "
+            "and weight outside the declared fragments is unassigned.",
+            "",
+        ]
+
+    if evaluated and not moved:
+        out += [
+            f"**Of the {len(evaluated)} character exchange(s) whose projected "
+            "fragment population WAS evaluated, none moved `P_g` beyond "
+            "tolerance.** The projected occupied density stayed where it was "
+            "across these steps. That is an observation about `P_g`; it is not "
+            "by itself a statement about nonadiabatic hops, for which no hop "
+            "record is an input here.",
             "",
         ]
     elif moved:
         out += [
-            f"**{len(moved)} character exchange(s) were accompanied by a fragment "
-            "population change in the corresponding direction** — the fragment the "
-            "dominance moved to gained what the one it left lost. Those are the "
-            f"ones that support a transfer reading; the remaining "
-            f"{len(swaps) - len(moved)} are not.",
+            f"**{len(moved)} character exchange(s) moved the projected fragment "
+            f"population**, and {len(unchanged)} did not. **This holds whichever "
+            "bookkeeping term carries the change** — `P_g` is invariant to band "
+            "relabelling, so neither term can be dismissed as one.",
             "",
         ]
-        if unrelated:
+        if by_descriptor:
+            out += ["How the symmetric split *describes* those changes:", ""]
+            out += _table(
+                ["description", "count"],
+                [[name, count] for name, count in by_descriptor.most_common()],
+            )
+        if by_descriptor.get("character_dominated"):
             out += [
-                f"**{len(unrelated)}** had the population move at the same step "
-                "but *not* in the direction the swap implies. That is "
-                "co-occurrence, and it must not be reported as transfer.",
+                f"> **{by_descriptor['character_dominated']}** of them are "
+                "carried mainly by character evolution: the occupied state's own "
+                "composition changed while its population did not. **That is not "
+                "a relabelling and it must not be reported as \"no charge "
+                "moved\".** An occupied state turning from BCF-like to PCBM-like "
+                "can correspond to a spatial redistribution of its density — the "
+                "adiabatic passage named at the top of this file. What it does "
+                "not establish is a nonadiabatic *hop*, and the term is not "
+                "itself a measure of charge that moved.",
                 "",
             ]
-        if undetermined:
+        out += [
+            "> The split into `occupation_redistribution` and "
+            "`character_evolution` is **exact bookkeeping and one of infinitely "
+            "many exact splits**. The descriptions above are descriptions of "
+            "that convention, not physical branching fractions, and neither term "
+            "names a microscopic mechanism. No surface-hopping record is an "
+            "input here, so no statement about hops, hop counts or hopping rates "
+            "follows from any of them.",
+            "",
+        ]
+        if direction_matches or direction_differs:
             out += [
-                f"**{len(undetermined)}** had the population move where the swap "
-                "named no single direction — the two bands exchanged character, "
-                "so movement either way would match one of them. From a total "
-                "fragment population that cannot be decided, and it is left "
-                "undecided rather than counted as transfer.",
+                f"Of the {len(moved)}, **{direction_matches}** moved `P_g` in the "
+                f"direction the dominance swap points and **{direction_differs}** "
+                "did not"
+                + (
+                    "; the remaining "
+                    f"{len(moved) - direction_matches - direction_differs} name no "
+                    "single direction — the usual two-state exchange, where "
+                    "movement either way would match one band"
+                    if len(moved) > direction_matches + direction_differs
+                    else ""
+                )
+                + ". This is a description of each step, not evidence that the "
+                "swap caused the change or that it did not — a swap and a "
+                "population change can co-occur without either driving the other.",
                 "",
             ]
 
@@ -266,13 +392,19 @@ def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
         out += ["## The exchanges themselves", ""]
         out += _table(
             ["frame", "bands", "gap (eV)", "|NAC| (eV)", "band i before → after",
-             "classification"],
+             "ΔP_g", "described as", "classification"],
             [
                 [
                     e.frame, f"{e.band_i}/{e.band_j}",
                     None if e.gap_ev != e.gap_ev else round(e.gap_ev, 5),
                     None if e.nac_ev is None else round(e.nac_ev, 5),
                     f"{e.dominant_i_before} → {e.dominant_i_after}",
+                    (
+                        "**not evaluated**" if not e.population_evaluated
+                        else f"{e.fragment_population_change:.5g}"
+                        + (f" ({e.dominant_fragment})" if e.dominant_fragment else "")
+                    ),
+                    e.decomposition_descriptor,
                     e.classification,
                 ]
                 for e in swaps[:40]
@@ -287,6 +419,18 @@ def render(payload: Dict[str, Any], events: Sequence[Any]) -> str:
         "- Synchronization is on the resolved MD frame. A correlation by SHPROP row "
         "index would be wrong wherever histories start at different `NAMDTINI` or "
         "the trajectory wraps cyclically, and would still produce plausible numbers.",
+        "- Where no SHPROP population was supplied, `P_g` was **not evaluated**, "
+        "and no statement about it — in either direction — is made for those "
+        "events. Absence of evidence was not recorded as evidence of absence.",
+        "- `occupation_redistribution` and `character_evolution` are an **exact "
+        "bookkeeping split**, one of infinitely many, and the "
+        "`decomposition_descriptor` column describes that convention. Neither "
+        "term is a physical branching fraction or a mechanism, and a change "
+        "described as `character_dominated` changed `P_g` by exactly as much as "
+        "an `occupation_dominated` one did — the share is a share of the "
+        "accounting, not a scale of how much charge moved.",
+        "- No hop record is an input. Nothing here counts hops, and no statement "
+        "about hopping rates follows from any classification or descriptor above.",
         "- The fragment weights are projection-weighted diagonal quantities: SHPROP "
         "records no coherences and a PROCAR no cross-band projections, so the "
         "off-diagonal terms of a true diabatic picture are absent from the inputs.",

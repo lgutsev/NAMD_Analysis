@@ -55,7 +55,7 @@ As nuclear motion sweeps the diabatic detuning `E_A − E_B` through zero:
 A PROCAR projection onto A's atoms measures approximately `cos²θ` for `φ₁` and
 `sin²θ` for `φ₂`. So the character curves this workflow reads are tracking
 `θ(t)` sweeping through the crossing — which is exactly why a fixed band label
-obscures physical transfer: **the label is constant while `θ` is not.**
+obscures such a redistribution: **the label is constant while `θ` is not.**
 
 That is the rigorous basis for the manuscript's claim. A fixed-column state map
 assigns "band 978 = PCBM" for the whole trajectory. If `θ` sweeps, band 978 is
@@ -69,13 +69,13 @@ This is the part that is easy to get backwards.
 
 **Staying on one adiabatic state through the crossing changes the fragment
 identity.** The trajectory never hops; `P₁` stays at 1. But `φ₁` was A-like
-before and is B-like after, so the charge has physically moved from BCF to
-PCBM. *No hop, transfer occurred.*
+before and is B-like after, so the occupied density has redistributed from BCF
+to PCBM. *No hop, and the density moved.*
 
 **Hopping between the two adiabatic states at the crossing can preserve the
 fragment identity.** Population moves from `φ₁` to `φ₂` exactly where both are
-even mixtures. In the diabatic picture the charge stayed put. *A hop occurred,
-no transfer.*
+even mixtures. In the diabatic picture the density need not have redistributed
+at all. *A hop, and the density need not have moved.*
 
 So:
 
@@ -83,15 +83,45 @@ So:
 - a **surface hop is not charge transfer**;
 - and neither one alone licenses the phrase "charge-transfer event".
 
-`character-crossings` enforces this. An event is only classified as
-`character_swap_with_fragment_population_change` when the fragment population
-actually moved in the corresponding direction — see
-[below](#did-the-charge-move-the-way-the-character-did) for what that test is
-and when it cannot be run. Where the character exchanged and the population did
-not follow, the classification is `character_swap_without_fragment_transfer`
-and the summary says outright that these are not charge-transfer events. Where
-it moved the *other* way, it is
-`character_swap_with_unrelated_population_change`.
+`character-crossings` enforces this on **one observable**: the
+projection-weighted fragment population `P_g = Σ_i P_i w_ig`, and whether it
+moved. Three outcomes for a character swap, and no others:
+
+| outcome | label |
+| --- | --- |
+| no SHPROP population supplied — nothing was evaluated | `character_swap_population_not_evaluated` |
+| `\|ΔP_g\| ≤ tolerance` — evaluated, and it did not move | `character_swap_without_projected_fragment_change` |
+| `\|ΔP_g\| > tolerance` — evaluated, and it moved | `character_swap_with_projected_fragment_change` |
+
+The first row must never be merged into the second. The second is a *measured
+absence*: a population was read, and it stayed put. The first is no measurement
+at all — a configuration-level scan reads `projection_character.csv`, `EIGTXT`
+and `NATXT`, none of which carries a SHPROP population, so the question was
+never asked. A run producing only the first row has said nothing whatever about
+`P_g`, and no sentence of the form "no change accompanied these exchanges" may
+be written from it. A null `projected_fragment_population_change` means **not
+evaluated**, never zero; the `population_evaluated` column says so in its own
+cell.
+
+### Why `P_g` and not one term of the split
+
+`P_g` is the projection of the occupied density onto a fragment, summed over
+**every** band of the SHPROP basis. A re-ordering of band labels therefore
+leaves it exactly invariant. A change in `P_g` is consequently *not* a
+labelling artifact — it is a change in where the occupied density sits.
+
+This corrects an earlier reading of this analysis, and the correction matters:
+
+> **A character-driven change in `P_g` is not "no charge moved".**
+
+If an occupied adiabatic state turns from BCF-like to PCBM-like while its
+population `P_i` is unchanged, the change can correspond to a spatial
+redistribution of that state's density between the fragments. That is the first
+of the two failure modes above — adiabatic passage through an avoided crossing,
+with no hop anywhere. An earlier
+version of the classifier called exactly that case "no fragment transfer"
+whenever `ΔP^pop ≈ 0`, on the reasoning that character evolution is a mere
+relabelling. It is not, and that label is gone.
 
 ## Adiabatic states vs physical fragments: two different maps
 
@@ -131,63 +161,70 @@ It is **not** a flux, a transfer rate, or an extraction. Both series are
 diagonal in the adiabatic basis, so the difference is about labelling alone and
 says nothing about the coherences neither one contains.
 
-## Did the charge move the way the character did?
+## The symmetric split: what it describes, and what it cannot
 
-A population that moves at the same step as a swap has not thereby moved
-*because* of it. **Nothing is called transfer unless the fragment the dominance
-moved to gained the occupation the one it left lost.**
-
-### The total cannot answer this
-
-`P_g = Σ_i P_i w_ig` moves when the **weights** move. A band-index swap changes
-`w_ig` by construction, so it shifts `P_g` mechanically *at fixed occupation* —
-no charge has to go anywhere. Testing the total against the swap direction
-would therefore confirm "transfer" at very nearly every swap, which is the
-opposite of what this module is for.
-
-So each step's change is split first, exactly:
+Each step's change in `P_g` splits exactly, using the symmetric midpoint form:
 
 ```
 ΔP_g   =   ΔP_g^pop                    +   ΔP_g^char
-       =   Σ_i [P_i(t) − P_i(t−1)] w_ig[f(t)]
-                                       +   Σ_i P_i(t−1) [w_ig[f(t)] − w_ig[f(t−1)]]
+       =   Σ_i [P_i(t) − P_i(t−1)] · ½[w_ig(t) + w_ig(t−1)]
+                                       +   Σ_i ½[P_i(t) + P_i(t−1)] · [w_ig(t) − w_ig(t−1)]
 ```
 
-`ΔP_g^pop` is occupation moving between states at fixed character — the part
-that can mean charge transfer. `ΔP_g^char` is the character moving under fixed
-occupation — the part a swap produces on its own. Both are written to
-`per_history_events.csv` as `population_driven_change` and
-`character_driven_change`, and **the direction test runs on `ΔP_g^pop` alone.**
+`ΔP_g^pop` is occupation moving between states at fixed character.
+`ΔP_g^char` is an occupied state's own character evolving at fixed occupation.
 
-This needs the per-band populations `P_i(t)`, which only a single SHPROP
-history carries. `detect_events`, given a pre-contracted total, therefore never
-claims a direction — it reports `character_swap_with_undetermined_direction`
-and says why.
+**Neither is "the real one" and neither is bookkeeping about labels**, but
+neither is a quantity of charge either. `P_g` is the projection-weighted
+*diagonal* fragment population: SHPROP records no coherences and a PROCAR no
+cross-band projections, so the off-diagonal terms of `Tr[ρ P_g]` are absent
+from the inputs, and projection weight outside the declared fragments is
+unassigned. `P_g` is therefore not exact fragment charge, and neither term of
+the split may be equated with charge motion. What `ΔP^char` is *not* is a
+relabelling — it can reflect a spatial redistribution of the occupied density.
+The two terms are written to
+`per_history_events.csv` as `occupation_redistribution` and
+`character_evolution`, for the fragment the row names in `dominant_fragment`,
+so that `ΔP_g = occupation + character` closes on that one fragment.
 
-| outcome | label |
+**The split never decides whether a change occurred.** That is `|ΔP_g|`'s job,
+and only `|ΔP_g|`'s. The split only *describes* a change already established,
+through the `decomposition_descriptor` column:
+
+| description | meaning |
 | --- | --- |
-| occupation moved the way the swap did | `character_swap_with_fragment_population_change` |
-| it moved, but not that way | `character_swap_with_unrelated_population_change` |
-| occupation did not move at all — the whole change was `ΔP^char` | `character_swap_without_fragment_transfer` |
-| the direction could not be tested | `character_swap_with_undetermined_direction` |
+| `occupation_dominated` | ≥70% of the absolute movement is `ΔP^pop` |
+| `character_dominated` | ≥70% of it is `ΔP^char` |
+| `mixed` | neither term carries it alone |
+| `no_movement` | neither term moved |
 
-The third row is the case the split exists to catch: the *total* fragment
-population can move a long way at a swap while `ΔP^pop` is zero, because the
-weights moved and the occupation did not. Before the split that looked
-identical to transfer.
+These are descriptions of **a bookkeeping convention**, not physical branching
+fractions and not mechanisms. The split is one of infinitely many exact splits,
+so its proportions are a choice of accounting rather than a measurement of two
+competing processes. An event described as `character_dominated` moved the
+projected occupied density **exactly as much** as an `occupation_dominated` one
+did; what differs is the accounting, not the physics.
 
-The last row is an honest verdict, not a fallback. It covers three cases: only
-a total was available; the character changed without any band's dominant
-fragment moving, so there is no direction; or the swap names **no single
-direction** — a *simultaneous* symmetric exchange, one band going BCF→PCBM
-while the other goes PCBM→BCF, where occupation moving either way would match
-one of the two. That is undecidable, and is reported as undecided rather than
-resolved in favour of transfer.
+What the analysis genuinely cannot resolve is the *microscopic* process. No
+surface-hopping record is an input here, so nothing above counts hops,
+establishes that a hop occurred, or yields a hopping rate.
 
-When the two flips land a frame apart, each names a single direction and each
-is tested on its own. One steady occupation ramp then agrees with one flip and
-contradicts the other — which is the point: reporting both as transfer would
-count one exchange twice.
+### The direction descriptor
+
+`swap_direction_matches_projected_change` asks whether `P_g` moved the way the
+dominance swap points — the fragment it moved to gaining what the one it left
+lost. It runs on **`ΔP_g` itself**, never on one term of the split: testing the
+occupation term alone would ask a question about occupation and report the
+answer as though it had been about charge.
+
+It is a **descriptor**, not a verdict. A swap and a population change can
+co-occur without either driving the other, so agreement is not evidence of a
+mechanism and disagreement is not evidence against one — and neither changes
+the classification, which rests on `|ΔP_g|` alone. It is `None` where the
+question is not well posed: no band's dominant fragment moved, or the swap
+names **no single direction** — the usual symmetric exchange, one band going
+BCF→PCBM while the other goes PCBM→BCF, where movement either way would match
+one of the two.
 
 ## Couplings near ħ/dt
 

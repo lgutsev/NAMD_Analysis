@@ -45,12 +45,20 @@ is PCBM → BCF**, i.e. population accumulating on BCF — not leaving it.
 
 Two results, and they point opposite ways:
 
-- **BCF's gain is genuinely occupational.** 0.618 of the +0.780 is population
+- **BCF's gain is mostly occupational.** 0.618 of the +0.780 is population
   moving onto the BCF-localized state at fixed character.
-- **PCBM's loss is *not* occupation loss.** Occupation moves slightly **toward**
-  PCBM (+0.0805). The −0.846 is character evolution: the states carrying the
-  population became less PCBM-like. A fixed-band reading would call this
-  "PCBM population collapses"; most of it is relabelling.
+- **PCBM's loss is mostly character evolution.** Occupation moves slightly
+  **toward** PCBM (+0.0805); the −0.846 is the states that carry the population
+  becoming less PCBM-like.
+
+> **`P_PCBM` really did fall by 0.846.** That it is carried by `ΔP^char` does
+> **not** make it a relabelling. `P_g = Σ_i P_i w_ig` sums over the whole
+> basis, so re-ordering band labels cannot move it; what moved it is occupied
+> states turning away from PCBM in character, which takes their density with
+> them. The split says *how the change is accounted for*, not whether it
+> happened, and it is one of infinitely many exact splits rather than a
+> branching fraction between two mechanisms. What the analysis cannot say is
+> which microscopic process produced it — no hop record is an input.
 
 ### At the 977/978 crossing, per pass
 
@@ -65,8 +73,10 @@ population can be. **Per pass** (12 steps each, 5002 complete passes):
 | **PCBM** | **−0.000260 ± 0.004556** | −0.000022 | −0.000238 | 0.086 | 81 | 4921 |
 
 **The crossing does not increase PCBM.** PCBM *decreases* on 4921 of 5002
-passes, and the change is **98.7% character evolution** for BCF and 91.4% for
-PCBM. Occupation contributes ~1% of the movement at the crossing.
+passes. The change is accounted **98.7% character evolution** for BCF and 91.4%
+for PCBM, with occupation contributing ~1% of the movement at the crossing —
+but that is a statement about the accounting, not about how much charge moved.
+The projected density moved by the full net figure either way.
 
 ### The crossing is largely undone within the same pass
 
@@ -81,9 +91,16 @@ The episode hands BCF **+0.00182** and the rest of the cycle takes back
 pass ends. What survives is +0.000156 per pass, and *that* residual is
 **79.3% occupational**. Accumulated over 5003 passes it is the +0.78 in §1.
 
-So the mechanism this history supports is: **a small, occupation-driven
-residual deposits on BCF on each pass and accumulates**, while the large
-character swing at the crossing itself is nearly reversible and moves no charge.
+So what this history supports is: **a small residual, accounted mostly as
+occupation, deposits on BCF on each pass and accumulates**, while the large
+character swing at the crossing is **nearly reversible** — the projected
+density swings onto BCF and back within the same pass.
+
+Nearly reversible is the claim, and it is a claim about the *net over the
+pass*. It is not a claim that the swing moved no charge: during the episode the
+occupied density genuinely sits differently, and it returns. Neither is the
+occupation/character share a statement of mechanism — the split is bookkeeping,
+and without a hop record no process can be named for either part.
 
 ---
 
@@ -132,8 +149,8 @@ the comparison exists to detect.
 ## The conclusion this history licenses
 
 > In `SHPROP.25`, the crossing region produces a large but mostly reversible
-> fragment-character excursion and no persistent BCF→PCBM transfer; the
-> long-time net change instead favours BCF accumulation. **Whether this
+> excursion of the projected fragment population and no persistent BCF→PCBM
+> transfer; the long-time net change instead favours BCF accumulation. **Whether this
 > behaviour is representative of Campaign A must be determined from the full
 > ensemble of Campaign A's 100 SHPROP histories.**
 
@@ -161,3 +178,10 @@ symmetric midpoint split is exact and endpoint-unbiased, but it is one of
 infinitely many exact splits, and its relative percentages are **not physical
 branching fractions**. They say how the *chosen* bookkeeping apportions a
 change. Do not report them as a mechanism ratio.
+
+They are equally not a scale of how much charge moved. A change accounted
+mostly as `ΔP^char` displaced the projected occupied density by its full net
+figure, exactly as one accounted mostly as `ΔP^pop` would. `P_g` sums over the
+whole adiabatic basis, so no re-ordering of state labels can move it, and a
+character-driven change is never a relabelling. **Do not write "no charge
+moved" of any nonzero change in `P_g`.**

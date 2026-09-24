@@ -27,11 +27,18 @@ import numpy as np
 from .character import aligned_frames, resolve_namdtini
 from .crossings import CrossingError, history_fragment_population, read_projection_character
 from .ensemble import (
+    EPISODE_ROLES,
     EnsembleError,
+    EpisodeResult,
+    EpisodeWindow,
     HistoryResult,
+    compare_episodes,
     compare_runs,
     ensemble_curve,
+    episode_long_header,
+    episode_long_rows,
     history_header,
+    parse_episode_windows,
     reviewer_table,
     summarize_run,
 )
@@ -68,13 +75,19 @@ def analyse_history(
     bands: Sequence[int],
     frame_mode: str,
     cycle_length: Optional[int],
-    episode: Optional[tuple],
+    episodes: Sequence[EpisodeWindow],
     late_start_ns: float,
     chunk_rows: int,
     curve_stride: int,
     fixed_state_map: Optional[StateMap] = None,
 ) -> tuple:
-    """One history, start to finish. Returns (HistoryResult, curves)."""
+    """One history, start to finish. Returns (HistoryResult, curves).
+
+    The SHPROP file is streamed **once**. Every episode window is then a mask
+    over the single symmetric-midpoint decomposition that pass produced, so a
+    configuration with four crossing regions costs one read of its ~900 MB
+    history, not four, and no episode can perturb another's numbers.
+    """
     record = shprop_structure(path)
     start, source = resolve_namdtini(record)
     frames = aligned_frames(
@@ -109,23 +122,23 @@ def analyse_history(
             result.net_late[g] = float(y[-1] - y[0])
             result.range_late[g] = float(y.max() - y.min())
 
-    if episode and cycle_length:
-        lo, hi = episode
-        in_ep = (frames >= lo) & (frames <= hi)
-        steps = np.flatnonzero(in_ep)
-        if steps.size:
-            pass_id = np.arange(record.n_rows) // cycle_length
-            pids = pass_id[steps]
-            npass = int(pids.max()) + 1
-            for gi, g in enumerate(groups):
-                o = np.bincount(pids, weights=occ[steps, gi], minlength=npass)
-                c = np.bincount(pids, weights=chr_[steps, gi], minlength=npass)
-                net = o + c
-                # Per pass, never summed over passes: the passes are
-                # re-traversals of one nuclear trajectory.
-                result.episode_net_per_pass[g] = float(net.mean())
-                result.episode_occupation_per_pass[g] = float(o.mean())
-            result.episode_verdict = _verdict(result, groups)
+    # Every window, against the one decomposition already in hand. The loop is
+    # over episodes, not over reads of the file.
+    if cycle_length:
+        pass_id = np.arange(record.n_rows) // cycle_length
+        for window in episodes:
+            outcome = _episode_response(
+                window, frames, occ, chr_, groups, pass_id
+            )
+            if outcome is None:
+                continue
+            result.episodes[window.name] = outcome
+            if window.legacy:
+                # The original single-window interface, unchanged: its numbers
+                # keep their own unprefixed columns and the run-level verdict.
+                result.episode_net_per_pass = dict(outcome.net_per_pass)
+                result.episode_occupation_per_pass = dict(outcome.occupation_per_pass)
+                result.episode_verdict = outcome.verdict
 
     curves = {g: P[::curve_stride, gi].copy() for gi, g in enumerate(groups)}
     curves["_time_ns"] = time_ns[::curve_stride].copy()
@@ -155,14 +168,53 @@ def analyse_history(
     return result, curves
 
 
-def _verdict(result: HistoryResult, groups: Sequence[str],
+def _episode_response(
+    window: EpisodeWindow,
+    frames: np.ndarray,
+    occ: np.ndarray,
+    chr_: np.ndarray,
+    groups: Sequence[str],
+    pass_id: np.ndarray,
+) -> Optional[EpisodeResult]:
+    """One window's per-pass response, from the decomposition already computed.
+
+    The arithmetic is exactly what the single-window path did: the steps whose
+    resolved frame falls inside the inclusive window are binned by pass, the
+    two decomposition terms are summed within each pass, and the mean over
+    passes is reported. It is reported **per pass** because the passes are
+    re-traversals of one recycled nuclear trajectory: a sum over ~5003 of them
+    is not a population.
+    """
+    steps = np.flatnonzero((frames >= window.first) & (frames <= window.last))
+    if steps.size == 0:
+        return None
+    pids = pass_id[steps]
+    npass = int(pids.max()) + 1
+    outcome = EpisodeResult(
+        name=window.name, first=window.first, last=window.last, role=window.role,
+        n_passes_covering=int(np.unique(pids).size), n_steps=int(steps.size),
+    )
+    for gi, g in enumerate(groups):
+        o = np.bincount(pids, weights=occ[steps, gi], minlength=npass)
+        c = np.bincount(pids, weights=chr_[steps, gi], minlength=npass)
+        net = o + c
+        # Per pass, never summed over passes: the passes are re-traversals of
+        # one nuclear trajectory.
+        outcome.net_per_pass[g] = float(net.mean())
+        outcome.occupation_per_pass[g] = float(o.mean())
+        outcome.character_per_pass[g] = float(c.mean())
+    outcome.verdict = _verdict(outcome.net_per_pass, groups)
+    return outcome
+
+
+def _verdict(net_per_pass: Dict[str, float], groups: Sequence[str],
              donor: str = "BCF", acceptor: str = "PCBM",
              tolerance: float = 1.0e-5) -> str:
     """Name this history's episode response without claiming a mechanism."""
     if donor not in groups or acceptor not in groups:
         return "not_classified"
-    a = result.episode_net_per_pass.get(acceptor, 0.0)
-    d = result.episode_net_per_pass.get(donor, 0.0)
+    a = net_per_pass.get(acceptor, 0.0)
+    d = net_per_pass.get(donor, 0.0)
     if abs(a) <= tolerance and abs(d) <= tolerance:
         return "essentially_reversible"
     if a > tolerance and d < -tolerance:
@@ -200,8 +252,37 @@ def build_parser(prog: str = "namd-analysis character-ensemble") -> argparse.Arg
     parser.add_argument("--frame-mode", choices=("dish-cyclic", "linear"), default=None)
     parser.add_argument("--cycle-length", type=int, default=None,
                         help="frames in the recycled nuclear trajectory")
-    parser.add_argument("--episode-window", default=None,
-                        help="FIRST:LAST frame of the crossing manifold")
+    parser.add_argument(
+        "--episode-window", default=None,
+        help=(
+            "FIRST:LAST frame of the crossing manifold. The original "
+            "single-window interface, unchanged: it keeps the unprefixed "
+            "episode_* columns and the run-level episode verdict. For a "
+            "configuration with more than one mixing region use --episode"
+        ),
+    )
+    parser.add_argument(
+        "--episode", action="append", default=None, metavar="NAME=FIRST:LAST",
+        help=(
+            "a NAMED crossing window, repeatable, e.g. "
+            "--episode crossing_B1=1488:1492 --episode crossing_B2=1687:1696. "
+            "Every window is evaluated during the SAME streamed pass over each "
+            "SHPROP history, so four regions cost one read of the archive. The "
+            "windows are distinct regions of one recycled nuclear trajectory "
+            "and are never averaged or pooled with each other"
+        ),
+    )
+    parser.add_argument(
+        "--control-episode", action="append", default=None,
+        metavar="NAME=FIRST:LAST",
+        help=(
+            "a named window recorded as an explicit CONTROL: a range of frames "
+            "chosen for comparison, NOT an avoided crossing and NOT a BCF/PCBM "
+            "transfer event. Use this for a closest-approach window in a "
+            "configuration with no located character-exchange region, so the "
+            "outputs cannot later read it back as a crossing"
+        ),
+    )
     parser.add_argument("--late-window-start-ns", type=float, default=0.1,
                         help="start of the late window in ns (default 0.1 = 100 ps)")
     parser.add_argument("--shprop-chunk-rows", type=int, default=250_000)
@@ -250,6 +331,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "reviewer_table_late_window": reviewer_table(
                     runs, donor=args.donor, acceptor=args.acceptor,
                     quantity="net_late"),
+                # Listed per configuration and merged nowhere: A's window and
+                # B's four windows are regions of different physical systems.
+                "episodes": compare_episodes(runs, groups),
                 "environment": environment(),
             }
             write_json(out / "across_configurations.json", comparison)
@@ -321,16 +405,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         bands = [int(b) for b in character.bands]
         groups = list(character.groups)
-        episode = None
-        if args.episode_window:
-            lo, _, hi = args.episode_window.partition(":")
-            episode = (int(lo), int(hi))
+        episodes = parse_episode_windows(
+            args.episode_window, args.episode, args.control_episode
+        )
+        if episodes and not args.cycle_length:
+            print(
+                "error: an episode window needs --cycle-length: the response is "
+                "reported per pass over the recycled nuclear trajectory, and "
+                "without the cycle length there is no pass to divide by"
+            )
+            return 2
 
         paths = _expand(args.shprop)
         print(f"run {args.run_label}: {len(paths)} history/histories")
+        for window in episodes:
+            kind = "control window" if window.role == "control" else "crossing window"
+            print(f"  episode {window.name}: frames {window.first}:{window.last} "
+                  f"({kind})")
+        if len(episodes) > 1:
+            print("  episodes are distinct regions of one recycled trajectory; "
+                  "they are reported separately and never pooled")
 
         rows_path = out / "per_history.csv"
-        header = history_header(groups)
+        header = history_header(groups, episodes)
         results: List[HistoryResult] = []
         fixed_groups = list(fixed_state_map.groups) if fixed_state_map else []
         curve_keys = list(groups) + [f"fixed:{g}" for g in fixed_groups]
@@ -338,36 +435,89 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         time_axis = None
 
         # Flushed per history: hours of work must not be lost to a late crash.
-        with rows_path.open("w", encoding="utf-8", newline="") as handle:
+        # The long-form episode rows are flushed on the same schedule and from
+        # the same objects, so the two files cannot disagree after a crash.
+        episode_path = out / "episode_per_history.csv"
+        with rows_path.open("w", encoding="utf-8", newline="") as handle, \
+                episode_path.open("w", encoding="utf-8", newline="") as episode_handle:
             writer = csv.writer(handle)
             writer.writerow(header)
+            episode_writer = csv.writer(episode_handle)
+            episode_writer.writerow(episode_long_header())
             for index, path in enumerate(paths, start=1):
                 result, curve = analyse_history(
                     path, args.run_label, state_map, character, bands,
-                    args.frame_mode, args.cycle_length, episode,
+                    args.frame_mode, args.cycle_length, episodes,
                     args.late_window_start_ns, args.shprop_chunk_rows,
                     args.curve_stride, fixed_state_map,
                 )
-                writer.writerow(result.as_row(groups))
+                writer.writerow(result.as_row(groups, episodes))
                 handle.flush()
+                episode_writer.writerows(episode_long_rows(result, groups))
+                episode_handle.flush()
                 results.append(result)
                 if time_axis is None:
                     time_axis = curve["_time_ns"]
                 for key in curve_keys:
                     curves[key].append(curve[key])
+                verdicts = ", ".join(
+                    f"{name} {outcome.verdict}"
+                    for name, outcome in result.episodes.items()
+                ) or result.episode_verdict
                 print(f"  [{index}/{len(paths)}] {path.name}: "
                       f"NAMDTINI {result.namdtini}, "
                       + ", ".join(f"{g} {result.net_full.get(g, float('nan')):+.4f}"
                                   for g in groups)
-                      + f", {result.episode_verdict}")
+                      + f", {verdicts}")
+
+        # A window no history ever entered is silently absent from every output
+        # otherwise, which looks identical to a window nobody asked for.
+        unvisited = [
+            w.name for w in episodes
+            if not any(w.name in r.episodes for r in results)
+        ]
+        if unvisited:
+            print(f"  WARNING: no history visited {', '.join(unvisited)}; those "
+                  "windows produced no episode at all. Check the frame range "
+                  "against this configuration's own cycle length")
 
         summary = summarize_run(args.run_label, results, groups)
         summary["inputs"] = fingerprint(
             [Path(args.projection_character), Path(args.state_map)]
         )
         summary["environment"] = environment()
+        # Printed as well as written: an A/B/C comparison is only valid if the
+        # three runs came from one implementation, and the person reading the
+        # Slurm log is the one who can still stop a mismatched run.
+        code = summary["environment"]["code"]
+        git = code.get("git", {})
+        if git.get("available"):
+            print(f"  analysis code: v{code['version']} "
+                  f"commit {git['commit']} ({git.get('describe')})"
+                  + ("  ** DIRTY WORKING TREE **" if git.get("dirty") else ""))
+            if git.get("dirty"):
+                print("  the commit above does NOT identify what ran: "
+                      f"{len(git.get('uncommitted_paths', []))} uncommitted "
+                      "path(s). Commit before a production run, or A/B/C cannot "
+                      "be attributed to one implementation")
+        else:
+            print(f"  analysis code: v{code['version']}, no git commit "
+                  f"available ({git.get('reason')}). The version alone does not "
+                  "identify the implementation")
         summary["late_window_start_ns"] = args.late_window_start_ns
-        summary["episode_window"] = list(episode) if episode else None
+        legacy = next((w for w in episodes if w.legacy), None)
+        summary["episode_window"] = [legacy.first, legacy.last] if legacy else None
+        summary["episode_windows"] = [
+            {
+                "name": w.name,
+                "first_frame": w.first,
+                "last_frame": w.last,
+                "role": w.role,
+                "role_meaning": EPISODE_ROLES[w.role],
+                "from_legacy_episode_window_flag": w.legacy,
+            }
+            for w in episodes
+        ]
         write_json(out / "run_summary.json", summary)
 
         bands_out = {}
@@ -427,7 +577,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"  {g:>11}: median {block['median']:+.4f}  "
                   f"gain {block['n_gain']}/{block['n']}  "
                   f"loss {block['n_loss']}/{block['n']}")
-        print("  episode verdicts:", summary["episode_verdicts"])
+        if summary["episodes"]:
+            for name, block in summary["episodes"].items():
+                kind = "control" if block["role"] == "control" else "crossing"
+                print(f"  episode {name} ({kind}, frames {block['window'][0]}:"
+                      f"{block['window'][1]}): {block['verdicts']}")
+            if len(summary["episodes"]) > 1:
+                print("  each episode stands alone: B1..B4 are regions of one "
+                      "recycled trajectory, so nothing is averaged across them")
+        else:
+            print("  episode verdicts:", summary["episode_verdicts"])
         print("  spread is between histories at fixed nuclei, not an uncertainty")
         print(f"written to {out}")
         return 0

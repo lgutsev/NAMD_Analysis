@@ -7,6 +7,13 @@ Three sections, deliberately: **what is observed**, **what is inferred from the
 decomposition**, and **what cannot be claimed without hop histories**. A
 statement in one section must not be quoted as though it came from another.
 
+This run was **configuration-level**: `projection_character.csv`, `EIGTXT` and
+`NATXT`, with no SHPROP populations. Such a run cannot evaluate fragment
+population transfer at all, so its character exchanges are classified
+`character_swap_population_not_evaluated` — *not evaluated*, which is not the
+same as *evaluated and found to be zero*. Nothing below states, or may be read
+as stating, that no charge moved.
+
 ---
 
 ## 1. Directly observed from SHPROP + PROCAR

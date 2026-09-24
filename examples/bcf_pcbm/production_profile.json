@@ -1,6 +1,6 @@
 {
   "profile": "bcf_pcbm_fapi_2026",
-  "analysis_version": "0.7.1",
+  "analysis_version": "0.7.2",
   "purpose": "The filesystem and study layout of the FAPI/BCF/PCBM A/B/C study, recorded so a production run does not depend on remembering where anything lives. This file carries layout and provenance status only. The scientific content of a configuration -- its state order, band numbers, atom partition -- lives in that configuration's own reference files and in the preset registry, and is never copied between configurations.",
   "study": {
     "name": "FAPI_MD_NAMD_2026",
@@ -8,8 +8,8 @@
     "reference_root": "NuTest",
     "reference_root_role": "The shared reference/control workspace for the whole A/B/C study. It is not configuration A's provenance directory: A's reference products merely happen to have been established there first. Configuration-specific reference files live beneath it, one directory per configuration, on equal footing.",
     "analysis_subdir": "analysis",
-    "analysis_run_prefix": "ensemble_v0.7.1",
-    "analysis_run_pattern": "<data_dir>/analysis/ensemble_v0.7.1_<jobid>/",
+    "analysis_run_prefix": "ensemble_v0.7.2",
+    "analysis_run_pattern": "<data_dir>/analysis/ensemble_v0.7.2_<jobid>/",
     "analysis_output_rule": "Every analysis run writes into a new directory under its own configuration's analysis/ subdirectory. Nothing new is written into the top level of a configuration directory, which holds the archive itself."
   },
   "shared": {
@@ -24,7 +24,7 @@
       "atom partition",
       "fixed nominal state map",
       "projection character",
-      "crossing/episode window",
+      "crossing/episode windows, and how many of them a configuration has",
       "NAMDTINI provenance"
     ]
   },
@@ -40,6 +40,8 @@
     "projection_manifest",
     "cycle_length",
     "episode_window",
+    "episodes",
+    "control_episodes",
     "history_count_observed",
     "preset",
     "campaign",
@@ -57,7 +59,7 @@
   ],
   "provenance_states": {
     "established": "verified against this configuration's own files, and the verifying product is on disk",
-    "not_established": "not yet determined for this configuration; nothing is borrowed from another configuration in the meantime"
+    "not_established": "not yet determined for this configuration; nothing is borrowed from another configuration in the meantime. An item stays here until this configuration's own files establish it -- being plausible, or true of another configuration, is not the same as established"
   },
   "configurations": {
     "A": {
@@ -72,6 +74,10 @@
       "projection_manifest": "NuTest/A/projection_manifest.json",
       "cycle_length": 1999,
       "episode_window": "1320:1331",
+      "episodes": {
+        "crossing_A": "1320:1331"
+      },
+      "control_episodes": {},
       "history_count_observed": 98,
       "preset": "bcf_pcbm",
       "campaign": "A",
@@ -88,7 +94,8 @@
       "notes": [
         "The reference products were produced by the character run in NuTest/character_test_A_1030646 and are addressed here as NuTest/A so all three configurations are addressed the same way.",
         "history_count_observed is the archive as it stands: 98 numbered SHPROP histories. It is the denominator A's results report. A gap in the numbering is a history that was never written and is not filled in.",
-        "A is the configuration whose reference analysis was established first. That is a fact about the order of work, not a claim of precedence: it holds no field B and C do not."
+        "A is the configuration whose reference analysis was established first. That is a fact about the order of work, not a claim of precedence: it holds no field B and C do not.",
+        "The single BCF/PCBM mixing region 1320:1331 is recorded both as the legacy episode_window and as the named episode crossing_A. They are the same window; the name is what makes it unambiguous alongside configurations that have several."
       ]
     },
     "B": {
@@ -103,22 +110,31 @@
       "projection_manifest": "NuTest/B/projection_manifest.json",
       "cycle_length": 1999,
       "episode_window": null,
+      "episodes": {
+        "crossing_B1": "1488:1492",
+        "crossing_B2": "1687:1696",
+        "crossing_B3": "1801:1811",
+        "crossing_B4": "1846:1855"
+      },
+      "control_episodes": {},
       "history_count_observed": null,
       "preset": "bcf_pcbm",
       "campaign": "B",
       "preset_registered": false,
       "provenance": {
-        "population_column_order": "not_established",
-        "band_numbers": "not_established",
-        "atom_partition": "not_established",
-        "fixed_state_map": "not_established",
-        "projection_character": "not_established",
-        "trajectory_coverage": "not_established",
-        "namdtini": "not_established"
+        "population_column_order": "established",
+        "band_numbers": "established",
+        "atom_partition": "established",
+        "fixed_state_map": "established",
+        "projection_character": "established",
+        "trajectory_coverage": "established",
+        "namdtini": "established"
       },
       "notes": [
-        "The paths above are where B's reference products belong once prepared from B's own archive. An absent file is an absent file: the ensemble run refuses rather than falling back to another configuration's.",
-        "episode_window is null because B's crossing manifold has not been located. That is not a prerequisite: populations, the symmetric decomposition and the fixed-vs-dynamic comparison all run without it, and episode classification can be added afterwards.",
+        "B's reference products are prepared from B's own archive and live at the paths above. An absent file is an absent file: the ensemble run refuses rather than falling back to another configuration's.",
+        "B has FOUR distinct BCF/PCBM mixing regions, so episode_window is null: none of the four is 'the' window, and promoting one would be a choice with no basis. They are passed by name through --episode and reported separately under those names.",
+        "B1-B4 are four regions of the SAME recycled nuclear trajectory. They are not four replicates, not four independent samples, and not repeat measurements of one quantity. Nothing averages or pools them, and a mean over them would describe no region at all.",
+        "atom_partition is established. B preserves the same atom ordering and indexing as A; only coordinates/orientation differ, so the validated fragment-index partition remains applicable to B.",
         "history_count_observed is null until B's archive is counted. Count it; do not assume A's."
       ]
     },
@@ -134,24 +150,38 @@
       "projection_manifest": "NuTest/C/projection_manifest.json",
       "cycle_length": 1999,
       "episode_window": null,
+      "episodes": {},
+      "control_episodes": {
+        "closest_approach_C": "1628:1632"
+      },
       "history_count_observed": null,
       "preset": "bcf_pcbm",
       "campaign": "C",
       "preset_registered": false,
       "provenance": {
-        "population_column_order": "not_established",
-        "band_numbers": "not_established",
-        "atom_partition": "not_established",
-        "fixed_state_map": "not_established",
-        "projection_character": "not_established",
-        "trajectory_coverage": "not_established",
-        "namdtini": "not_established"
+        "population_column_order": "established",
+        "band_numbers": "established",
+        "atom_partition": "established",
+        "fixed_state_map": "established",
+        "projection_character": "established",
+        "trajectory_coverage": "established",
+        "namdtini": "established"
       },
       "notes": [
-        "The paths above are where C's reference products belong once prepared from C's own archive. An absent file is an absent file: the ensemble run refuses rather than falling back to another configuration's.",
-        "episode_window is null because C's crossing manifold has not been located. That is not a prerequisite: populations, the symmetric decomposition and the fixed-vs-dynamic comparison all run without it, and episode classification can be added afterwards.",
+        "C's reference products are prepared from C's own archive and live at the paths above. An absent file is an absent file: the ensemble run refuses rather than falling back to another configuration's.",
+        "C has NO clear BCF/PCBM character-exchange event, so it has no crossing episode. episodes is empty deliberately, and that emptiness is the finding, not a gap waiting to be filled.",
+        "closest_approach_C = 1628:1632 is a CONTROL window: the frames where the two fragments come closest. It is NOT an avoided crossing, NOT a character-exchange region and NOT a BCF/PCBM transfer event, and it must never be reported as one. It is carried as control_episodes so that every output labels it role=control.",
+        "atom_partition is established. C preserves the same atom ordering and indexing as A; only coordinates/orientation differ, so the validated fragment-index partition remains applicable to C.",
         "history_count_observed is null until C's archive is counted. Count it; do not assume A's."
       ]
     }
-  }
+  },
+  "episode_conventions": {
+    "episode_window": "The LEGACY single window, kept for the original --episode-window interface. Null wherever a configuration has none, or has more than one and no basis for calling one of them 'the' window.",
+    "episodes": "Named crossing windows, NAME -> FIRST:LAST, passed as --episode NAME=FIRST:LAST. A configuration may have several; they are distinct regions of the same recycled nuclear trajectory and are never averaged, pooled or combined with one another.",
+    "control_episodes": "Named CONTROL windows, NAME -> FIRST:LAST, passed as --control-episode NAME=FIRST:LAST. A control window is a range of frames chosen for comparison. It is NOT an avoided crossing and NOT a BCF/PCBM character-exchange or transfer event, and no output may describe it as one.",
+    "one_pass": "All windows of a run are evaluated during the same streamed pass over each SHPROP history. Adding a window does not reread the ~900 MB archive.",
+    "not_pooled": "Multiple windows within one configuration are multiple regions of one recycled trajectory, not independent samples. Windows in different configurations are regions of different physical systems. There is no level at which averaging them is defined."
+  },
+  "analysis_version_basis": "0.7.2. The predecessor v0.7.1-frozen predates the multi-episode windows and the corrected projected-population semantics -- under 0.7.1 a change in P_g carried by character_evolution was classified as 'without fragment transfer', which is wrong -- so results produced by the two are not comparable and must not share an output prefix. Every run also records environment.code in run_summary.json: the package version plus, from an editable checkout, the git commit, branch and a dirty flag. A version names a release; the commit names the implementation, and the A/B/C comparison is only valid across one implementation."
 }

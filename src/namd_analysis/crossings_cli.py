@@ -16,8 +16,14 @@ from typing import List, Optional, Sequence, Tuple
 import numpy as np
 
 from .crossings import (
+    DECOMPOSITION_IDENTITY,
     DEFAULT_THRESHOLDS,
     EVENT_HEADER,
+    NO_PROJECTED_CHANGE,
+    NOT_EVALUATED,
+    NOT_EVALUATED_NOTE,
+    PROJECTED_CHANGE,
+    PROJECTION_NOTE,
     CrossingError,
     aggregate_histories,
     compare_event_windows,
@@ -185,7 +191,7 @@ def build_parser(prog: str = "namd-analysis character-crossings") -> argparse.Ar
         help=(
             "original SHPROP histories. With these, every event is classified on "
             "the history that produced it, using that history's own resolved frame "
-            "mapping and its own projection-weighted fragment population, and only "
+            "mapping and its own projection-weighted diagonal fragment population, and only "
             "then aggregated. Required when the histories start at different "
             "NAMDTINI, because there is then no ensemble population per frame"
         ),
@@ -414,26 +420,68 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             ),
             "shprop_alignment": args.shprop_alignment,
         },
+        # Said at the top level, not buried: a reader who takes only one block
+        # out of this file must still be told whether fragment population was
+        # ever looked at.
+        "fragment_population": {
+            "evaluated": bool(args.shprop),
+            "source": (
+                "per-history SHPROP populations contracted with the PROCAR "
+                "weights, P_g(t) = sum_i P_i(t) w_ig[f(t)]"
+                if args.shprop
+                else None
+            ),
+            "n_events_population_evaluated": sum(
+                1 for e in events if e.population_evaluated
+            ),
+            "n_events_population_not_evaluated": sum(
+                1 for e in events if not e.population_evaluated
+            ),
+            "meaning_of_null": (
+                "projected_fragment_population_change = null means NOT EVALUATED. "
+                "It never means a change of zero, and no count, sentence or "
+                "figure derived from this run may read it as one"
+            ),
+            "classification_rests_on": (
+                "|dP_g| alone, against the population tolerance. The symmetric "
+                "split never decides whether a change occurred; it only "
+                "describes one"
+            ),
+            "not_evaluated_classification": NOT_EVALUATED,
+            "no_projected_change_classification": NO_PROJECTED_CHANGE,
+            "projected_change_classification": PROJECTED_CHANGE,
+            "note": NOT_EVALUATED_NOTE,
+            "projection_note": PROJECTION_NOTE,
+        },
         "population_change_decomposition": {
-            "identity": (
-                "dP_g = sum_i [P_i(t) - P_i(t-1)] w_ig[f(t)] + "
-                "sum_i P_i(t-1) [w_ig[f(t)] - w_ig[f(t-1)]]"
+            # Taken from the module constant, never retyped: a report quoting
+            # an endpoint-biased form while the code computes the symmetric
+            # midpoint one would misdescribe every number in the split.
+            "identity": DECOMPOSITION_IDENTITY,
+            "identity_form": (
+                "symmetric midpoint. An endpoint-biased split is equally exact "
+                "in the sum but apportions up to half a step's movement "
+                "differently between the two terms; neither endpoint is "
+                "privileged here"
             ),
             "occupation_redistribution": (
-                "occupation moving between states at fixed character -- the part "
-                "that can mean charge transfer"
+                "occupation moving between states at fixed character. One term "
+                "of an exact bookkeeping split, not a measurement of hopping: "
+                "no hop record is an input"
             ),
             "character_evolution": (
-                "the character moving under fixed occupation -- what a band-index "
-                "swap produces on its own, with no charge going anywhere"
+                "an occupied state's own character evolving at fixed occupation. "
+                "NOT mere relabelling -- it can correspond to a spatial "
+                "redistribution of that state's density between the fragments, "
+                "so it must NOT be reported as 'no charge moved'. Equally it is "
+                "not itself a measure of charge that moved"
             ),
-            "note": (
-                "P_g = sum_i P_i w_ig moves when the weights move, so a swap "
-                "shifts the total mechanically. Only the population-driven part "
-                "is tested against the swap direction, and it needs the per-band "
-                "populations that only a single SHPROP history carries. Without "
-                "--shprop, no direction is claimed"
+            "role_in_classification": (
+                "none. The classification rests on |dP_g| alone. These two terms "
+                "only describe a change that dP_g has already established, via "
+                "the decomposition_descriptor column"
             ),
+            "note": PROJECTION_NOTE,
             "available": bool(args.shprop),
         },
         "thresholds": {
@@ -498,6 +546,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                   f"late {window_comparison['late_total']}")
     for name, count in counts.most_common():
         print(f"  {count:5d}  {name}")
+    if not args.shprop:
+        print("  no SHPROP supplied: projected fragment population was NOT "
+              "EVALUATED, which is not the same as finding it did not move")
     print(f"threshold sensitivity: totals {[r['total_events'] for r in sweep['rows']]} "
           f"across factors {list(sweep['factors'])}")
     print("  a character swap is not a surface hop; neither is automatically transfer")

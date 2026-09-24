@@ -245,8 +245,10 @@ def classify_episode(
         episode.classification = "no_net_fragment_transfer"
         episode.note = (
             f"the character was exchanged but neither {donor} nor {acceptor} "
-            f"ended the episode with a net population change above "
-            f"{net_tolerance:g}. The band labels moved; the charge did not"
+            f"ended the episode with a net projected population change above "
+            f"{net_tolerance:g}. The projected occupied density ended the "
+            "episode where it began. That is a statement about the NET over "
+            "the episode: the density may have moved and returned within it"
         )
         return episode
 

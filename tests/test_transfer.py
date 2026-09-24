@@ -2,8 +2,15 @@
 
 The cutoff is a reporting convention, not a measurement (Toldo et al., PCCP 25,
 8293-8316, 2023).  These tests pin the two consequences: a count that depends
-on the cutoff is visible as such, and a band relabelling can never register as
-transfer because only the occupation-driven component is ever consumed.
+on the cutoff is visible as such, and only the occupation-driven component is
+ever consumed, so a change carried entirely by character evolution is not
+counted here.
+
+That second discipline is a **narrowing of the event-counting question**, and
+these tests do not treat it as a claim that character-driven movement is
+unreal.  It is not: see :data:`namd_analysis.crossings.PROJECTION_NOTE`. The
+continuous change in ``P_g`` reported by ``character-crossings`` is the
+observable; these counts sit beside it.
 """
 
 import unittest
