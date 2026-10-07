@@ -9,6 +9,7 @@ authors:
     given-names: Lavrenty G.
     orcid: "https://orcid.org/0000-0002-9679-9093"
     affiliation: "Louisiana Tech University"
+doi: "10.5281/zenodo.23224678"
 repository-code: "https://github.com/lgutsev/NAMD_Analysis"
 abstract: >-
   Analysis of saved CA-NAC / Hefei-NAMD output with explicit units and state mappings:

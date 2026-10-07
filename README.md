@@ -1,5 +1,7 @@
 # NAMD Analysis
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23224678.svg)](https://doi.org/10.5281/zenodo.23224678)
+
 Analyze saved CA-NAC and Hefei-NAMD results with explicit units, state mappings,
 fit windows, and input provenance. This package is independent of
 [NAMD_Launcher](https://github.com/lgutsev/NAMD_Launcher): the launcher prepares
