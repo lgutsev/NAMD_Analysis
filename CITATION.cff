@@ -1,0 +1,48 @@
+cff-version: 1.2.0
+title: "NAMD Analysis (namd-analysis)"
+message: >-
+  If NAMD Analysis contributes to published work, please cite this release and also
+  Hefei-NAMD and CA-NAC, which produce the dynamics and couplings it analyses.
+type: software
+authors:
+  - family-names: Gutsev
+    given-names: Lavrenty G.
+    orcid: "https://orcid.org/0000-0002-9679-9093"
+    affiliation: "Louisiana Tech University"
+repository-code: "https://github.com/lgutsev/NAMD_Analysis"
+abstract: >-
+  Analysis of saved CA-NAC / Hefei-NAMD output with explicit units and state mappings:
+  fragment-resolved state character, crossing episodes, ensemble statistics that never
+  pool distinct configurations, identifiability-aware multistate kinetic fits, and
+  VACF phonon spectra.
+keywords:
+  - nonadiabatic molecular dynamics
+  - surface hopping
+  - kinetic modelling
+  - halide perovskites
+license: MIT
+version: 0.7.2
+date-released: 2026-10-07
+references:
+  - type: software
+    title: "Hefei-NAMD"
+    authors:
+      - family-names: Zheng
+        given-names: Qijing
+      - family-names: Zhao
+        given-names: Jin
+    repository-code: "https://github.com/QijingZheng/Hefei-NAMD"
+  - type: article
+    title: >-
+      Concentric Approximation for Fast and Accurate Numerical Evaluation of
+      Nonadiabatic Coupling with Projector Augmented-Wave Pseudopotentials
+    authors:
+      - family-names: Chu
+        given-names: Weibin
+      - family-names: Prezhdo
+        given-names: Oleg V.
+    journal: "The Journal of Physical Chemistry Letters"
+    year: 2021
+    volume: 12
+    start: 3082
+    doi: "10.1021/acs.jpclett.0c03853"
